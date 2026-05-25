@@ -10,5 +10,9 @@
 
   { "frame_id": "6stlCkUDG_s_000060", "video_id": "6stlCkUDG_s", "frame_number": 60,  "timestamp_ms": 1000, "ocr_text": "GOAL! Vietnam 1 - 0 Thailand" },
   { "frame_id": "6stlCkUDG_s_000300", "video_id": "6stlCkUDG_s", "frame_number": 300, "timestamp_ms": 5000, "ocr_text": "Half-time score: Vietnam 2 - 1 Thailand" },
-  { "frame_id": "6stlCkUDG_s_000540", "video_id": "6stlCkUDG_s", "frame_number": 540, "timestamp_ms": 9000, "ocr_text": "Full-time: Vietnam WIN — AFF Championship 2026" }
+  { "frame_id": "6stlCkUDG_s_000540", "video_id": "6stlCkUDG_s", "frame_number": 540, "timestamp_ms": 9000, "ocr_text": "Full-time: Vietnam WIN — AFF Championship 2026" },
+
+  { "frame_id": "jNQXAC9IVRw_000450", "video_id": "jNQXAC9IVRw", "frame_number": 450, "timestamp_ms": 15000, "ocr_text": "EXCLUSIVE: Rare footage of the Sunda pangolin in the wild" },
+  { "frame_id": "6stlCkUDG_s_001200", "video_id": "6stlCkUDG_s", "frame_number": 1200, "timestamp_ms": 20000, "ocr_text": "Man of the match: Nguyen Quang Hai — Vietnam" },
+  { "frame_id": "dQw4w9WgXcQ_009000", "video_id": "dQw4w9WgXcQ", "frame_number": 9000, "timestamp_ms": 360000, "ocr_text": "EMERGENCY BROADCAST: All residents evacuate immediately" }
 ]

@@ -51,6 +51,10 @@ class DataProvider:
                 all_frame_ids.update(h["frame_id"] for h in ocr_hits)
                 all_video_ids.update(h["video_id"] for h in ocr_hits)
 
+                transcript_hits = await postgres_client.search_transcript_text(text_query, limit=limit)
+                transcripts.extend(transcript_hits)
+                all_video_ids.update(h["video_id"] for h in transcript_hits)
+
         # Fetch video metadata for all referenced videos
         video_rows = await postgres_client.fetch_video_metadata(list(all_video_ids))
         videos = {v["video_id"]: dict(v) for v in video_rows}
