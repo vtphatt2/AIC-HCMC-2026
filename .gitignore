@@ -228,3 +228,4 @@ volumes/
 
 # Frame images (populated by ingestion pipeline, not committed)
 static/frames/
+.skills/

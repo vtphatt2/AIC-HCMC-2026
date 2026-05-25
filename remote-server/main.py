@@ -86,6 +86,7 @@ class QueryGroup(BaseModel):
 class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
+    top_k: int = 100
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ async def search(req: SearchRequest):
         raise HTTPException(500, f"Strategy execution error: {exc}")
 
     return {
-        "results":           results,
+        "results":           results[:req.top_k],
         "strategy_id":       req.strategy_id,
         "total":             len(results),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),

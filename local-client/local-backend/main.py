@@ -41,10 +41,10 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
                     instance = cls(data_provider)
                     found[path.stem] = instance
-                    print(f"  ✓ {path.stem}  [{cls.name}]  by {cls.author}")
+                    print(f"  [OK] {path.stem}  [{cls.name}]  by {cls.author}")
                     break  # one strategy class per file
         except Exception as exc:
-            print(f"  ✗ {path.stem}: {exc}")
+            print(f"  [FAIL] {path.stem}: {exc}")
     return found
 
 

@@ -97,6 +97,21 @@ async def search_ocr_text(query: str, limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def search_transcript_text(query: str, limit: int = 100) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT *, ts_rank(to_tsvector('english', text), plainto_tsquery('english', $1)) AS rank
+        FROM transcripts
+        WHERE to_tsvector('english', text) @@ plainto_tsquery('english', $1)
+        ORDER BY rank DESC
+        LIMIT $2
+        """,
+        query, limit,
+    )
+    return [dict(r) for r in rows]
+
+
 async def fetch_transcripts_in_range(video_id: str, start_ms: int, end_ms: int) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
