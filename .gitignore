@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
+
+# Docker volumes
+volumes/
+
+# Frame images (populated by ingestion pipeline, not committed)
+static/frames/
