@@ -226,5 +226,10 @@ out/
 # Docker volumes
 volumes/
 
-# Frame images (populated by ingestion pipeline, not committed)
+# Dataset and generated frame assets (large local data, not committed)
+AIC2026_sample/
+remote-server/static/frames/
 static/frames/
+**/keyframes/
+**/PECore-features/
+.skills/

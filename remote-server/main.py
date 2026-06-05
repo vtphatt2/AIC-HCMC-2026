@@ -2,6 +2,8 @@ import os
 import time
 import importlib
 import inspect
+import logging
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -11,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy
@@ -20,6 +22,7 @@ from app.db import postgres_client, milvus_client
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
+logger = logging.getLogger(__name__)
 
 
 def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
@@ -72,7 +75,9 @@ app.add_middleware(
 )
 
 # Serve pre-extracted frame images
-app.mount("/static", StaticFiles(directory="static"), name="static")
+STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -86,6 +91,7 @@ class QueryGroup(BaseModel):
 class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
+    top_k: int = 100
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -93,6 +99,49 @@ class SearchRequest(BaseModel):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "env_mode": os.getenv("ENV_MODE"), "strategies": len(_strategies)}
+
+
+@app.get("/api/static-debug")
+async def static_debug(path: str = "frames/L01_V001/000022.jpg"):
+    target = (STATIC_DIR / path).resolve()
+    return {
+        "static_dir": str(STATIC_DIR.resolve()),
+        "path": path,
+        "target": str(target),
+        "exists": target.exists(),
+        "is_file": target.is_file(),
+        "size": target.stat().st_size if target.exists() else None,
+    }
+
+
+@app.get("/api/warmup_text_encoder")
+@app.post("/api/warmup_text_encoder")
+async def warmup_text_encoder():
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready.")
+
+    t0 = time.monotonic()
+    try:
+        result = await asyncio.to_thread(
+            _data_provider.warmup_text_encoder,
+            "warmup query",
+        )
+    except Exception as exc:
+        logger.info(
+            "[TIMER] warmup_text_encoder %.3f ms status=error error=%s",
+            (time.monotonic() - t0) * 1000,
+            exc,
+        )
+        raise HTTPException(500, f"Text encoder warmup error: {exc}")
+
+    logger.info(
+        "[TIMER] warmup_text_encoder %.3f ms status=ok model_load_ms=%.3f encode_ms=%.3f device=%s",
+        (time.monotonic() - t0) * 1000,
+        float(result["model_load_ms"]),
+        float(result["encode_ms"]),
+        result["device"],
+    )
+    return result
 
 
 @app.get("/api/strategies")
@@ -111,24 +160,54 @@ async def list_strategies():
 
 @app.post("/api/search")
 async def search(req: SearchRequest):
+    t0 = time.monotonic()
+    logger.info(
+        "[TIMER] request_received %.3f ms strategy=%s query_groups=%s top_k=%s",
+        0.0,
+        req.strategy_id,
+        len(req.query_groups),
+        req.top_k,
+    )
     if req.strategy_id not in _strategies:
+        logger.info(
+            "[TIMER] total_request %.3f ms strategy=%s status=not_found",
+            (time.monotonic() - t0) * 1000,
+            req.strategy_id,
+        )
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found.")
 
     strategy = _strategies[req.strategy_id]
-    t0 = time.monotonic()
 
     try:
         results = await strategy.search([g.model_dump() for g in req.query_groups])
     except TimeoutError as exc:
+        logger.info(
+            "[TIMER] total_request %.3f ms strategy=%s status=timeout",
+            (time.monotonic() - t0) * 1000,
+            req.strategy_id,
+        )
         raise HTTPException(408, str(exc))
     except Exception as exc:
+        logger.info(
+            "[TIMER] total_request %.3f ms strategy=%s status=error error=%s",
+            (time.monotonic() - t0) * 1000,
+            req.strategy_id,
+            exc,
+        )
         raise HTTPException(500, f"Strategy execution error: {exc}")
 
+    total_ms = (time.monotonic() - t0) * 1000
+    logger.info(
+        "[TIMER] total_request %.3f ms strategy=%s status=ok results=%s",
+        total_ms,
+        req.strategy_id,
+        len(results),
+    )
     return {
-        "results":           results,
+        "results":           results[: min(max(req.top_k, 1), 1000)],
         "strategy_id":       req.strategy_id,
-        "total":             len(results),
-        "execution_time_ms": int((time.monotonic() - t0) * 1000),
+        "total":             min(len(results), min(max(req.top_k, 1), 1000)),
+        "execution_time_ms": int(total_ms),
     }
 
 

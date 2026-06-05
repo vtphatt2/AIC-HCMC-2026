@@ -11,15 +11,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", REPO_ROOT / "AIC2026_sample"))
+SAMPLE_KEYFRAMES_DIR = SAMPLE_ROOT / "keyframes" / "keyframes"
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 
@@ -41,10 +45,10 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
                     instance = cls(data_provider)
                     found[path.stem] = instance
-                    print(f"  ✓ {path.stem}  [{cls.name}]  by {cls.author}")
+                    print(f"  OK {path.stem}  [{cls.name}]  by {cls.author}")
                     break  # one strategy class per file
         except Exception as exc:
-            print(f"  ✗ {path.stem}: {exc}")
+            print(f"  ERR {path.stem}: {exc}")
     return found
 
 
@@ -74,6 +78,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if SAMPLE_KEYFRAMES_DIR.is_dir():
+    app.mount(
+        "/static/frames",
+        StaticFiles(directory=str(SAMPLE_KEYFRAMES_DIR)),
+        name="sample-keyframes",
+    )
+
 
 # ── Request / Response models ─────────────────────────────────────────────────
 
@@ -97,6 +108,21 @@ async def health():
         "status":     "ok",
         "env_mode":   os.getenv("ENV_MODE", "MOCK"),
         "strategies": len(_strategies),
+        "sample_keyframes_dir": str(SAMPLE_KEYFRAMES_DIR),
+        "sample_static_mounted": SAMPLE_KEYFRAMES_DIR.is_dir(),
+    }
+
+
+@app.get("/api/static-debug")
+async def static_debug(path: str = "L01_V001/000022.jpg"):
+    target = (SAMPLE_KEYFRAMES_DIR / path).resolve()
+    return {
+        "sample_keyframes_dir": str(SAMPLE_KEYFRAMES_DIR.resolve()),
+        "path": path,
+        "target": str(target),
+        "exists": target.exists(),
+        "is_file": target.is_file(),
+        "size": target.stat().st_size if target.exists() else None,
     }
 
 
@@ -128,6 +154,8 @@ async def search(req: SearchRequest):
         results = await strategy.search([g.model_dump() for g in req.query_groups])
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(500, f"Strategy error: {exc}")
 
