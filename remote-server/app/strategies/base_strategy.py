@@ -1,5 +1,9 @@
 from abc import ABC, abstractmethod
 import asyncio
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 # Hard limits applied to every strategy — cannot be overridden per-strategy.
 FETCH_CAP = 1000          # Max records pulled from DB per query
@@ -44,11 +48,23 @@ class BaseStrategy(ABC):
         raw_data = await self.data_provider.get_raw_data(processed, limit=FETCH_CAP)
 
         try:
+            timer_start = time.monotonic()
             results = await asyncio.wait_for(
                 asyncio.to_thread(self.fusion_and_temporal, raw_data, processed),
                 timeout=EXECUTION_TIMEOUT_SEC,
             )
+            logger.info(
+                "[TIMER] fusion %.3f ms strategy=%s results=%s",
+                (time.monotonic() - timer_start) * 1000,
+                self.__class__.__name__,
+                len(results),
+            )
         except asyncio.TimeoutError:
+            logger.info(
+                "[TIMER] fusion %.3f ms strategy=%s timeout=true",
+                (time.monotonic() - timer_start) * 1000,
+                self.__class__.__name__,
+            )
             raise TimeoutError(
                 f"[{self.name}] fusion_and_temporal() exceeded {EXECUTION_TIMEOUT_SEC}s. "
                 "Check for infinite loops or very expensive operations."
