@@ -16,6 +16,7 @@ declare global {
 export default function VideoModal({ result, onClose }: Props) {
   const playerRef = useRef<any>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const youtubeId = result.youtube_id || result.video_id;
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
 
@@ -37,8 +38,8 @@ export default function VideoModal({ result, onClose }: Props) {
     function createPlayer() {
       if (!containerRef.current) return;
       playerRef.current = new window.YT.Player(containerRef.current, {
-        videoId: result.video_id,
-        playerVars: { autoplay: 1, rel: 0 },
+        videoId: youtubeId,
+        playerVars: { autoplay: 1, rel: 0, start: Math.floor(startSeconds) },
         events: {
           onReady: (event: any) => {
             event.target.seekTo(startSeconds, true);
@@ -66,7 +67,7 @@ export default function VideoModal({ result, onClose }: Props) {
         playerRef.current = null;
       }
     };
-  }, [result.video_id, startSeconds]);
+  }, [startSeconds, youtubeId]);
 
   // Poll the player every 100ms to get the live playback position.
   // This updates frame number and timestamp whenever the video plays or the user scrubs.

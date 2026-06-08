@@ -13,7 +13,7 @@ VECTOR_DIM = int(os.getenv("VECTOR_DIM", "1280"))  # PE-Core-bigG-14-448 produce
 METRIC_TYPE = "COSINE"
 INDEX_TYPE = "HNSW"
 INDEX_PARAMS = {"M": 16, "efConstruction": 256}
-SEARCH_PARAMS = {"ef": 128}
+SEARCH_PARAMS = {"ef": 256}
 
 
 def connect() -> None:
@@ -92,10 +92,12 @@ def upsert_frame_vectors(collection: Collection, records: list[dict[str, Any]]) 
 
 
 def vector_search(collection: Collection, query_vector: list[float], top_k: int = 100) -> list[dict]:
+    top_k = max(1, int(top_k))
+    search_params = {"ef": max(int(SEARCH_PARAMS["ef"]), top_k)}
     results = collection.search(
         data=[query_vector],
         anns_field="vector",
-        param={"metric_type": METRIC_TYPE, "params": SEARCH_PARAMS},
+        param={"metric_type": METRIC_TYPE, "params": search_params},
         limit=top_k,
         output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url"],
     )

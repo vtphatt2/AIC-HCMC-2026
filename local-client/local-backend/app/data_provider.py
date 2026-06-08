@@ -14,8 +14,24 @@ REMOTE_SERVER_URL = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
 
 MOCK_DIR = Path(__file__).parent / "mock"
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", REPO_ROOT / "AIC2026_sample"))
+DEFAULT_SAMPLE_ROOT = next(
+    (
+        path
+        for path in (REPO_ROOT / "AIC2026_sample", REPO_ROOT.parent / "AIC2026_sample")
+        if path.is_dir()
+    ),
+    REPO_ROOT / "AIC2026_sample",
+)
+SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", DEFAULT_SAMPLE_ROOT))
 logger = logging.getLogger(__name__)
+
+
+def sample_subdir(name: str) -> Path:
+    outer = SAMPLE_ROOT / name
+    nested = outer / name
+    if nested.is_dir():
+        return nested
+    return outer
 
 
 class DataProvider:
@@ -101,9 +117,9 @@ class DataProvider:
     # ── SAMPLE ───────────────────────────────────────────────────────────────
 
     def _load_sample(self):
-        metadata_dir = SAMPLE_ROOT / "metadata" / "metadata"
-        keyframes_dir = SAMPLE_ROOT / "keyframes" / "keyframes"
-        features_dir = SAMPLE_ROOT / "PECore-features" / "PECore-features"
+        metadata_dir = sample_subdir("metadata")
+        keyframes_dir = sample_subdir("keyframes")
+        features_dir = sample_subdir("PECore-features")
 
         for label, path in {
             "metadata": metadata_dir,

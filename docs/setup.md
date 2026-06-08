@@ -188,14 +188,32 @@ ngrok http 8000
 
 Share the Ngrok URL with the team. They set it as `REMOTE_SERVER_URL` in their local `.env`.
 
-### 4. Ingest data
+### 4. Ingest sample data
 
-> **Note:** The data ingestion pipeline is in a separate repository and is not part of this repo. Run it once to populate Milvus and PostgreSQL before the competition.
+Place `AIC2026_sample` inside or beside the repository. The scripts detect
+both nested dataset folders (`keyframes/keyframes`, `metadata/metadata`,
+`PECore-features/PECore-features`) and flat folders (`keyframes`, `metadata`,
+`PECore-features`). For any other location, pass its path explicitly:
+
+```bash
+python scripts/ingest_embeddings_to_milvus.py \
+  --sample-root /path/to/AIC2026_sample \
+  --copy-keyframes
+```
+
+The script upserts video metadata into PostgreSQL and frame embeddings into
+Milvus, so it is safe to rerun after correcting metadata.
 
 After ingestion, verify:
 ```bash
 curl http://localhost:8000/api/health
 # {"status":"ok","env_mode":"SERVER","strategies":1}
+```
+
+Before the first demo search, load the text model once:
+
+```bash
+curl -X POST http://localhost:8000/api/warmup_text_encoder
 ```
 
 ---
@@ -264,6 +282,7 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `VECTOR_DIM` | `1280` | Embedding dimension (PE-Core-bigG-14-448) |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `PECORE_DEVICE` | `cpu` | Set to `cuda` on a CUDA-capable server |
 
 ### `local-client/frontend/.env.local`
 

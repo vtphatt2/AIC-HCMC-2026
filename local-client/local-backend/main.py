@@ -17,13 +17,11 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from app.data_provider import DataProvider
-from app.strategies.base_strategy import BaseStrategy
+from app.data_provider import DataProvider, sample_subdir
+from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", REPO_ROOT / "AIC2026_sample"))
-SAMPLE_KEYFRAMES_DIR = SAMPLE_ROOT / "keyframes" / "keyframes"
+SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 
@@ -149,9 +147,13 @@ async def search(req: SearchRequest):
 
     strategy = _strategies[req.strategy_id]
     t0 = time.monotonic()
+    top_k = min(max(req.top_k, 1), FETCH_CAP)
 
     try:
-        results = await strategy.search([g.model_dump() for g in req.query_groups])
+        results = await strategy.search(
+            [g.model_dump() for g in req.query_groups],
+            limit=top_k,
+        )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
     except ValueError as exc:
@@ -159,7 +161,7 @@ async def search(req: SearchRequest):
     except Exception as exc:
         raise HTTPException(500, f"Strategy error: {exc}")
 
-    results = results[: req.top_k]
+    results = results[:top_k]
 
     return {
         "results":           results,

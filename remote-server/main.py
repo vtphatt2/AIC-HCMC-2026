@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from app.data_provider import DataProvider
-from app.strategies.base_strategy import BaseStrategy
+from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -161,12 +161,13 @@ async def list_strategies():
 @app.post("/api/search")
 async def search(req: SearchRequest):
     t0 = time.monotonic()
+    top_k = min(max(req.top_k, 1), FETCH_CAP)
     logger.info(
         "[TIMER] request_received %.3f ms strategy=%s query_groups=%s top_k=%s",
         0.0,
         req.strategy_id,
         len(req.query_groups),
-        req.top_k,
+        top_k,
     )
     if req.strategy_id not in _strategies:
         logger.info(
@@ -179,7 +180,10 @@ async def search(req: SearchRequest):
     strategy = _strategies[req.strategy_id]
 
     try:
-        results = await strategy.search([g.model_dump() for g in req.query_groups])
+        results = await strategy.search(
+            [g.model_dump() for g in req.query_groups],
+            limit=top_k,
+        )
     except TimeoutError as exc:
         logger.info(
             "[TIMER] total_request %.3f ms strategy=%s status=timeout",
@@ -204,9 +208,9 @@ async def search(req: SearchRequest):
         len(results),
     )
     return {
-        "results":           results[: min(max(req.top_k, 1), 1000)],
+        "results":           results[:top_k],
         "strategy_id":       req.strategy_id,
-        "total":             min(len(results), min(max(req.top_k, 1), 1000)),
+        "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
     }
 

@@ -15,6 +15,7 @@ export interface QueryGroup {
 
 export interface SearchResult {
   video_id: string;
+  youtube_id?: string;
   frame_id: string;
   frame_number: number;
   timestamp_ms: number;

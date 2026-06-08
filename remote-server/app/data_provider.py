@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -44,8 +45,8 @@ class DataProvider:
             text_query = group.get("text_query", "").strip()
 
             if semantic_query:
-                query_vector = self._text_encoder.encode(semantic_query)
-                search_limit = min(limit, int(milvus_client.SEARCH_PARAMS["ef"]))
+                query_vector = await asyncio.to_thread(self._text_encoder.encode, semantic_query)
+                search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
                 hits = milvus_client.vector_search(self._collection, query_vector.tolist(), top_k=search_limit)
                 logger.info(

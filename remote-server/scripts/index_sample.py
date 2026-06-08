@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -25,13 +26,16 @@ REPO_ROOT = REMOTE_ROOT.parent
 
 sys.path.insert(0, str(REMOTE_ROOT))
 
+from scripts.sample_paths import default_sample_root, sample_subdir
+
+YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Index AIC2026_sample into Milvus/PostgreSQL.")
     parser.add_argument(
         "--sample-root",
         type=Path,
-        default=REPO_ROOT / "AIC2026_sample",
+        default=default_sample_root(REPO_ROOT),
         help="Path to AIC2026_sample.",
     )
     parser.add_argument("--batch-size", type=int, default=256)
@@ -55,12 +59,11 @@ def require_dir(path: Path, label: str) -> Path:
     return path
 
 
-def youtube_id_from_link(link: str, fallback: str) -> str:
+def youtube_id_from_link(link: str) -> str:
     parsed = urlparse(link)
     if parsed.netloc.endswith("youtu.be"):
-        return parsed.path.strip("/") or fallback
-    query_id = parse_qs(parsed.query).get("v", [""])[0]
-    return query_id or fallback
+        return parsed.path.strip("/")
+    return parse_qs(parsed.query).get("v", [""])[0]
 
 
 def load_metadata(metadata_dir: Path) -> dict[str, dict]:
@@ -69,10 +72,13 @@ def load_metadata(metadata_dir: Path) -> dict[str, dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
         video_id = path.stem
         video_link = data.get("video_link", "")
+        youtube_id = data.get("youtube_id") or youtube_id_from_link(video_link)
+        if not YOUTUBE_ID_PATTERN.fullmatch(str(youtube_id)):
+            raise ValueError(f"{path} does not contain a valid YouTube video ID")
         metadata[video_id] = {
             "video_id": video_id,
             "title": data.get("title") or video_id,
-            "youtube_id": data.get("youtube_id") or youtube_id_from_link(video_link, video_id),
+            "youtube_id": str(youtube_id),
             "fps": float(data.get("fps") or 25.0),
             "video_link": video_link,
         }
@@ -80,17 +86,19 @@ def load_metadata(metadata_dir: Path) -> dict[str, dict]:
 
 
 def iter_video_records(sample_root: Path):
-    metadata_dir = require_dir(sample_root / "metadata" / "metadata", "metadata directory")
-    keyframes_dir = require_dir(sample_root / "keyframes" / "keyframes", "keyframes directory")
-    features_dir = require_dir(sample_root / "PECore-features" / "PECore-features", "features directory")
+    metadata_dir = require_dir(sample_subdir(sample_root, "metadata"), "metadata directory")
+    keyframes_dir = require_dir(sample_subdir(sample_root, "keyframes"), "keyframes directory")
+    features_dir = require_dir(sample_subdir(sample_root, "PECore-features"), "features directory")
     metadata = load_metadata(metadata_dir)
 
     for feature_video_dir in sorted(p for p in features_dir.iterdir() if p.is_dir()):
         video_id = feature_video_dir.name
         if video_id == "selected_keyframes":
             continue
+        if video_id not in metadata:
+            raise FileNotFoundError(f"Metadata file not found for feature directory: {video_id}")
 
-        video_meta = metadata.get(video_id, {"video_id": video_id, "title": video_id, "youtube_id": video_id, "fps": 25.0})
+        video_meta = metadata[video_id]
         frame_dir = keyframes_dir / video_id
         npy_paths = sorted(feature_video_dir.glob("*.npy"))
         records = []

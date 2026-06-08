@@ -1,4 +1,5 @@
 import type { SearchResult } from "@/types";
+import { apiUrl } from "@/lib/api";
 
 interface Props {
   result: SearchResult;
@@ -20,6 +21,10 @@ function confidenceColor(score: number): string {
 }
 
 export default function ResultCard({ result, rank, onClick }: Props) {
+  const imageUrl = result.frame_image_url.startsWith("http")
+    ? result.frame_image_url
+    : apiUrl(result.frame_image_url);
+
   return (
     <button
       onClick={() => onClick(result)}
@@ -28,7 +33,7 @@ export default function ResultCard({ result, rank, onClick }: Props) {
       {/* Frame image */}
       <div className="relative aspect-video bg-slate-700 overflow-hidden">
         <img
-          src={result.frame_image_url}
+          src={imageUrl}
           alt={`Frame ${result.frame_number} of ${result.video_id}`}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           loading="lazy"

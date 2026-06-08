@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 # Hard limits applied to every strategy — cannot be overridden per-strategy.
 FETCH_CAP = 1000          # Max records pulled from DB per query
+MULTI_STEP_FETCH_MIN = 300
 EXECUTION_TIMEOUT_SEC = 2.0  # Max seconds allowed for fusion_and_temporal()
 
 
@@ -42,10 +43,13 @@ class BaseStrategy(ABC):
                 f"{self.__class__.__name__} must define class attributes: {', '.join(missing)}"
             )
 
-    async def search(self, query_groups: list[dict]) -> list[dict]:
+    async def search(self, query_groups: list[dict], limit: int = 100) -> list[dict]:
         """Full pipeline: pre-process → fetch → execute (with timeout) → post-filter."""
         processed = self.pre_process(query_groups)
-        raw_data = await self.data_provider.get_raw_data(processed, limit=FETCH_CAP)
+        fetch_limit = min(max(int(limit), 1), FETCH_CAP)
+        if len(processed) > 1:
+            fetch_limit = max(fetch_limit, MULTI_STEP_FETCH_MIN)
+        raw_data = await self.data_provider.get_raw_data(processed, limit=fetch_limit)
 
         try:
             timer_start = time.monotonic()

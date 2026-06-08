@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import sys
 from collections.abc import Iterator
@@ -28,7 +29,10 @@ REMOTE_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = REMOTE_ROOT.parent
 sys.path.insert(0, str(REMOTE_ROOT))
 
+from scripts.sample_paths import default_sample_root, sample_subdir
+
 logger = logging.getLogger("ingest_embeddings_to_milvus")
+YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,8 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-root",
         type=Path,
-        default=REPO_ROOT / "AIC2026_sample",
-        help="Path to AIC2026_sample. Defaults to repository root/AIC2026_sample.",
+        default=default_sample_root(REPO_ROOT),
+        help="Path to AIC2026_sample. Defaults to the first existing repo-local or sibling dataset.",
     )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument(
@@ -60,11 +64,11 @@ def require_dir(path: Path, label: str) -> Path:
     return path
 
 
-def youtube_id_from_link(link: str, fallback: str) -> str:
+def youtube_id_from_link(link: str) -> str:
     parsed = urlparse(link)
     if parsed.netloc.endswith("youtu.be"):
-        return parsed.path.strip("/") or fallback
-    return parse_qs(parsed.query).get("v", [fallback])[0] or fallback
+        return parsed.path.strip("/")
+    return parse_qs(parsed.query).get("v", [""])[0]
 
 
 def load_metadata(metadata_dir: Path) -> dict[str, dict[str, Any]]:
@@ -72,27 +76,32 @@ def load_metadata(metadata_dir: Path) -> dict[str, dict[str, Any]]:
     for path in sorted(metadata_dir.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
         video_id = path.stem
+        youtube_id = data.get("youtube_id") or youtube_id_from_link(data.get("video_link", ""))
+        if not YOUTUBE_ID_PATTERN.fullmatch(str(youtube_id)):
+            raise ValueError(f"{path} does not contain a valid YouTube video ID")
         metadata[video_id] = {
             "video_id": video_id,
             "title": data.get("title") or video_id,
-            "youtube_id": data.get("youtube_id") or youtube_id_from_link(data.get("video_link", ""), video_id),
+            "youtube_id": str(youtube_id),
             "fps": float(data.get("fps") or 25.0),
         }
     return metadata
 
 
 def iter_video_records(sample_root: Path) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], int]]:
-    metadata_dir = require_dir(sample_root / "metadata" / "metadata", "metadata directory")
-    keyframes_dir = require_dir(sample_root / "keyframes" / "keyframes", "keyframes directory")
-    features_dir = require_dir(sample_root / "PECore-features" / "PECore-features", "PECore features directory")
+    metadata_dir = require_dir(sample_subdir(sample_root, "metadata"), "metadata directory")
+    keyframes_dir = require_dir(sample_subdir(sample_root, "keyframes"), "keyframes directory")
+    features_dir = require_dir(sample_subdir(sample_root, "PECore-features"), "PECore features directory")
     metadata = load_metadata(metadata_dir)
 
     for feature_video_dir in sorted(path for path in features_dir.iterdir() if path.is_dir()):
         video_id = feature_video_dir.name
         if video_id == "selected_keyframes":
             continue
+        if video_id not in metadata:
+            raise FileNotFoundError(f"Metadata file not found for feature directory: {video_id}")
 
-        fps = float(metadata.get(video_id, {}).get("fps", 25.0))
+        fps = float(metadata[video_id]["fps"])
         frame_dir = keyframes_dir / video_id
         records: list[dict[str, Any]] = []
         missing_images = 0
@@ -119,8 +128,8 @@ def iter_video_records(sample_root: Path) -> Iterator[tuple[dict[str, Any], list
 
         video = {
             "video_id": video_id,
-            "title": metadata.get(video_id, {}).get("title", video_id),
-            "youtube_id": metadata.get(video_id, {}).get("youtube_id", video_id),
+            "title": metadata[video_id]["title"],
+            "youtube_id": metadata[video_id]["youtube_id"],
             "fps": fps,
             "duration_ms": max((r["timestamp_ms"] for r in records), default=0),
             "frame_count": len(records),

@@ -26,6 +26,9 @@ AIC-HCMC-2026/
         ...
 ```
 
+The scripts also accept the flat layout where `keyframes/`, `metadata/`, and
+`PECore-features/` contain the video folders/files directly.
+
 Expected default path:
 
 ```bash
@@ -49,9 +52,9 @@ python scripts/ingest_embeddings_to_milvus.py --sample-root "D:\path\to\AIC2026_
 ```
 
 Minimum required folders for Search by Text:
-- `PECore-features/PECore-features`: precomputed PE-Core image embeddings (`.npy`)
-- `keyframes/keyframes`: frame images served through `/static/frames/...`
-- `metadata/metadata`: video metadata used for FPS and timestamps
+- `PECore-features/PECore-features` or `PECore-features`: precomputed PE-Core image embeddings (`.npy`)
+- `keyframes/keyframes` or `keyframes`: frame images served through `/static/frames/...`
+- `metadata/metadata` or `metadata`: video metadata used for FPS, timestamps, and YouTube IDs
 
 ## 2. Start databases
 
@@ -80,7 +83,8 @@ Defaults:
 - sample root: `../AIC2026_sample`
 - Milvus collection: `video_frames`
 - vector dim: `1280`
-- metric/index: `COSINE` + `HNSW`, `M=16`, `efConstruction=256`, search `ef=128`
+- metric/index: `COSINE` + `HNSW`, `M=16`, `efConstruction=256`
+- search `ef`: at least `256`, increased automatically when `top_k` is larger
 
 ## 5. Run backend
 
@@ -170,7 +174,7 @@ The check verifies:
 - vector dim is `1280`
 - required metadata: `frame_id`, `video_id`, `frame_number`, `timestamp_ms`
 - duplicate `frame_id`
-- missing image paths under `remote-server/static` or `../AIC2026_sample/keyframes`
+- missing image paths under `remote-server/static` or `../AIC2026_sample/keyframes[/keyframes]`
 
 ### Evaluate a query set
 
@@ -456,7 +460,7 @@ Response example:
 
 ```bash
 python scripts/smoke_search_queries.py \
-  --backend-url http://127.0.0.1:8000 \
+  --backend-url http://localhost:8000 \
   --query "người đàn ông đang phát biểu" \
   --top-k 10 \
   --timeout 30

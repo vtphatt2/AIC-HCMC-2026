@@ -21,12 +21,14 @@ REMOTE_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = REMOTE_ROOT.parent
 sys.path.insert(0, str(REMOTE_ROOT))
 
+from scripts.sample_paths import default_sample_root, sample_subdir
+
 logger = logging.getLogger("check_index_integrity")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Milvus video_frames index integrity.")
-    parser.add_argument("--sample-root", type=Path, default=REPO_ROOT / "AIC2026_sample")
+    parser.add_argument("--sample-root", type=Path, default=default_sample_root(REPO_ROOT))
     parser.add_argument("--static-root", type=Path, default=REMOTE_ROOT / "static")
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--max-missing-images", type=int, default=20)
@@ -68,7 +70,7 @@ def image_exists(image_url: str, static_root: Path, sample_root: Path) -> bool:
             return True
         parts = Path(relative).parts
         if len(parts) >= 3 and parts[0] == "frames":
-            sample_path = sample_root / "keyframes" / "keyframes" / Path(*parts[1:])
+            sample_path = sample_subdir(sample_root, "keyframes") / Path(*parts[1:])
             return sample_path.is_file()
         return False
 

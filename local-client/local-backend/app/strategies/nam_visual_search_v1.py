@@ -47,7 +47,13 @@ class NamVisualSearchV1(BaseStrategy):
             logger.warning("NamVisualSearchV1 received no frames from DataProvider")
             return []
 
-        grouped_candidates = self._group_candidates_by_query_step(frames, query_groups, videos)
+        candidate_limit = self.PER_STEP_CANDIDATES if len(query_groups) > 1 else len(frames)
+        grouped_candidates = self._group_candidates_by_query_step(
+            frames,
+            query_groups,
+            videos,
+            candidate_limit,
+        )
         if len(query_groups) == 1:
             return [candidate["result"] for candidate in grouped_candidates.get(0, [])]
 
@@ -58,6 +64,7 @@ class NamVisualSearchV1(BaseStrategy):
         frames: list[dict[str, Any]],
         query_groups: list[dict],
         videos: dict[str, dict],
+        candidate_limit: int,
     ) -> dict[int, list[dict[str, Any]]]:
         has_group_tags = any("_query_group_index" in frame for frame in frames)
         grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
@@ -83,7 +90,7 @@ class NamVisualSearchV1(BaseStrategy):
 
         for group_index, candidates in grouped.items():
             candidates.sort(key=lambda item: item["score"], reverse=True)
-            grouped[group_index] = candidates[: self.PER_STEP_CANDIDATES]
+            grouped[group_index] = candidates[:candidate_limit]
         return grouped
 
     def _temporal_fusion(
@@ -168,6 +175,7 @@ class NamVisualSearchV1(BaseStrategy):
         video = videos.get(frame.get("video_id"), {})
         return {
             "video_id": str(frame.get("video_id", "")),
+            "youtube_id": str(video.get("youtube_id") or ""),
             "frame_id": str(frame.get("frame_id", "")),
             "frame_number": int(frame.get("frame_number") or 0),
             "timestamp_ms": int(frame.get("timestamp_ms") or 0),

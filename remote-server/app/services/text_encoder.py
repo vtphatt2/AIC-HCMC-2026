@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,17 @@ class PECoreTextEncoder:
         if not text:
             raise ValueError("Semantic query is empty")
 
+        vector = self._cached_encode(text)
+        logger.info(
+            "[TIMER] text_encode %.3f ms device=%s text_len=%s",
+            (time.monotonic() - timer_start) * 1000,
+            self.config.device,
+            len(text),
+        )
+        return vector
+
+    @lru_cache(maxsize=128)
+    def _cached_encode(self, text: str):
         self._ensure_loaded()
         torch = self._torch
 
@@ -55,13 +67,6 @@ class PECoreTextEncoder:
                 f"PECore text encoder returned dim {vector.shape[0]}; "
                 f"expected {self.config.expected_dim}"
             )
-        logger.info(
-            "[TIMER] text_encode %.3f ms model_loaded=%s device=%s text_len=%s",
-            (time.monotonic() - timer_start) * 1000,
-            self._loaded,
-            self.config.device,
-            len(text),
-        )
         return vector
 
     def warmup(self, query: str = "warmup query") -> dict:

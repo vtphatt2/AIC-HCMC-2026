@@ -20,20 +20,22 @@ REMOTE_ROOT = SCRIPT_DIR.parent
 REPO_ROOT = REMOTE_ROOT.parent
 sys.path.insert(0, str(REMOTE_ROOT))
 
+from scripts.sample_paths import default_sample_root, sample_subdir
+
 logger = logging.getLogger("compare_linear_vs_milvus")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare linear PE-Core search with Milvus search.")
     parser.add_argument("--query", required=True, help="Semantic text query.")
-    parser.add_argument("--sample-root", type=Path, default=REPO_ROOT / "AIC2026_sample")
+    parser.add_argument("--sample-root", type=Path, default=default_sample_root(REPO_ROOT))
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--linear-pool", type=int, default=100)
     return parser.parse_args()
 
 
 def iter_feature_paths(sample_root: Path) -> list[tuple[str, Path]]:
-    features_dir = sample_root / "PECore-features" / "PECore-features"
+    features_dir = sample_subdir(sample_root, "PECore-features")
     if not features_dir.is_dir():
         raise FileNotFoundError(f"PE-Core features directory not found: {features_dir}")
 
