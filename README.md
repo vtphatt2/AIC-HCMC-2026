@@ -14,6 +14,7 @@ Team members develop and test retrieval strategies on their laptops against mock
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
+| [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | Sample ingestion, search, and validation |
 
 ---
 
@@ -44,10 +45,10 @@ AIC-HCMC-2026/
     │           ├── ResultGrid.tsx    # Confidence-sorted grid
     │           └── VideoModal.tsx    # YouTube player modal with live frame counter
     │
-    └── local-backend/           # Dev playground (ENV_MODE=MOCK or LOCAL)
+    └── local-backend/           # Dev playground (ENV_MODE=MOCK, SAMPLE, or LOCAL)
         ├── main.py
         └── app/
-            ├── data_provider.py      # MOCK: reads JSON  |  LOCAL: proxies to GPU server
+            ├── data_provider.py      # MOCK JSON | SAMPLE vectors | LOCAL proxy
             ├── mock/                 # 105 sample frames across 3 videos
             └── strategies/
                 ├── base_strategy.py  # Identical to server — copy strategies freely

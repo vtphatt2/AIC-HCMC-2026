@@ -29,13 +29,12 @@ AIC-HCMC-2026/
 The scripts also accept the flat layout where `keyframes/`, `metadata/`, and
 `PECore-features/` contain the video folders/files directly.
 
-Expected default path:
+The scripts auto-detect either:
 
-```bash
-../AIC2026_sample
+```text
+AIC-HCMC-2026/AIC2026_sample
+AIC2026_sample beside AIC-HCMC-2026
 ```
-
-from inside `remote-server/`.
 
 If the dataset is stored somewhere else, pass it explicitly:
 
@@ -80,7 +79,7 @@ python scripts/ingest_embeddings_to_milvus.py --copy-keyframes
 ```
 
 Defaults:
-- sample root: `../AIC2026_sample`
+- sample root: first existing `AIC2026_sample` inside or beside the repository
 - Milvus collection: `video_frames`
 - vector dim: `1280`
 - metric/index: `COSINE` + `HNSW`, `M=16`, `efConstruction=256`
@@ -251,6 +250,9 @@ Each frame is stored with:
 }
 ```
 
+`video_id` is the internal dataset identifier. Video metadata in PostgreSQL
+stores a separate `youtube_id` used by the frontend player.
+
 ## Milvus Collection
 
 Collection:
@@ -283,7 +285,7 @@ efConstruction = 256
 Search:
 
 ```python
-ef = 128
+ef = max(256, top_k)
 ```
 
 Milvus requires:
@@ -292,17 +294,9 @@ Milvus requires:
 ef >= top_k
 ```
 
-The backend therefore limits the internal Milvus visual candidate request to:
-
-```python
-top_k <= 128
-```
-
-This avoids:
-
-```text
-ef(128) should be larger than k(1000)
-```
+The API caps `top_k` at 1000. The Milvus search parameter grows with the
+requested result count, so requests above 256 remain valid without reducing
+the requested candidate pool.
 
 ## Index Integrity Validation
 
@@ -374,11 +368,14 @@ PE-Core model loading on CPU is slow.
 Observed timing:
 
 ```text
-model_load ≈ 96-139 seconds
-text_encode ≈ 0.8 seconds
+model_load: hardware and local model-cache dependent
+first unique query after warmup: typically dominated by one text encode
+repeated identical query: text embedding is served from a 128-entry memory cache
 ```
 
-The first text search request can timeout if the model has not been loaded.
+The cache stores the exact normalized embedding, so it improves repeated-query
+latency without changing retrieval scores. It is memory-only and resets when
+the backend restarts.
 
 ## Warmup Endpoint
 
@@ -399,11 +396,15 @@ Example response:
 ```json
 {
   "status": "ok",
-  "model_load_ms": 96921.0,
-  "encode_ms": 891.0,
+  "model_load_ms": 0.0,
+  "encode_ms": 200.0,
   "device": "cpu"
 }
 ```
+
+Actual values vary by CPU/GPU and whether the model was already loaded. Warmup
+encodes `"warmup query"`; the first different query still needs one text
+forward pass, while repeating that exact query uses the embedding cache.
 
 Recommendation:
 
@@ -442,6 +443,7 @@ Response example:
   "results": [
     {
       "video_id": "L01_V004",
+      "youtube_id": "YwRMKNp17ro",
       "frame_id": "L01_V004_002703",
       "frame_number": 2703,
       "timestamp_ms": 108120,

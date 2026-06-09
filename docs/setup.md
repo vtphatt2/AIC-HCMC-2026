@@ -94,6 +94,14 @@ Open http://localhost:3000. You should see the search UI with the strategy dropd
 
 ---
 
+## Optional — Local Sample Search (SAMPLE mode)
+
+To search local `AIC2026_sample` PE-Core vectors without Milvus/PostgreSQL,
+set `ENV_MODE=SAMPLE`. The dataset is detected inside or beside the repository;
+otherwise set `AIC_SAMPLE_ROOT`.
+
+---
+
 ## Option B — Local Backend Connected to GPU Server (LOCAL mode)
 
 Use this when you want to test strategies against real data from the GPU workstation.
@@ -169,7 +177,7 @@ MILVUS_PORT=19530
 MILVUS_COLLECTION=video_frames
 VECTOR_DIM=1280
 
-POSTGRES_URL=postgresql://aic2026:aic2026@localhost:5432/aic2026
+POSTGRES_URL=postgresql://aic2026:aic2026@localhost:15432/aic2026
 
 # Allow the contestant laptops to call this server
 CORS_ORIGINS=http://localhost:3000,https://your-ngrok-url.ngrok.io
@@ -267,7 +275,8 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENV_MODE` | `MOCK` | `MOCK`, `LOCAL`, or `SERVER` |
+| `ENV_MODE` | `MOCK` | `MOCK`, `SAMPLE`, or `LOCAL` |
+| `AIC_SAMPLE_ROOT` | auto-detected | Optional dataset path for `SAMPLE` mode |
 | `REMOTE_SERVER_URL` | _(empty)_ | Required when `ENV_MODE=LOCAL` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 

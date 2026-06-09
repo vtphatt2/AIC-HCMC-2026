@@ -4,7 +4,9 @@ The system uses two databases in production:
 - **PostgreSQL** — structured metadata: video info, per-frame OCR text, transcript intervals
 - **Milvus** — vector database: per-frame visual embeddings (1280-dim)
 
-In development (`ENV_MODE=MOCK`) both are replaced by JSON files in `local-client/local-backend/app/mock/`.
+In `ENV_MODE=MOCK`, both are replaced by JSON files in
+`local-client/local-backend/app/mock/`. In `ENV_MODE=SAMPLE`, the local backend
+reads metadata/keyframes and performs linear search over local PE-Core vectors.
 
 ---
 
@@ -16,9 +18,9 @@ One row per video.
 
 ```sql
 CREATE TABLE videos (
-    video_id     VARCHAR(64)  PRIMARY KEY,   -- YouTube video ID, e.g. "dQw4w9WgXcQ"
+    video_id     VARCHAR(64)  PRIMARY KEY,   -- internal dataset ID, e.g. "L01_V001"
     title        TEXT         NOT NULL,
-    youtube_id   VARCHAR(32)  NOT NULL,
+    youtube_id   VARCHAR(32)  NOT NULL,      -- YouTube ID, e.g. "JbYI8OEkFK4"
     fps          FLOAT        NOT NULL DEFAULT 25.0,
     duration_ms  BIGINT       NOT NULL,      -- total duration in milliseconds
     frame_count  INT          NOT NULL,      -- total extracted frames
@@ -33,7 +35,7 @@ One row per frame that contains readable text. Not every frame has an OCR row.
 ```sql
 CREATE TABLE ocr_frames (
     id           SERIAL       PRIMARY KEY,
-    frame_id     VARCHAR(128) NOT NULL UNIQUE,  -- e.g. "dQw4w9WgXcQ_000025"
+    frame_id     VARCHAR(128) NOT NULL UNIQUE,  -- e.g. "L01_V001_000022"
     video_id     VARCHAR(64)  NOT NULL REFERENCES videos(video_id),
     frame_number INT          NOT NULL,
     timestamp_ms BIGINT       NOT NULL,
@@ -77,7 +79,7 @@ CREATE INDEX idx_transcripts_interval ON transcripts(video_id, start_time_ms, en
 Example query — find all speech overlapping a given timestamp T:
 ```sql
 SELECT * FROM transcripts
-WHERE video_id = 'dQw4w9WgXcQ'
+WHERE video_id = 'L01_V001'
   AND start_time_ms <= 5000    -- T (ms)
   AND end_time_ms   >= 5000    -- T (ms)
 ORDER BY start_time_ms;
@@ -105,6 +107,7 @@ fields = [
     FieldSchema(name="video_id",     dtype=VARCHAR,       max_length=64),
     FieldSchema(name="frame_number", dtype=INT64),
     FieldSchema(name="timestamp_ms", dtype=INT64),
+    FieldSchema(name="image_url",    dtype=VARCHAR,       max_length=256),
     FieldSchema(name="vector",       dtype=FLOAT_VECTOR,  dim=1280),
 ]
 ```
@@ -128,11 +131,13 @@ index_params = {
 ```python
 search_params = {
     "metric_type": "COSINE",
-    "params": {"ef": 128}   # higher = more accurate but slower
+    "params": {"ef": max(256, top_k)}
 }
 ```
 
-COSINE similarity scores range from -1 to 1. Higher is more similar. Results are returned sorted descending by score.
+The backend caps `top_k` at 1000 and keeps `ef >= top_k`. COSINE similarity
+scores range from -1 to 1. Higher is more similar. Results are returned sorted
+descending by score.
 
 ### Relationship between Milvus and PostgreSQL
 
@@ -140,6 +145,7 @@ COSINE similarity scores range from -1 to 1. Higher is more similar. Results are
 - Only frames with visible text have a row in `ocr_frames`
 - `frame_id` is the join key between the two systems
 - `videos` is the authoritative source of `fps`, `duration_ms`, and `youtube_id`
+- `video_id` identifies dataset records; `youtube_id` is used only for YouTube playback
 
 ```
 Milvus: video_frames.frame_id  ──►  PostgreSQL: ocr_frames.frame_id
