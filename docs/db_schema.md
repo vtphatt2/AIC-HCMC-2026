@@ -131,13 +131,15 @@ index_params = {
 ```python
 search_params = {
     "metric_type": "COSINE",
-    "params": {"ef": max(256, top_k)}
+    "params": {
+        "ef": max(512 if top_k >= 50 else 256, top_k)
+    }
 }
 ```
 
-The backend caps `top_k` at 1000 and keeps `ef >= top_k`. COSINE similarity
-scores range from -1 to 1. Higher is more similar. Results are returned sorted
-descending by score.
+The backend caps `top_k` at 1000, uses `ef=512` for top-50 or deeper searches,
+and always keeps `ef >= top_k`. COSINE similarity scores range from -1 to 1.
+Higher is more similar. Results are returned sorted descending by score.
 
 ### Relationship between Milvus and PostgreSQL
 

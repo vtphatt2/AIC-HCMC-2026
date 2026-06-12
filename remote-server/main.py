@@ -54,6 +54,9 @@ async def lifespan(app: FastAPI):
 
     print("Loading DataProvider...")
     _data_provider = DataProvider()
+    if os.getenv("WARMUP_TEXT_ENCODER", "false").lower() in {"1", "true", "yes"}:
+        print("Warming up text encoder...")
+        await _data_provider.warmup_text_encoder()
 
     print("Discovering strategies...")
     _strategies = discover_strategies(_data_provider)
@@ -61,6 +64,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if _data_provider is not None:
+        _data_provider.close()
     await postgres_client.close_pool()
 
 
@@ -98,7 +103,13 @@ class SearchRequest(BaseModel):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "env_mode": os.getenv("ENV_MODE"), "strategies": len(_strategies)}
+    return {
+        "status": "ok",
+        "env_mode": os.getenv("ENV_MODE"),
+        "vector_search_backend": os.getenv("VECTOR_SEARCH_BACKEND", "milvus"),
+        "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
+        "strategies": len(_strategies),
+    }
 
 
 @app.get("/api/static-debug")
@@ -122,10 +133,7 @@ async def warmup_text_encoder():
 
     t0 = time.monotonic()
     try:
-        result = await asyncio.to_thread(
-            _data_provider.warmup_text_encoder,
-            "warmup query",
-        )
+        result = await _data_provider.warmup_text_encoder("warmup query")
     except Exception as exc:
         logger.info(
             "[TIMER] warmup_text_encoder %.3f ms status=error error=%s",

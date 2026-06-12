@@ -1,0 +1,5 @@
+--extra-index-url https://pypi.nvidia.com
+
+-r requirements.txt
+cuvs-cu13==26.6.0
+cupy-cuda13x[ctk]==14.1.1

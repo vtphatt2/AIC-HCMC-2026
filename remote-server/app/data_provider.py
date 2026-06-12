@@ -2,17 +2,20 @@ import asyncio
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 from app.db import milvus_client, postgres_client
 from app.services.text_encoder import PECoreTextEncoder
 
 ENV_MODE = os.getenv("ENV_MODE", "SERVER")
+VECTOR_SEARCH_BACKEND = os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower()
 logger = logging.getLogger(__name__)
 
 
 class DataProvider:
     """
-    SERVER mode: reads directly from local Milvus and PostgreSQL using native SDKs.
-    This gives maximum speed and zero network latency during competition.
+    SERVER mode: reads vectors from Milvus or CAGRA and metadata from PostgreSQL.
+    All services run locally to avoid network latency during competition.
 
     The interface is identical to the local-client DataProvider so strategy files
     can be copied to this server without changing a single line.
@@ -25,9 +28,36 @@ class DataProvider:
             )
         self._collection = milvus_client.get_collection()
         self._text_encoder = PECoreTextEncoder()
+        self._text_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="text-encoder",
+        )
+        self._cagra = None
+        if VECTOR_SEARCH_BACKEND == "cagra":
+            from app.db.cagra_client import CagraClient
 
-    def warmup_text_encoder(self, query: str = "warmup query") -> dict:
-        return self._text_encoder.warmup(query)
+            self._cagra = CagraClient()
+        elif VECTOR_SEARCH_BACKEND != "milvus":
+            raise ValueError("VECTOR_SEARCH_BACKEND must be 'milvus' or 'cagra'")
+
+    async def warmup_text_encoder(self, query: str = "warmup query") -> dict:
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._text_executor,
+            self._text_encoder.warmup,
+            query,
+        )
+
+    async def _encode_text(self, text: str):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._text_executor,
+            self._text_encoder.encode,
+            text,
+        )
+
+    def close(self) -> None:
+        self._text_executor.shutdown(wait=False)
 
     async def get_raw_data(self, query_groups: list[dict], limit: int = 1000) -> dict:
         """
@@ -45,13 +75,21 @@ class DataProvider:
             text_query = group.get("text_query", "").strip()
 
             if semantic_query:
-                query_vector = await asyncio.to_thread(self._text_encoder.encode, semantic_query)
+                query_vector = await self._encode_text(semantic_query)
                 search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
-                hits = milvus_client.vector_search(self._collection, query_vector.tolist(), top_k=search_limit)
+                if self._cagra is None:
+                    hits = milvus_client.vector_search(
+                        self._collection,
+                        query_vector.tolist(),
+                        top_k=search_limit,
+                    )
+                else:
+                    hits = self._cagra.search(query_vector, top_k=search_limit)
                 logger.info(
-                    "[TIMER] milvus_search %.3f ms group=%s top_k=%s hits=%s",
+                    "[TIMER] vector_search %.3f ms backend=%s group=%s top_k=%s hits=%s",
                     (time.monotonic() - timer_start) * 1000,
+                    VECTOR_SEARCH_BACKEND,
                     group_index,
                     search_limit,
                     len(hits),
@@ -61,7 +99,12 @@ class DataProvider:
                 frames.extend(hits)
                 all_frame_ids.update(h["frame_id"] for h in hits)
                 all_video_ids.update(h["video_id"] for h in hits)
-                logger.info("Milvus semantic query group=%s returned %s hits", group_index, len(hits))
+                logger.info(
+                    "%s semantic query group=%s returned %s hits",
+                    VECTOR_SEARCH_BACKEND,
+                    group_index,
+                    len(hits),
+                )
 
             # OCR / transcript text search
             if text_query:
@@ -88,6 +131,10 @@ class DataProvider:
         # Fetch video metadata for all referenced videos
         video_rows = await postgres_client.fetch_video_metadata(list(all_video_ids))
         videos = {v["video_id"]: dict(v) for v in video_rows}
+        for frame in frames:
+            if frame.pop("_timestamp_from_fps", False):
+                fps = float(videos.get(frame["video_id"], {}).get("fps") or 25.0)
+                frame["timestamp_ms"] = int(frame["frame_number"] / fps * 1000)
 
         # DataProvider applies limit per query group above. Keep all groups here
         # so temporal strategies do not lose later-step candidates.

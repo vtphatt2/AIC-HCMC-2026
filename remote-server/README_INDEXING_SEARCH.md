@@ -83,7 +83,7 @@ Defaults:
 - Milvus collection: `video_frames`
 - vector dim: `1280`
 - metric/index: `COSINE` + `HNSW`, `M=16`, `efConstruction=256`
-- search `ef`: at least `256`, increased automatically when `top_k` is larger
+- search `ef`: `256` below top-50, `512` from top-50, and always at least `top_k`
 
 ## 5. Run backend
 
@@ -91,6 +91,41 @@ Defaults:
 cd remote-server
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+### Optional CUDA 13 CAGRA search
+
+HNSW remains the default. On an NVIDIA GPU with CUDA 13 support, CAGRA can use
+the same API and strategies without changing the frontend.
+It runs through cuVS in the Python backend, so the existing Milvus Docker image
+does not need GPU or CUDA changes.
+
+Stop the backend, install the optional dependencies, and build the ignored
+local index:
+
+```bash
+pip install -r requirements-cagra.txt
+python scripts/build_cagra_index.py
+```
+
+Then set:
+
+```env
+VECTOR_SEARCH_BACKEND=cagra
+PECORE_DEVICE=cuda
+PECORE_PRECISION=fp16
+WARMUP_TEXT_ENCODER=true
+CAGRA_SEARCH_WIDTH=32
+```
+
+Start the backend normally. Startup waits for the text encoder warmup, so the
+first search does not pay model-loading and initial CUDA setup costs.
+`/api/health` reports the selected search backend and encoder precision.
+PostgreSQL and Milvus still run because OCR, transcript, and temporal text
+workflows use the existing databases.
+
+Use `VECTOR_SEARCH_BACKEND=milvus` to return to HNSW. CAGRA artifacts are stored
+under `remote-server/cache/` and are not committed. Rebuild them after changing
+the cuVS version because its serialized index format is experimental.
 
 For local-client proxy mode, set `local-client/local-backend/.env`:
 
@@ -150,6 +185,9 @@ This validates HNSW search quality against brute-force search over `AIC2026_samp
 cd remote-server
 python scripts/compare_linear_vs_milvus.py --query "a busy street with people" --top-k 10
 ```
+
+Add `--include-cagra` after preparing the optional CAGRA index to compare all
+three result sets with the same query embedding.
 
 Read the output:
 - `overlap@5` and `overlap@10`: how many frame IDs match between exact linear search and Milvus HNSW in the top results.
@@ -285,7 +323,8 @@ efConstruction = 256
 Search:
 
 ```python
-ef = max(256, top_k)
+base_ef = 512 if top_k >= 50 else 256
+ef = max(base_ef, top_k)
 ```
 
 Milvus requires:
@@ -294,9 +333,8 @@ Milvus requires:
 ef >= top_k
 ```
 
-The API caps `top_k` at 1000. The Milvus search parameter grows with the
-requested result count, so requests above 256 remain valid without reducing
-the requested candidate pool.
+The API caps `top_k` at 1000. Deeper result sets use a broader HNSW search for
+better recall, and `ef` still grows when `top_k` exceeds 512.
 
 ## Index Integrity Validation
 
@@ -403,13 +441,16 @@ Example response:
 ```
 
 Actual values vary by CPU/GPU and whether the model was already loaded. Warmup
-encodes `"warmup query"`; the first different query still needs one text
-forward pass, while repeating that exact query uses the embedding cache.
+performs ten uncached text forward passes on the same dedicated worker used
+by searches. This settles initial CUDA execution and wakes an idle GPU instead
+of returning the cached `"warmup query"` embedding.
 
 Recommendation:
 
 ```text
-Warm up the backend immediately after server start.
+Set WARMUP_TEXT_ENCODER=true for demo and competition servers. Call the warmup
+endpoint again immediately before a latency-sensitive demo if the GPU has been
+idle for a long time.
 ```
 
 ## Search API
@@ -502,6 +543,7 @@ Purpose:
 Completed:
 - PE-Core text encoder
 - Milvus HNSW index
+- optional cuVS CAGRA index
 - embedding ingestion
 - Search by Text API
 - warmup endpoint

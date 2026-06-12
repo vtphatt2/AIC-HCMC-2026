@@ -231,6 +231,7 @@ volumes/
 # Dataset and generated frame assets (large local data, not committed)
 AIC2026_sample/
 remote-server/static/frames/
+remote-server/cache/
 static/frames/
 **/keyframes/
 **/PECore-features/

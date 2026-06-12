@@ -14,6 +14,8 @@ METRIC_TYPE = "COSINE"
 INDEX_TYPE = "HNSW"
 INDEX_PARAMS = {"M": 16, "efConstruction": 256}
 SEARCH_PARAMS = {"ef": 256}
+DEEP_SEARCH_TOP_K = 50
+DEEP_SEARCH_EF = 512
 
 
 def connect() -> None:
@@ -93,7 +95,8 @@ def upsert_frame_vectors(collection: Collection, records: list[dict[str, Any]]) 
 
 def vector_search(collection: Collection, query_vector: list[float], top_k: int = 100) -> list[dict]:
     top_k = max(1, int(top_k))
-    search_params = {"ef": max(int(SEARCH_PARAMS["ef"]), top_k)}
+    base_ef = DEEP_SEARCH_EF if top_k >= DEEP_SEARCH_TOP_K else int(SEARCH_PARAMS["ef"])
+    search_params = {"ef": max(base_ef, top_k)}
     results = collection.search(
         data=[query_vector],
         anns_field="vector",
