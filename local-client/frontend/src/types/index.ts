@@ -10,7 +10,12 @@ export interface QueryGroup {
   semanticQuery: string;
   textQuery: string;
   temporalOffsetMs: number;  // ms after the previous group's result — 0 for the first group
-  translateSemantic: boolean; // show translate toggle state in UI (actual translation TBD)
+  translateSemantic: boolean;
+  translatedQuery: string;
+}
+
+export interface TranslationResponse {
+  translations: string[];
 }
 
 export interface SearchResult {

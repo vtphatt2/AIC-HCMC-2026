@@ -18,10 +18,12 @@ load_dotenv(override=True)
 from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
+from app.services.translation import TranslationService
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
+_translation_service = TranslationService()
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +59,17 @@ async def lifespan(app: FastAPI):
     if os.getenv("WARMUP_TEXT_ENCODER", "false").lower() in {"1", "true", "yes"}:
         print("Warming up text encoder...")
         await _data_provider.warmup_text_encoder()
+    if os.getenv("WARMUP_TRANSLATION", "false").lower() in {"1", "true", "yes"}:
+        print("Warming up translation...")
+        provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
+        try:
+            await asyncio.to_thread(
+                _translation_service.translate,
+                ["khởi động"],
+                provider,
+            )
+        except Exception:
+            logger.exception("Translation warmup failed provider=%s", provider)
 
     print("Discovering strategies...")
     _strategies = discover_strategies(_data_provider)
@@ -97,6 +110,10 @@ class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
     top_k: int = 100
+
+
+class TranslationRequest(BaseModel):
+    texts: list[str]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -164,6 +181,24 @@ async def list_strategies():
         }
         for sid, s in _strategies.items()
     ]
+
+
+@app.post("/api/translate")
+async def translate(req: TranslationRequest):
+    provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
+    try:
+        translations = await asyncio.to_thread(
+            _translation_service.translate,
+            req.texts,
+            provider,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        logger.exception("Translation failed provider=%s", provider)
+        raise HTTPException(502, f"Translation failed: {exc}")
+
+    return {"translations": translations}
 
 
 @app.post("/api/search")

@@ -55,14 +55,20 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
             type="text"
             placeholder="Semantic search (visual scene description)…"
             value={group.semanticQuery}
-            onChange={(e) => update({ semanticQuery: e.target.value })}
+            onChange={(e) => update({
+              semanticQuery: e.target.value,
+              translatedQuery: "",
+            })}
             className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        {/* Google Translate toggle */}
+        {/* Translation toggle */}
         <button
           title={group.translateSemantic ? "Translate ON (query will be translated to English)" : "Translate OFF"}
-          onClick={() => update({ translateSemantic: !group.translateSemantic })}
+          onClick={() => update({
+            translateSemantic: !group.translateSemantic,
+            translatedQuery: "",
+          })}
           className={`px-3 py-2 rounded-lg text-sm font-medium border transition ${
             group.translateSemantic
               ? "bg-blue-600 border-blue-500 text-white"
@@ -72,6 +78,13 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
           VI→EN
         </button>
       </div>
+
+      {group.translateSemantic && group.translatedQuery && (
+        <div className="border-l-2 border-blue-500 pl-3">
+          <p className="text-xs text-slate-500">English query</p>
+          <p className="text-sm text-blue-200 break-words">{group.translatedQuery}</p>
+        </div>
+      )}
 
       {/* OCR / Transcript text search box */}
       <input

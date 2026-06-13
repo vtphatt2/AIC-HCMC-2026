@@ -1,4 +1,9 @@
-import type { Strategy, QueryGroup, SearchResponse } from "@/types";
+import type {
+  Strategy,
+  QueryGroup,
+  SearchResponse,
+  TranslationResponse,
+} from "@/types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -12,11 +17,26 @@ export async function fetchStrategies(): Promise<Strategy[]> {
   return res.json();
 }
 
+export async function translateTexts(texts: string[]): Promise<TranslationResponse> {
+  const res = await fetch(apiUrl("/api/translate"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ texts }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Translation failed");
+  }
+
+  return res.json();
+}
+
 export async function runSearch(strategyId: string, queryGroups: QueryGroup[], topK: number): Promise<SearchResponse> {
   const payload = {
     strategy_id: strategyId,
     query_groups: queryGroups.map(g => ({
-      semantic_query: g.semanticQuery,
+      semantic_query: g.translateSemantic ? g.translatedQuery : g.semanticQuery,
       text_query: g.textQuery,
       temporal_offset_ms: g.temporalOffsetMs
     })),

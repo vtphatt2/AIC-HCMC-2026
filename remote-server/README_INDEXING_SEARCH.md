@@ -127,6 +127,40 @@ Use `VECTOR_SEARCH_BACKEND=milvus` to return to HNSW. CAGRA artifacts are stored
 under `remote-server/cache/` and are not committed. Rebuild them after changing
 the cuVS version because its serialized index format is experimental.
 
+### Optional Vietnamese-to-English translation
+
+The search UI can translate selected semantic queries before sending them to
+PE-Core. The provider is configured on the backend and is not exposed in the
+UI. Queries are not saved to a database or disk; translated results use a small
+in-process cache and otherwise remain in the current browser session.
+
+Configure the ignored `remote-server/.env`:
+
+```env
+GOOGLE_CLOUD_PROJECT=your-project-id
+GEMINI_API_KEY=your-key
+GEMINI_TRANSLATION_MODEL=gemini-3.1-flash-lite
+TRANSLATION_PROVIDER=nmt
+WARMUP_TRANSLATION=true
+```
+
+Cloud Translation uses Application Default Credentials:
+
+```bash
+gcloud auth application-default login
+gcloud auth application-default set-quota-project your-project-id
+```
+
+The UI uses the same endpoint regardless of the configured provider:
+
+```http
+POST /api/translate
+{"texts":["một người đang đi bộ"]}
+```
+
+`WARMUP_TRANSLATION=true` performs one translation during startup so the first
+user search does not pay client initialization and connection setup costs.
+
 For local-client proxy mode, set `local-client/local-backend/.env`:
 
 ```env

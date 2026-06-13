@@ -1,6 +1,11 @@
 import { useState, useEffect } from "react";
-import type { Strategy, QueryGroup, SearchResult, SearchResponse } from "@/types";
-import { fetchStrategies, runSearch } from "@/lib/api";
+import type {
+  Strategy,
+  QueryGroup,
+  SearchResult,
+  SearchResponse,
+} from "@/types";
+import { fetchStrategies, runSearch, translateTexts } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import ResultGrid from "@/components/ResultGrid";
 import VideoModal from "@/components/VideoModal";
@@ -10,6 +15,7 @@ const DEFAULT_GROUP: QueryGroup = {
   textQuery: "",
   temporalOffsetMs: 5000,
   translateSemantic: false,
+  translatedQuery: "",
 };
 
 export default function Home() {
@@ -23,6 +29,7 @@ export default function Home() {
   const [collapsed, setCollapsed] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
 
@@ -63,8 +70,32 @@ export default function Home() {
 
     setError(null);
     setLoading(true);
+    setLoadingLabel("Searching…");
     try {
-      const res = await runSearch(selectedStrategy, queryGroups, topK);
+      const groupsForSearch = queryGroups.map((group) => ({ ...group }));
+      const pendingIndices = groupsForSearch
+        .map((group, index) => ({ group, index }))
+        .filter(({ group }) =>
+          group.translateSemantic &&
+          group.semanticQuery.trim() &&
+          !group.translatedQuery
+        )
+        .map(({ index }) => index);
+
+      if (pendingIndices.length > 0) {
+        setLoadingLabel("Translating…");
+        const translation = await translateTexts(
+          pendingIndices.map((index) => groupsForSearch[index].semanticQuery),
+        );
+        pendingIndices.forEach((groupIndex, translationIndex) => {
+          groupsForSearch[groupIndex].translatedQuery =
+            translation.translations[translationIndex];
+        });
+        setQueryGroups(groupsForSearch);
+      }
+
+      setLoadingLabel("Searching…");
+      const res = await runSearch(selectedStrategy, groupsForSearch, topK);
       setResponse(res);
     } catch (err: any) {
       setError(err.message || "Search failed.");
@@ -162,7 +193,7 @@ export default function Home() {
               disabled={loading}
               className="px-5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg text-sm transition"
             >
-              {loading ? "Searching…" : "Search"}
+              {loading ? loadingLabel : "Search"}
             </button>
           </div>
 
