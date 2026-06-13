@@ -22,6 +22,7 @@ export default function VideoModal({ result, onClose }: Props) {
 
   // Live playback position — updated by the polling interval below
   const [currentTimeSec, setCurrentTimeSec] = useState(startSeconds);
+  const [playerReady, setPlayerReady] = useState(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
 
   // Close on Escape
@@ -42,6 +43,7 @@ export default function VideoModal({ result, onClose }: Props) {
         playerVars: { autoplay: 1, rel: 0, start: Math.floor(startSeconds) },
         events: {
           onReady: (event: any) => {
+            setPlayerReady(true);
             event.target.seekTo(startSeconds, true);
             event.target.playVideo();
           },
@@ -98,8 +100,19 @@ export default function VideoModal({ result, onClose }: Props) {
         </button>
 
         {/* 16:9 aspect ratio wrapper */}
-        <div className="relative w-full" style={{ paddingTop: "56.25%" }}>
-          <div ref={containerRef} className="absolute inset-0 w-full h-full" />
+        <div className="relative w-full bg-black" style={{ paddingTop: "56.25%" }}>
+          {!playerReady && (
+            <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">
+              Loading video…
+            </div>
+          )}
+          <div
+            className={`absolute inset-0 transition-opacity ${
+              playerReady ? "opacity-100" : "opacity-0"
+            }`}
+          >
+            <div ref={containerRef} className="w-full h-full" />
+          </div>
         </div>
 
         {/* Live info bar — updates as the video plays */}

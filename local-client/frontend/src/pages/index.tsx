@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import Head from "next/head";
+import Script from "next/script";
 import type {
   Strategy,
   QueryGroup,
@@ -28,6 +30,7 @@ export default function Home() {
   const [topK, setTopK] = useState<number>(100);
   const [collapsed, setCollapsed] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
+  const [totalTimeMs, setTotalTimeMs] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +74,7 @@ export default function Home() {
     setError(null);
     setLoading(true);
     setLoadingLabel("Searching…");
+    const started = performance.now();
     try {
       const groupsForSearch = queryGroups.map((group) => ({ ...group }));
       const pendingIndices = groupsForSearch
@@ -96,6 +100,7 @@ export default function Home() {
 
       setLoadingLabel("Searching…");
       const res = await runSearch(selectedStrategy, groupsForSearch, topK);
+      setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
     } catch (err: any) {
       setError(err.message || "Search failed.");
@@ -113,6 +118,15 @@ export default function Home() {
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-slate-900 text-slate-200" onKeyDown={handleKeyDown}>
+      <Head>
+        <link rel="preconnect" href="https://www.youtube.com" />
+        <link rel="preconnect" href="https://www.google.com" />
+      </Head>
+      <Script
+        id="yt-iframe-api"
+        src="https://www.youtube.com/iframe_api"
+        strategy="afterInteractive"
+      />
 
       {/* ── Sticky top block: header + search panel ── */}
       <div className="sticky top-0 z-30 bg-slate-900 border-b border-slate-700 shadow-lg shadow-black/40">
@@ -229,7 +243,7 @@ export default function Home() {
           <ResultGrid
             results={response.results}
             total={response.total}
-            executionTimeMs={response.execution_time_ms}
+            executionTimeMs={totalTimeMs}
             onCardClick={(r) => setActiveResult(r)}
           />
         )}

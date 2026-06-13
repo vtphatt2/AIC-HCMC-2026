@@ -17,7 +17,7 @@ export default function ResultGrid({ results, total, executionTimeMs, onCardClic
           <span className="text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
-        <span>
+        <span title="Total time including translation and search">
           <span className="text-white font-semibold">{executionTimeMs}</span> ms
         </span>
       </div>
