@@ -79,6 +79,56 @@ Use Option A, SAMPLE mode, and Option B only for their specific development
 workflows. The sections below contain first-time setup and troubleshooting
 details.
 
+### Teammate Frontend-Only Access
+
+If one machine hosts `remote-server`, teammates do not need the dataset,
+Milvus, PostgreSQL, CAGRA, or Google credentials on their laptops. They can run
+only the frontend and point it to the host backend.
+
+On the host machine:
+
+```bash
+cd remote-server
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Find the host machine's LAN IP, then make sure `CORS_ORIGINS` in
+`remote-server/.env` allows the frontend origin, for example:
+
+```env
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+```
+
+On the teammate machine:
+
+```bash
+cd local-client/frontend
+npm install
+cp .env.local.example .env.local
+```
+
+Set:
+
+```env
+NEXT_PUBLIC_API_URL=http://<host-ip>:8000
+```
+
+Then run:
+
+```bash
+npm run dev
+```
+
+Check the connection from the teammate machine:
+
+```bash
+curl http://<host-ip>:8000/api/health
+```
+
+Both machines should be on the same network. For different networks, use a
+tunnel such as Ngrok, Tailscale, VPN, or Cloudflare Tunnel and set
+`NEXT_PUBLIC_API_URL` to the tunnel URL.
+
 ---
 
 ## Prerequisites
