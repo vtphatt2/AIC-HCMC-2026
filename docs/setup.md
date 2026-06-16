@@ -1,5 +1,84 @@
 # Setup Guide
 
+## Choose Your Setup
+
+| Goal | Backend | Data source | Section |
+|---|---|---|---|
+| Full demo on one GPU machine | `remote-server` | CAGRA/HNSW + PostgreSQL | **Recommended Full Demo** |
+| UI or strategy smoke test | `local-backend` | Mock JSON | Option A |
+| Search sample vectors without Docker | `local-backend` | `AIC2026_sample` | SAMPLE mode |
+| Develop against another GPU server | `local-backend` | Remote raw-data proxy | Option B |
+
+For the current complete demo with **CAGRA + Google NMT**, use the recommended
+path below. You do not need `local-client/local-backend`.
+
+## Recommended Full Demo
+
+This runs all components on one GPU machine:
+
+```text
+Next.js frontend :3000
+        |
+        v
+remote-server :8000
+  +-- Google NMT
+  +-- PE-Core + CAGRA
+  +-- PostgreSQL + Milvus
+```
+
+Complete Option C once for environment configuration, dataset ingestion, and
+CAGRA index creation. For normal demo startup after that:
+
+### 1. Start databases
+
+```bash
+cd remote-server
+docker compose up -d
+docker compose ps
+```
+
+Wait until MinIO is healthy and the other services are `Up`.
+
+### 2. Start the remote backend
+
+```bash
+cd remote-server
+source .venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Verify the active configuration:
+
+```bash
+curl http://localhost:8000/api/health
+```
+
+For CAGRA, the response should report `"vector_search_backend":"cagra"` and
+`"pecore_device":"cuda"` with `"pecore_precision":"fp16"`. With
+`TRANSLATION_PROVIDER=nmt`, the VI→EN toggle uses Google NMT.
+
+### 3. Start the frontend
+
+In a second terminal:
+
+```bash
+cd local-client/frontend
+npm install
+npm run dev
+```
+
+Ensure `local-client/frontend/.env.local` contains:
+
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+Open http://localhost:3000.
+
+Use Option A, SAMPLE mode, and Option B only for their specific development
+workflows. The sections below contain first-time setup and troubleshooting
+details.
+
 ---
 
 ## Prerequisites
@@ -92,6 +171,10 @@ npm run dev
 
 Open http://localhost:3000. You should see the search UI with the strategy dropdown populated.
 
+This MOCK setup is for UI and strategy development. The VI→EN endpoint is
+provided by `remote-server`; point `NEXT_PUBLIC_API_URL` to that server for the
+complete translation and GPU-search demo.
+
 ---
 
 ## Optional — Local Sample Search (SAMPLE mode)
@@ -182,6 +265,43 @@ POSTGRES_URL=postgresql://aic2026:aic2026@localhost:15432/aic2026
 # Allow the contestant laptops to call this server
 CORS_ORIGINS=http://localhost:3000,https://your-ngrok-url.ngrok.io
 ```
+
+The portable default is Milvus HNSW. For the optional CAGRA GPU path:
+
+```bash
+pip install -r requirements-cagra.txt
+python scripts/build_cagra_index.py
+```
+
+Then add:
+
+```env
+VECTOR_SEARCH_BACKEND=cagra
+PECORE_DEVICE=cuda
+PECORE_PRECISION=fp16
+WARMUP_TEXT_ENCODER=true
+```
+
+CAGRA is CUDA-only. On an Apple silicon MacBook, use Milvus HNSW with MPS text
+encoding instead:
+
+```env
+VECTOR_SEARCH_BACKEND=milvus
+PECORE_DEVICE=mps
+PECORE_PRECISION=fp32
+```
+
+For optional Vietnamese or mixed-language translation through Google NMT:
+
+```env
+GOOGLE_CLOUD_PROJECT=your-project-id
+TRANSLATION_PROVIDER=nmt
+WARMUP_TRANSLATION=true
+```
+
+Application Default Credentials must be configured on the server. Gemini is
+also supported through backend configuration; see
+`remote-server/README_INDEXING_SEARCH.md`.
 
 Start the server:
 ```bash
@@ -289,12 +409,18 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `MILVUS_PORT` | `19530` | Milvus port |
 | `MILVUS_COLLECTION` | `video_frames` | Milvus collection name |
 | `VECTOR_DIM` | `1280` | Embedding dimension (PE-Core-bigG-14-448) |
+| `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus` for HNSW or `cagra` for cuVS GPU search |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-| `PECORE_DEVICE` | `cpu` | Set to `cuda` on a CUDA-capable server |
+| `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
+| `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
+| `WARMUP_TEXT_ENCODER` | `false` | Load and warm PE-Core during startup |
+| `TRANSLATION_PROVIDER` | `nmt` | Backend translation provider: `nmt` or `gemini` |
+| `WARMUP_TRANSLATION` | `false` | Initialize translation during startup |
+| `GOOGLE_CLOUD_PROJECT` | _(empty)_ | Required for Google Cloud NMT |
 
 ### `local-client/frontend/.env.local`
 
 | Variable | Default | Description |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | Local backend URL |
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | FastAPI backend used by the frontend |

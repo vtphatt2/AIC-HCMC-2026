@@ -119,13 +119,27 @@ CAGRA_SEARCH_WIDTH=32
 
 Start the backend normally. Startup waits for the text encoder warmup, so the
 first search does not pay model-loading and initial CUDA setup costs.
-`/api/health` reports the selected search backend and encoder precision.
+`/api/health` reports the selected search backend, encoder device, and encoder
+precision.
 PostgreSQL and Milvus still run because OCR, transcript, and temporal text
 workflows use the existing databases.
 
 Use `VECTOR_SEARCH_BACKEND=milvus` to return to HNSW. CAGRA artifacts are stored
 under `remote-server/cache/` and are not committed. Rebuild them after changing
 the cuVS version because its serialized index format is experimental.
+
+### Optional Apple silicon MPS text encoding
+
+On a MacBook with Apple silicon, PyTorch MPS can accelerate PE-Core text
+encoding while Milvus HNSW still handles vector search:
+
+```env
+VECTOR_SEARCH_BACKEND=milvus
+PECORE_DEVICE=mps
+PECORE_PRECISION=fp32
+```
+
+CAGRA remains CUDA-only and should not be enabled on MPS.
 
 ### Optional Vietnamese-to-English translation
 

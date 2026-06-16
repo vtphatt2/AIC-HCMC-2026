@@ -1,8 +1,11 @@
 # AIC HCMC 2026 — Video Retrieval System
 
-A dual-mode video retrieval playground for the **Ho Chi Minh City AI Challenge 2026** (Video Browser Showdown format).
+A video retrieval playground for the **Ho Chi Minh City AI Challenge 2026**
+(Video Browser Showdown format), with lightweight local development modes and a
+GPU-backed production mode.
 
-Team members develop and test retrieval strategies on their laptops against mock data, then promote the same files—unchanged—to the GPU server for competition.
+Team members can develop against mock or sample data, proxy to the GPU server,
+or run the complete PE-Core retrieval pipeline directly on the server.
 
 ---
 
@@ -14,7 +17,10 @@ Team members develop and test retrieval strategies on their laptops against mock
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
-| [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | Sample ingestion, search, and validation |
+| [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | PE-Core ingestion, HNSW/CAGRA, translation, validation, and performance |
+
+For a fast handoff, read `README.md` → `docs/architecture.md` →
+`docs/setup.md` → `remote-server/README_INDEXING_SEARCH.md`.
 
 ---
 
@@ -28,8 +34,12 @@ AIC-HCMC-2026/
 │   ├── main.py                  # FastAPI entry point
 │   └── app/
 │       ├── db/
-│       │   ├── milvus_client.py      # HNSW vector index, 1280-dim COSINE
+│       │   ├── milvus_client.py      # Milvus HNSW search
+│       │   ├── cagra_client.py       # Optional cuVS CAGRA GPU search
 │       │   └── postgres_client.py    # DDL, OCR full-text, transcript interval queries
+│       ├── services/
+│       │   ├── text_encoder.py       # PE-Core text encoder + cache
+│       │   └── translation.py        # Optional VI/mixed → English translation
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/
 │           ├── base_strategy.py      # Abstract base — guardrails live here
@@ -59,7 +69,12 @@ AIC-HCMC-2026/
 
 ## The Core Idea in One Paragraph
 
-Every retrieval strategy is a single Python file that subclasses `BaseStrategy` and implements one method: `fusion_and_temporal()`. That method receives raw multi-modal data (visual vectors, OCR text, transcript intervals) already fetched from the database, and returns a ranked list of frames. A `DataProvider` abstraction handles *where* that data comes from—local mock JSON files during development, or live Milvus/PostgreSQL on the GPU server during competition—without touching the strategy file at all.
+Every retrieval strategy is a Python file that subclasses `BaseStrategy` and
+implements `fusion_and_temporal()`. It receives visual-search results, OCR,
+transcripts, and video metadata through a common `DataProvider` interface.
+Local modes use mock/sample data or proxy to the server. Production mode uses
+PE-Core text embeddings with Milvus HNSW or optional cuVS CAGRA, plus
+PostgreSQL for metadata and text retrieval.
 
 ---
 
@@ -107,10 +122,11 @@ See [docs/strategy_guide.md](docs/strategy_guide.md) for full details.
 
 | Layer | Technology |
 |---|---|
-| Visual embeddings | `timm/PE-Core-bigG-14-448` — 1280-dim vectors |
-| Vector DB | Milvus 2.3 — HNSW index, COSINE metric |
+| Visual embeddings | `timm/PE-Core-bigG-14-448` on CPU, CUDA, or Apple MPS |
+| Visual search | Milvus HNSW by default; optional cuVS CAGRA on NVIDIA GPU |
 | Text DB | PostgreSQL 15 — full-text OCR + interval transcripts |
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
 | Video player | YouTube IFrame API |
+| Translation | Optional Google Cloud NMT or Gemini, configured on the backend |
 | Local transport | HTTP via `httpx` (LOCAL mode) |

@@ -2,41 +2,34 @@
 
 ## Overview
 
-The system has two deployment targets that share the same strategy code:
+The frontend calls one FastAPI backend selected through
+`NEXT_PUBLIC_API_URL`. For the full demo it calls `remote-server` directly.
+For local strategy development it calls `local-client/local-backend`.
 
+```mermaid
+flowchart LR
+    UI[Next.js frontend]
+    LB[Local backend]
+    RB[Remote server]
+    MOCK[Mock JSON]
+    SAMPLE[AIC sample vectors]
+    SEARCH[PE-Core + HNSW or CAGRA]
+    TEXT[PostgreSQL]
+    TRANS[Optional VI/mixed to English]
+
+    UI -->|Local development| LB
+    LB -->|MOCK| MOCK
+    LB -->|SAMPLE| SAMPLE
+    LB -->|LOCAL raw-data proxy| RB
+    UI -->|Full demo| RB
+    RB --> TRANS
+    RB --> SEARCH
+    RB --> TEXT
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│  Contestant's Laptop                                               │
-│                                                                    │
-│  ┌──────────────────┐      HTTP       ┌────────────────────────┐  │
-│  │  Next.js Frontend│ ──────────────► │  Local Backend         │  │
-│  │  localhost:3000   │ ◄────────────── │  FastAPI :8000         │  │
-│  └──────────────────┘   JSON results  │                        │  │
-│                                       │  DataProvider          │  │
-│                                       │  ┌──────────────────┐  │  │
-│                                       │  │ MOCK mode        │  │  │
-│                                       │  │ reads mock/*.json│  │  │
-│                                       │  └──────────────────┘  │  │
-│                                       │  ┌──────────────────┐  │  │
-│                                       │  │ LOCAL mode       │  │  │
-│                                       │  │ proxies → Server │  │  │
-│                                       │  └──────────────────┘  │  │
-│                                       └────────────────────────┘  │
-└──────────────────────────────────────────────┬─────────────────────┘
-                                               │ HTTP /api/raw-data
-                                               │ (LOCAL mode only)
-                                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  GPU Workstation (remote-server)                                 │
-│                                                                  │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │  FastAPI :8000  (ENV_MODE=SERVER)                          │ │
-│  │                                                            │ │
-│  │  DataProvider ──► Milvus (visual vectors, 1280-dim HNSW)  │ │
-│  │               ──► PostgreSQL (OCR, transcripts)           │ │
-│  └────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────┘
-```
+
+The local and remote backends expose the same strategy lifecycle. Translation
+and CAGRA are remote-server features; the simple local MOCK/SAMPLE backend does
+not provide the translation endpoint.
 
 ---
 
@@ -47,7 +40,8 @@ The `ENV_MODE` environment variable controls where data comes from. Set it in th
 | Value | Where it runs | What DataProvider does |
 |---|---|---|
 | `MOCK` | Contestant laptop | Reads `app/mock/*.json` — no server needed |
-| `LOCAL` | Contestant laptop | Proxies HTTP requests to `REMOTE_SERVER_URL` to fetch raw data |
+| `SAMPLE` | Contestant laptop | Searches local `AIC2026_sample` PE-Core vectors |
+| `LOCAL` | Contestant laptop | Proxies raw-data requests to `REMOTE_SERVER_URL` |
 | `SERVER` | GPU workstation | Connects directly to local Milvus + PostgreSQL |
 
 ### Switching from MOCK to LOCAL
@@ -65,35 +59,53 @@ The strategy files require **zero changes** when switching modes. Only the `.env
 
 ## Request Lifecycle
 
-### Search request (MOCK or LOCAL mode)
+```mermaid
+sequenceDiagram
+    participant UI as Frontend
+    participant API as Backend
+    participant TR as Translation
+    participant DP as DataProvider
+    participant VS as HNSW/CAGRA
+    participant DB as PostgreSQL
+    participant ST as Strategy
 
+    opt VI-EN enabled
+        UI->>API: POST /api/translate
+        API->>TR: Translate to English
+        TR-->>UI: Translated queries
+    end
+
+    UI->>API: POST /api/search
+    API->>DP: Get raw data
+    par Semantic query
+        DP->>VS: PE-Core vector search
+        VS-->>DP: Frame candidates
+    and Text query
+        DP->>DB: OCR and transcript search
+        DB-->>DP: Text candidates
+    end
+    DP-->>API: Unified raw data
+    API->>ST: Fusion and temporal ranking
+    ST-->>API: Ranked results
+    API-->>UI: Results and search timing
 ```
-Frontend (browser)
-  │
-  │  POST /api/search  { strategy_id, query_groups, top_k }
-  ▼
-Local Backend (FastAPI)
-  │
-  ├─ Looks up strategy by strategy_id
-  ├─ Calls strategy.search(query_groups)
-  │     │
-  │     ├─ pre_process(query_groups)       ← optional override
-  │     │
-  │     ├─ DataProvider.get_raw_data()     ← MOCK: reads JSON
-  │     │                                    LOCAL: HTTP to GPU server
-  │     │
-  │     ├─ fusion_and_temporal(raw_data)   ← YOUR ALGORITHM (2s timeout)
-  │     │
-  │     └─ post_filter(results)            ← optional override
-  │
-  ├─ results[:top_k]
-  │
-  └─ Returns { results, total, execution_time_ms }
-  │
-  ▼
-Frontend renders result grid
-  Click card → YouTube modal seeks to timestamp_ms / 1000 seconds
-```
+
+The translation provider is configured by `TRANSLATION_PROVIDER` on the remote
+backend and is not selectable in the UI. Exact translated queries and PE-Core
+text embeddings use bounded in-process caches. Optional startup warmups avoid
+model/client initialization during the first user request.
+
+## Production Search Backends
+
+`VECTOR_SEARCH_BACKEND` selects the visual index:
+
+| Value | Behavior |
+|---|---|
+| `milvus` | Default Milvus HNSW search using COSINE similarity |
+| `cagra` | Optional cuVS CAGRA search using a local GPU index |
+
+CAGRA changes only semantic vector search. Milvus and PostgreSQL still run for
+collection access, metadata, OCR, transcripts, and temporal workflows.
 
 ### Raw data shape
 
