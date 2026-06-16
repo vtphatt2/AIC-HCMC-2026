@@ -23,6 +23,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_ROOT = SCRIPT_DIR.parent
@@ -152,7 +153,7 @@ def load_vector(path: Path, expected_dim: int) -> list[float]:
 
 def copy_keyframes(records: list[dict[str, Any]], static_frames_dir: Path) -> int:
     copied = 0
-    for record in records:
+    for record in tqdm(records, desc="Copying keyframes", unit="frame"):
         src = Path(record["image_path"])
         if not src.is_file():
             continue
@@ -200,13 +201,17 @@ def upsert_vectors(collection: Any, records: list[dict[str, Any]], batch_size: i
     from app.db import milvus_client
 
     indexed = 0
-    for start in range(0, len(records), batch_size):
-        batch = []
-        for record in records[start : start + batch_size]:
-            batch.append({**record, "vector": load_vector(Path(record["feature_path"]), vector_dim)})
-        milvus_client.upsert_frame_vectors(collection, batch)
-        indexed += len(batch)
-        logger.info("Indexed %s/%s vectors", indexed, len(records))
+    starts = range(0, len(records), batch_size)
+    with tqdm(total=len(records), desc="Indexing Milvus vectors", unit="vector") as progress:
+        for start in starts:
+            batch = []
+            for record in records[start : start + batch_size]:
+                batch.append({**record, "vector": load_vector(Path(record["feature_path"]), vector_dim)})
+            milvus_client.upsert_frame_vectors(collection, batch)
+            indexed += len(batch)
+            progress.update(len(batch))
+            progress.set_postfix(indexed=indexed)
+            logger.info("Indexed %s/%s vectors", indexed, len(records))
 
     collection.flush()
     collection.load()

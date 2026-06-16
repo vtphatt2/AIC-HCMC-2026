@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SearchResult } from "@/types";
+import { apiUrl } from "@/lib/api";
 
 interface Props {
   result: SearchResult;
@@ -19,10 +20,13 @@ export default function VideoModal({ result, onClose }: Props) {
   const youtubeId = result.youtube_id || result.video_id;
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
+  const frameImageUrl = result.frame_image_url.startsWith("http")
+    ? result.frame_image_url
+    : apiUrl(result.frame_image_url);
 
   // Live playback position — updated by the polling interval below
   const [currentTimeSec, setCurrentTimeSec] = useState(startSeconds);
-  const [playerReady, setPlayerReady] = useState(false);
+  const [playbackStarted, setPlaybackStarted] = useState(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
 
   // Close on Escape
@@ -43,9 +47,12 @@ export default function VideoModal({ result, onClose }: Props) {
         playerVars: { autoplay: 1, rel: 0, start: Math.floor(startSeconds) },
         events: {
           onReady: (event: any) => {
-            setPlayerReady(true);
-            event.target.seekTo(startSeconds, true);
             event.target.playVideo();
+          },
+          onStateChange: (event: any) => {
+            if (event.data === window.YT.PlayerState.PLAYING) {
+              setPlaybackStarted(true);
+            }
           },
         },
       });
@@ -88,7 +95,7 @@ export default function VideoModal({ result, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-5xl"
+        className="relative w-full max-w-4xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close button */}
@@ -101,14 +108,21 @@ export default function VideoModal({ result, onClose }: Props) {
 
         {/* 16:9 aspect ratio wrapper */}
         <div className="relative w-full bg-black" style={{ paddingTop: "56.25%" }}>
-          {!playerReady && (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-slate-400">
-              Loading video…
+          {!playbackStarted && (
+            <div className="absolute inset-0">
+              <img
+                src={frameImageUrl}
+                alt=""
+                className="w-full h-full object-contain"
+              />
+              <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-white">
+                Loading video…
+              </div>
             </div>
           )}
           <div
             className={`absolute inset-0 transition-opacity ${
-              playerReady ? "opacity-100" : "opacity-0"
+              playbackStarted ? "opacity-100" : "opacity-0"
             }`}
           >
             <div ref={containerRef} className="w-full h-full" />

@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -165,7 +166,7 @@ async def upsert_videos(pool: Any, videos: list[dict]) -> None:
 
 def copy_keyframes(records: list[dict], static_frames_dir: Path) -> int:
     copied = 0
-    for record in records:
+    for record in tqdm(records, desc="Copying keyframes", unit="frame"):
         src = record["image_path"]
         if not src.exists():
             continue
@@ -188,17 +189,19 @@ def load_vector(path: Path, expected_dim: int) -> list[float]:
 
 def upsert_vectors(collection: Any, records: list[dict], batch_size: int, vector_dim: int) -> int:
     inserted = 0
-    for start in range(0, len(records), batch_size):
-        batch = records[start : start + batch_size]
-        frame_ids = [r["frame_id"] for r in batch]
-        video_ids = [r["video_id"] for r in batch]
-        frame_numbers = [int(r["frame_number"]) for r in batch]
-        timestamps = [int(r["timestamp_ms"]) for r in batch]
-        image_urls = [r["image_url"] for r in batch]
-        vectors = [load_vector(r["feature_path"], vector_dim) for r in batch]
-        collection.upsert([frame_ids, video_ids, frame_numbers, timestamps, image_urls, vectors])
-        inserted += len(batch)
-        print(f"  indexed {inserted}/{len(records)} vectors", flush=True)
+    with tqdm(total=len(records), desc="Indexing Milvus vectors", unit="vector") as progress:
+        for start in range(0, len(records), batch_size):
+            batch = records[start : start + batch_size]
+            frame_ids = [r["frame_id"] for r in batch]
+            video_ids = [r["video_id"] for r in batch]
+            frame_numbers = [int(r["frame_number"]) for r in batch]
+            timestamps = [int(r["timestamp_ms"]) for r in batch]
+            image_urls = [r["image_url"] for r in batch]
+            vectors = [load_vector(r["feature_path"], vector_dim) for r in batch]
+            collection.upsert([frame_ids, video_ids, frame_numbers, timestamps, image_urls, vectors])
+            inserted += len(batch)
+            progress.update(len(batch))
+            progress.set_postfix(indexed=inserted)
     collection.flush()
     collection.load()
     return inserted

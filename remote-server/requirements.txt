@@ -10,3 +10,4 @@ marshmallow==3.21.3
 numpy>=2.0.0
 open_clip_torch>=2.24.0
 torch>=2.1.0
+tqdm>=4.66.0

@@ -21,6 +21,22 @@ class TextEncoderConfig:
     precision: str = os.getenv("PECORE_PRECISION", "fp32")
     expected_dim: int = int(os.getenv("PECORE_TEXT_DIM", "1280"))
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "device", self.device.strip().lower())
+        object.__setattr__(self, "precision", self.precision.strip().lower())
+
+
+def _validate_device_config(torch, config: TextEncoderConfig) -> None:
+    if config.device == "cuda" and not torch.cuda.is_available():
+        raise TextEncoderUnavailable("PECORE_DEVICE=cuda but CUDA is not available.")
+    if config.device == "mps":
+        if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps but PyTorch MPS is not available.")
+        if config.precision != "fp32":
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps requires PECORE_PRECISION=fp32.")
+    if config.device not in {"cpu", "cuda", "mps"}:
+        raise TextEncoderUnavailable("PECORE_DEVICE must be one of: cpu, cuda, mps.")
+
 
 class PECoreTextEncoder:
     """
@@ -75,7 +91,7 @@ class PECoreTextEncoder:
             )
         return vector
 
-    def warmup(self, query: str = "warmup query") -> dict:
+    def warmup(self, query: str = "warmup query", passes: int = WARMUP_PASSES) -> dict:
         load_start = time.monotonic()
         was_loaded = self._loaded
         self._ensure_loaded()
@@ -83,7 +99,8 @@ class PECoreTextEncoder:
 
         encode_start = time.monotonic()
         vector = None
-        for _ in range(self.WARMUP_PASSES):
+        passes = max(1, int(passes))
+        for _ in range(passes):
             vector = self._encode_uncached(query)
         encode_ms = (time.monotonic() - encode_start) * 1000
 
@@ -92,7 +109,7 @@ class PECoreTextEncoder:
             "device=%s vector_shape=%s",
             model_load_ms,
             encode_ms,
-            self.WARMUP_PASSES,
+            passes,
             self.config.device,
             tuple(vector.shape),
         )
@@ -100,7 +117,7 @@ class PECoreTextEncoder:
             "status": "ok",
             "model_load_ms": model_load_ms,
             "encode_ms": encode_ms,
-            "passes": self.WARMUP_PASSES,
+            "passes": passes,
             "device": self.config.device,
         }
 
@@ -121,6 +138,8 @@ class PECoreTextEncoder:
                     "PECore text encoder dependencies are missing. Install them with: "
                     "python -m pip install open_clip_torch torch"
                 ) from exc
+
+            _validate_device_config(torch, self.config)
 
             try:
                 model, _, _ = open_clip.create_model_and_transforms(

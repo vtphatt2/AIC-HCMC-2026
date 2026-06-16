@@ -7,7 +7,12 @@ import type {
   SearchResult,
   SearchResponse,
 } from "@/types";
-import { fetchStrategies, runSearch, translateTexts } from "@/lib/api";
+import {
+  fetchStrategies,
+  runSearch,
+  translateTexts,
+  warmupTextEncoder,
+} from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import ResultGrid from "@/components/ResultGrid";
 import VideoModal from "@/components/VideoModal";
@@ -20,6 +25,10 @@ const DEFAULT_GROUP: QueryGroup = {
   translatedQuery: "",
 };
 
+function normalizeTopK(value: string): number {
+  return Math.min(1000, Math.max(1, Number.parseInt(value, 10) || 1));
+}
+
 export default function Home() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [strategies, setStrategies] = useState<Strategy[]>([]);
@@ -27,7 +36,7 @@ export default function Home() {
   const [queryGroups, setQueryGroups] = useState<QueryGroup[]>([
     { ...DEFAULT_GROUP, temporalOffsetMs: 0 },
   ]);
-  const [topK, setTopK] = useState<number>(100);
+  const [topKInput, setTopKInput] = useState("100");
   const [collapsed, setCollapsed] = useState(false);
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [totalTimeMs, setTotalTimeMs] = useState(0);
@@ -44,6 +53,9 @@ export default function Home() {
         if (list.length > 0) setSelectedStrategy(list[0].id);
       })
       .catch(() => setError("Cannot connect to backend. Is the local backend running?"));
+
+    // Hide GPU wake-up work while the user prepares the first query.
+    warmupTextEncoder().catch(() => undefined);
   }, []);
 
   // ── Query group helpers ────────────────────────────────────────────────────
@@ -74,6 +86,8 @@ export default function Home() {
     setError(null);
     setLoading(true);
     setLoadingLabel("Searching…");
+    const topK = normalizeTopK(topKInput);
+    setTopKInput(String(topK));
     const started = performance.now();
     try {
       const groupsForSearch = queryGroups.map((group) => ({ ...group }));
@@ -121,6 +135,8 @@ export default function Home() {
       <Head>
         <link rel="preconnect" href="https://www.youtube.com" />
         <link rel="preconnect" href="https://www.google.com" />
+        <link rel="preconnect" href="https://i.ytimg.com" />
+        <link rel="preconnect" href="https://s.ytimg.com" />
       </Head>
       <Script
         id="yt-iframe-api"
@@ -195,8 +211,9 @@ export default function Home() {
                 type="number"
                 min={1}
                 max={1000}
-                value={topK}
-                onChange={(e) => setTopK(Math.max(1, parseInt(e.target.value) || 1))}
+                value={topKInput}
+                onChange={(e) => setTopKInput(e.target.value)}
+                onBlur={() => setTopKInput(String(normalizeTopK(topKInput)))}
                 className="w-20 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>

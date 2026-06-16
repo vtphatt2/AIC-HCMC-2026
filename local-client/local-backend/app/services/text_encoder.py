@@ -13,7 +13,24 @@ class TextEncoderUnavailable(RuntimeError):
 class TextEncoderConfig:
     model_id: str = os.getenv("PECORE_MODEL_ID", "hf-hub:timm/PE-Core-bigG-14-448")
     device: str = os.getenv("PECORE_DEVICE", "cpu")
+    precision: str = os.getenv("PECORE_PRECISION", "fp32")
     expected_dim: int = int(os.getenv("PECORE_TEXT_DIM", "1280"))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "device", self.device.strip().lower())
+        object.__setattr__(self, "precision", self.precision.strip().lower())
+
+
+def _validate_device_config(torch, config: TextEncoderConfig) -> None:
+    if config.device == "cuda" and not torch.cuda.is_available():
+        raise TextEncoderUnavailable("PECORE_DEVICE=cuda but CUDA is not available.")
+    if config.device == "mps":
+        if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps but PyTorch MPS is not available.")
+        if config.precision != "fp32":
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps requires PECORE_PRECISION=fp32.")
+    if config.device not in {"cpu", "cuda", "mps"}:
+        raise TextEncoderUnavailable("PECORE_DEVICE must be one of: cpu, cuda, mps.")
 
 
 class PECoreTextEncoder:
@@ -69,10 +86,15 @@ class PECoreTextEncoder:
                     "python -m pip install open_clip_torch torch"
                 ) from exc
 
+            _validate_device_config(torch, self.config)
+
             try:
-                model, _, _ = open_clip.create_model_and_transforms(self.config.model_id)
+                model, _, _ = open_clip.create_model_and_transforms(
+                    self.config.model_id,
+                    precision=self.config.precision,
+                    device=self.config.device,
+                )
                 tokenizer = open_clip.get_tokenizer(self.config.model_id)
-                model = model.to(self.config.device)
                 model.eval()
             except Exception as exc:
                 raise TextEncoderUnavailable(

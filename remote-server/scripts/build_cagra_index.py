@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_ROOT = SCRIPT_DIR.parent
@@ -62,7 +63,7 @@ def main() -> None:
         shape=(len(paths), first.size),
     )
     with frame_ids_path.open("w", encoding="utf-8") as frame_ids:
-        for index, (frame_id, path) in enumerate(paths):
+        for index, (frame_id, path) in enumerate(tqdm(paths, desc="Loading PE-Core vectors", unit="vector")):
             vector = np.load(path).astype("float32").reshape(-1)
             norm = float(np.linalg.norm(vector))
             if vector.size != first.size or norm == 0.0:
@@ -76,6 +77,7 @@ def main() -> None:
     from cuvs.neighbors import cagra
 
     started = time.perf_counter()
+    logger.info("Building CAGRA index for %s vectors...", len(paths))
     index = cagra.build(
         cagra.IndexParams(
             metric="inner_product",

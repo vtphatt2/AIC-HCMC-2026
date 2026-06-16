@@ -40,12 +40,13 @@ class DataProvider:
         elif VECTOR_SEARCH_BACKEND != "milvus":
             raise ValueError("VECTOR_SEARCH_BACKEND must be 'milvus' or 'cagra'")
 
-    async def warmup_text_encoder(self, query: str = "warmup query") -> dict:
+    async def warmup_text_encoder(self, query: str = "warmup query", passes: int = 10) -> dict:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             self._text_executor,
             self._text_encoder.warmup,
             query,
+            passes,
         )
 
     async def _encode_text(self, text: str):

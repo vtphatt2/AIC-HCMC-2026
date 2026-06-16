@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REMOTE_ROOT = SCRIPT_DIR.parent
@@ -59,7 +60,7 @@ def linear_search(query_vector: Any, sample_root: Path, top_k: int) -> list[dict
     feature_paths = iter_feature_paths(sample_root)
     vectors = []
     frame_ids = []
-    for frame_id, path in feature_paths:
+    for frame_id, path in tqdm(feature_paths, desc="Loading linear-search vectors", unit="vector"):
         vector = np.load(path).astype("float32").reshape(-1)
         norm = np.linalg.norm(vector)
         if norm == 0:

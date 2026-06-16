@@ -36,7 +36,9 @@ export default function ResultCard({ result, rank, onClick }: Props) {
           src={imageUrl}
           alt={`Frame ${result.frame_number} of ${result.video_id}`}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          loading="lazy"
+          loading={rank <= 12 ? "eager" : "lazy"}
+          fetchPriority={rank <= 6 ? "high" : "auto"}
+          decoding="async"
         />
         {/* Rank badge */}
         <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">

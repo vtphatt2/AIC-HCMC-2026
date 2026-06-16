@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from tqdm import tqdm
 
 logger = logging.getLogger("evaluate_query_set")
 
@@ -130,7 +131,7 @@ def main() -> None:
 
     logger.info("Evaluating %s queries against %s", len(queries), args.backend_url)
     with httpx.Client(base_url=args.backend_url.rstrip("/"), timeout=args.timeout) as client:
-        for query in queries:
+        for query in tqdm(queries, desc="Evaluating queries", unit="query"):
             query_id = str(query["id"])
             try:
                 payload = run_query(client, args.strategy_id, query["query_groups"], args.top_k)

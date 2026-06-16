@@ -276,10 +276,11 @@ class DataProvider:
             return
 
         import numpy as np
+        from tqdm import tqdm
 
         vectors = []
         frame_ids = []
-        for frame in self._frames:
+        for frame in tqdm(self._frames, desc="Building SAMPLE vector index", unit="frame"):
             feature_path = frame.get("_feature_path")
             if not feature_path:
                 continue

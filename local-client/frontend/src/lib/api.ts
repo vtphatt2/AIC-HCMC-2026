@@ -17,6 +17,13 @@ export async function fetchStrategies(): Promise<Strategy[]> {
   return res.json();
 }
 
+export async function warmupTextEncoder(): Promise<void> {
+  const res = await fetch(apiUrl("/api/warmup_text_encoder?passes=1"), {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error("Failed to warm up text encoder");
+}
+
 export async function translateTexts(texts: string[]): Promise<TranslationResponse> {
   const res = await fetch(apiUrl("/api/translate"), {
     method: "POST",

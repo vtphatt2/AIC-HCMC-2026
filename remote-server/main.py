@@ -124,6 +124,7 @@ async def health():
         "status": "ok",
         "env_mode": os.getenv("ENV_MODE"),
         "vector_search_backend": os.getenv("VECTOR_SEARCH_BACKEND", "milvus"),
+        "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
     }
@@ -144,13 +145,16 @@ async def static_debug(path: str = "frames/L01_V001/000022.jpg"):
 
 @app.get("/api/warmup_text_encoder")
 @app.post("/api/warmup_text_encoder")
-async def warmup_text_encoder():
+async def warmup_text_encoder(passes: int = 10):
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready.")
 
     t0 = time.monotonic()
     try:
-        result = await _data_provider.warmup_text_encoder("warmup query")
+        result = await _data_provider.warmup_text_encoder(
+            "warmup query",
+            passes=min(max(passes, 1), 10),
+        )
     except Exception as exc:
         logger.info(
             "[TIMER] warmup_text_encoder %.3f ms status=error error=%s",
