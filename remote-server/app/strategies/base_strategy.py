@@ -97,11 +97,13 @@ class BaseStrategy(ABC):
         Returns:
             list of result dicts, each containing:
                 video_id        (str)
+                youtube_id      (str, YouTube video ID for playback)
                 frame_id        (str)
                 frame_number    (int)
                 timestamp_ms    (int)
                 confidence      (float, 0.0–1.0)
                 frame_image_url (str)
+                fps             (float)
         """
         ...
 

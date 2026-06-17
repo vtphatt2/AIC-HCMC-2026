@@ -124,7 +124,7 @@ export default function Home() {
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) handleSearch();
+    if (e.key === "Enter") handleSearch();
   }
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);

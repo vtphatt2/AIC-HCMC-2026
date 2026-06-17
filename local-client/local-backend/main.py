@@ -9,8 +9,10 @@ import inspect
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -82,6 +84,20 @@ if SAMPLE_KEYFRAMES_DIR.is_dir():
         StaticFiles(directory=str(SAMPLE_KEYFRAMES_DIR)),
         name="sample-keyframes",
     )
+elif os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
+    _remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    _http_client = httpx.AsyncClient(timeout=30)
+
+    @app.get("/static/frames/{path:path}")
+    async def proxy_frame(path: str):
+        url = f"{_remote_base}/static/frames/{path}"
+        resp = await _http_client.get(url, headers={"ngrok-skip-browser-warning": "1"})
+        if resp.status_code != 200:
+            raise HTTPException(resp.status_code, f"Remote server returned {resp.status_code}")
+        return Response(
+            content=resp.content,
+            media_type=resp.headers.get("content-type", "image/jpeg"),
+        )
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -141,6 +157,7 @@ async def list_strategies():
 
 @app.post("/api/search")
 async def search(req: SearchRequest):
+    print(req)
     """Run a search with the selected strategy and return ranked results."""
     if req.strategy_id not in _strategies:
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found. Available: {list(_strategies)}")
@@ -151,7 +168,7 @@ async def search(req: SearchRequest):
 
     try:
         results = await strategy.search(
-            [g.model_dump() for g in req.query_groups],
+            [g.model_dump() for g in req.query_groups], 
             limit=top_k,
         )
     except TimeoutError as exc:

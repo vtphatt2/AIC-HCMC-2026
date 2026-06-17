@@ -14,10 +14,11 @@ declare global {
   }
 }
 
+const PLAYER_DOM_ID = "yt-player-container";
+
 export default function VideoModal({ result, onClose }: Props) {
   const playerRef = useRef<any>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const youtubeId = result.youtube_id || result.video_id;
+  const youtubeId = result.youtube_id || "";
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
   const frameImageUrl = result.frame_image_url.startsWith("http")
@@ -41,8 +42,8 @@ export default function VideoModal({ result, onClose }: Props) {
   // Mount the YouTube player
   useEffect(() => {
     function createPlayer() {
-      if (!containerRef.current) return;
-      playerRef.current = new window.YT.Player(containerRef.current, {
+      if (!youtubeId || !document.getElementById(PLAYER_DOM_ID)) return;
+      playerRef.current = new window.YT.Player(PLAYER_DOM_ID, {
         videoId: youtubeId,
         playerVars: { autoplay: 1, rel: 0, start: Math.floor(startSeconds) },
         events: {
@@ -115,18 +116,22 @@ export default function VideoModal({ result, onClose }: Props) {
                 alt=""
                 className="w-full h-full object-contain"
               />
-              <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-white">
-                Loading video…
-              </div>
+              {youtubeId && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-white">
+                  Loading video…
+                </div>
+              )}
             </div>
           )}
-          <div
-            className={`absolute inset-0 transition-opacity ${
-              playbackStarted ? "opacity-100" : "opacity-0"
-            }`}
-          >
-            <div ref={containerRef} className="w-full h-full" />
-          </div>
+          {youtubeId && (
+            <div
+              className={`absolute inset-0 transition-opacity ${
+                playbackStarted ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              <div id={PLAYER_DOM_ID} className="w-full h-full" />
+            </div>
+          )}
         </div>
 
         {/* Live info bar — updates as the video plays */}

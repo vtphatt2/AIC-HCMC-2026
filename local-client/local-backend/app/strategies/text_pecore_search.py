@@ -39,6 +39,7 @@ class TextPECoreSearch(BaseStrategy):
             video = videos.get(frame["video_id"], {})
             results.append({
                 "video_id":        frame["video_id"],
+                "youtube_id":      str(video.get("youtube_id") or ""),
                 "frame_id":        frame["frame_id"],
                 "frame_number":    frame["frame_number"],
                 "timestamp_ms":    frame["timestamp_ms"],
