@@ -21,6 +21,8 @@ lib64/
 parts/
 sdist/
 var/
+notebooks/metadata/*
+notebooks/transcripts/*
 wheels/
 share/python-wheels/
 *.egg-info/
