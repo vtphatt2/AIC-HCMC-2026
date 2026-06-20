@@ -3,6 +3,7 @@ import type {
   QueryGroup,
   SearchResponse,
   TranslationResponse,
+  TranscriptSearchResponse,
 } from "@/types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -59,6 +60,21 @@ export async function runSearch(strategyId: string, queryGroups: QueryGroup[], t
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || "Search failed");
+  }
+
+  return res.json();
+}
+
+export async function searchTranscript(query: string, topK: number): Promise<TranscriptSearchResponse> {
+  const res = await fetch(apiUrl("/api/search-transcript"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query, top_k: topK }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Transcript search failed");
   }
 
   return res.json();

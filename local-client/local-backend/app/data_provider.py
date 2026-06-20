@@ -93,6 +93,14 @@ class DataProvider:
             return self._sample_raw_data(query_groups, limit)
         return await self._fetch_from_remote(query_groups, limit)
 
+    async def search_transcripts(self, query: str, limit: int = 10) -> list[dict]:
+        """Search transcripts independently and return matched intervals with nearest frame info."""
+        if self.mode == "MOCK":
+            return self._transcript_search_mock(query, limit)
+        if self.mode == "SAMPLE":
+            return self._transcript_search_sample(query, limit)
+        return await self._transcript_search_remote(query, limit)
+
     # ── MOCK ──────────────────────────────────────────────────────────────────
 
     def _load_mock(self):
@@ -312,6 +320,391 @@ class DataProvider:
             seen.add(identity)
             deduped.append(frame)
         return deduped
+
+    # ── Transcript search ─────────────────────────────────────────────────────
+
+    # rapidfuzz is optional — imported lazily on first use.
+    _rapidfuzz_fuzz = None
+
+    @classmethod
+    def _ensure_rapidfuzz(cls) -> bool:
+        """Try to import rapidfuzz.fuzz. Returns True if available."""
+        if cls._rapidfuzz_fuzz is not None:
+            return cls._rapidfuzz_fuzz is not False
+        try:
+            from rapidfuzz import fuzz as _fuzz
+            cls._rapidfuzz_fuzz = _fuzz
+            return True
+        except ImportError:
+            cls._rapidfuzz_fuzz = False
+            return False
+
+    @staticmethod
+    def _score_transcript(text: str, query: str) -> tuple[float, str, str]:
+        """
+        Score a transcript segment against a normalized query.
+        Returns (score, match_type, normalized_query).
+
+        Priority: phrase exact match → token overlap → fuzzy
+        match_type values: "phrase", "token_overlap", "fuzzy", "no_match"
+        """
+        from app.services.vietnamese_utils import normalize_vi, extract_keywords
+
+        text_norm = normalize_vi(text)
+        query_norm = extract_keywords(query)
+        if not query_norm or not text_norm:
+            return 0.0, "no_match", query_norm
+
+        query_tokens = query_norm.split()
+        num_tokens = len(query_tokens)
+
+        # 1) Phrase match: full normalized query appears with word boundaries
+        import re
+        if re.search(r"\b" + re.escape(query_norm) + r"\b", text_norm):
+            return 1.0, "phrase", query_norm
+
+        # 2) Token overlap on normalized text.
+        #    Score is capped at 0.8 so phrase matches always rank above.
+        text_tokens = set(text_norm.split())
+        matched = sum(1 for t in query_tokens if t in text_tokens)
+        overlap_raw = round(matched / num_tokens, 4) if num_tokens else 0.0
+        # Cap at 0.8 — phrase match (1.0) is the gold standard
+        overlap_score = min(overlap_raw, 0.8)
+
+        # Single-token queries: need at least 1 match
+        if num_tokens == 1:
+            if matched >= 1:
+                return overlap_score, "token_overlap", query_norm
+        else:
+            # Multi-token: require >= 50% tokens matched
+            if overlap_raw >= 0.5:
+                return overlap_score, "token_overlap", query_norm
+
+        # 3) Fuzzy fallback via rapidfuzz (if installed)
+        if DataProvider._ensure_rapidfuzz() and DataProvider._rapidfuzz_fuzz:
+            try:
+                fuzzy_score = DataProvider._rapidfuzz_fuzz.token_set_ratio(
+                    query_norm, text_norm
+                ) / 100.0
+                # Cap fuzzy below phrase score too
+                fuzzy_score = min(fuzzy_score, 0.85)
+                if num_tokens == 1:
+                    fuzzy_threshold = 0.7
+                elif num_tokens <= 3:
+                    fuzzy_threshold = 0.5
+                else:
+                    fuzzy_threshold = 0.4
+                if fuzzy_score >= fuzzy_threshold:
+                    return round(fuzzy_score, 4), "fuzzy", query_norm
+            except Exception:
+                pass
+
+        return 0.0, "no_match", query_norm
+
+    def _find_nearest_frame(self, video_id: str, target_ms: int) -> dict | None:
+        """Find the frame closest to target_ms for the given video_id."""
+        if self.mode == "MOCK":
+            candidates = [f for f in self._frames if f["video_id"] == video_id]
+        elif self.mode == "SAMPLE":
+            candidates = [f for f in self._frames if f["video_id"] == video_id]
+        else:
+            return None
+
+        if not candidates:
+            return None
+        return min(candidates, key=lambda f: abs(int(f["timestamp_ms"]) - target_ms))
+
+    @staticmethod
+    def _nearest_frame_or_none(nearest: dict | None) -> dict:
+        """Convert nearest frame to optional fields, using None for missing."""
+        if nearest is None:
+            return {
+                "nearest_frame_id": None,
+                "nearest_timestamp_ms": None,
+                "frame_image_url": None,
+            }
+        return {
+            "nearest_frame_id": nearest.get("frame_id"),
+            "nearest_timestamp_ms": nearest.get("timestamp_ms"),
+            "frame_image_url": nearest.get("image_url"),
+        }
+
+    @staticmethod
+    def _deduplicate_nearby(results: list[dict], window_ms: int = 5000) -> list[dict]:
+        """Drop results for the same video within `window_ms` of a higher-scored result."""
+        if not results:
+            return results
+        kept = []
+        # Track per-video kept timestamps
+        video_kept: dict[str, list[int]] = {}
+        for item in results:
+            vid = item["video_id"]
+            ts = item["start_time_ms"]
+            if vid not in video_kept:
+                video_kept[vid] = [ts]
+                kept.append(item)
+                continue
+            # Check if too close to any kept timestamp for this video
+            if any(abs(ts - kts) < window_ms for kts in video_kept[vid]):
+                continue
+            video_kept[vid].append(ts)
+            kept.append(item)
+        return kept
+
+    def _transcript_search_mock(self, query: str, limit: int) -> list[dict]:
+        videos_by_id = {v["video_id"]: v for v in self._videos}
+        scored = []
+        for t in self._transcripts:
+            score, match_type, norm_q = self._score_transcript(t.get("text", ""), query)
+            if score <= 0:
+                continue
+            vid = videos_by_id.get(t["video_id"], {})
+            mid_ms = (int(t["start_time_ms"]) + int(t["end_time_ms"])) // 2
+            nearest = self._find_nearest_frame(t["video_id"], mid_ms)
+            scored.append({
+                "video_id":            t["video_id"],
+                "youtube_id":          vid.get("youtube_id", ""),
+                "start_time_ms":       int(t["start_time_ms"]),
+                "end_time_ms":         int(t["end_time_ms"]),
+                "text":                t.get("text", ""),
+                "score":               score,
+                "match_type":          match_type,
+                "normalized_query":    norm_q,
+                "window_text":         "",
+                "window_start_time_ms": None,
+                "window_end_time_ms":  None,
+                **self._nearest_frame_or_none(nearest),
+            })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored = self._deduplicate_nearby(scored)
+        return scored[:limit]
+
+    def _transcript_search_sample(self, query: str, limit: int) -> list[dict]:
+        """
+        SAMPLE mode transcript search. Falls back to mock transcripts if no
+        sample transcript files exist in AIC2026_sample/.
+        """
+        sample_transcript_dir = sample_subdir("transcripts")
+        has_sample_transcripts = sample_transcript_dir.is_dir() and any(
+            sample_transcript_dir.glob("*.txt")
+        )
+
+        if has_sample_transcripts:
+            results = self._search_sample_transcript_files(
+                sample_transcript_dir, query, limit
+            )
+            if results:
+                return results
+
+        logger.warning(
+            "SAMPLE mode: no sample transcript files found at %s. "
+            "Falling back to mock transcript data.",
+            sample_transcript_dir,
+        )
+        return self._transcript_search_from_mock_file(query, limit)
+
+    def _transcript_search_from_mock_file(self, query: str, limit: int) -> list[dict]:
+        """Search mock transcripts loaded directly from the JSON file."""
+        import json
+        mock_transcripts_path = MOCK_DIR / "mock_transcripts.json"
+        if not mock_transcripts_path.exists():
+            logger.warning("Mock transcripts file not found: %s", mock_transcripts_path)
+            return []
+
+        mock_transcripts = json.loads(mock_transcripts_path.read_text(encoding="utf-8"))
+        mock_videos_path = MOCK_DIR / "mock_videos.json"
+        mock_frames_path = MOCK_DIR / "mock_frames.json"
+        mock_videos = {}
+        if mock_videos_path.exists():
+            videos_list = json.loads(mock_videos_path.read_text(encoding="utf-8"))
+            mock_videos = {v["video_id"]: v for v in videos_list}
+        mock_frames = []
+        if mock_frames_path.exists():
+            mock_frames = json.loads(mock_frames_path.read_text(encoding="utf-8"))
+
+        return self._score_transcript_entries(
+            mock_transcripts, mock_videos, mock_frames, query, limit
+        )
+
+    def _score_transcript_entries(
+        self, transcripts: list[dict], videos: dict, frames: list[dict],
+        query: str, limit: int
+    ) -> list[dict]:
+        """Score a list of transcript entries against a query, with nearest-frame lookup."""
+        scored = []
+        for t in transcripts:
+            score, match_type, norm_q = self._score_transcript(t.get("text", ""), query)
+            if score <= 0:
+                continue
+            vid = videos.get(t["video_id"], {})
+            mid_ms = (int(t["start_time_ms"]) + int(t["end_time_ms"])) // 2
+            nearest = self._find_nearest_frame_from_list(frames, t["video_id"], mid_ms)
+            scored.append({
+                "video_id":            t["video_id"],
+                "youtube_id":          vid.get("youtube_id", ""),
+                "start_time_ms":       int(t["start_time_ms"]),
+                "end_time_ms":         int(t["end_time_ms"]),
+                "text":                t.get("text", ""),
+                "score":               score,
+                "match_type":          match_type,
+                "normalized_query":    norm_q,
+                "window_text":         "",
+                "window_start_time_ms": None,
+                "window_end_time_ms":  None,
+                **self._nearest_frame_or_none(nearest),
+            })
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored = self._deduplicate_nearby(scored)
+        return scored[:limit]
+
+    @staticmethod
+    def _find_nearest_frame_from_list(frames: list[dict], video_id: str, target_ms: int) -> dict | None:
+        candidates = [f for f in frames if f["video_id"] == video_id]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda f: abs(int(f["timestamp_ms"]) - target_ms))
+
+    def _search_sample_transcript_files(
+        self, transcript_dir: Path, query: str, limit: int
+    ) -> list[dict]:
+        """Parse .txt transcript files from a directory, score with window context, deduplicate."""
+        import re
+        from app.services.vietnamese_utils import normalize_vi
+
+        timestamp_re = re.compile(r"\[(\d{2}):(\d{2}):(\d{2})\]\s+(.*)")
+
+        videos_by_id = {v["video_id"]: v for v in self._videos}
+        scored = []
+
+        for filepath in sorted(transcript_dir.glob("*.txt")):
+            video_id = filepath.stem
+            if video_id.endswith("_Transcript"):
+                video_id = video_id[: -len("_Transcript")]
+
+            if video_id not in videos_by_id:
+                continue
+
+            # Parse all segments for this file into a list
+            raw = filepath.read_text(encoding="utf-8")
+            segments: list[dict] = []  # [{start_ms, end_ms, text}]
+            for line in raw.splitlines():
+                m = timestamp_re.match(line.strip())
+                if not m:
+                    continue
+                h, mm, ss = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                txt = m.group(4).strip()
+                s_ms = (h * 3600 + mm * 60 + ss) * 1000
+                segments.append({
+                    "start_ms": s_ms,
+                    "end_ms": s_ms + 5000,  # will be refined below
+                    "text": txt,
+                })
+
+            if not segments:
+                continue
+
+            # Set end_ms from the next segment's start_ms
+            for idx in range(len(segments) - 1):
+                segments[idx]["end_ms"] = segments[idx + 1]["start_ms"]
+            # Last segment: keep 5-second window
+
+            # Score each segment with window context
+            for idx, seg in enumerate(segments):
+                # Build window: segments[idx-1] + seg + segments[idx+1]
+                window_parts = []
+                win_start = seg["start_ms"]
+                win_end = seg["end_ms"]
+
+                if idx > 0:
+                    prev = segments[idx - 1]
+                    window_parts.append(prev["text"])
+                    win_start = prev["start_ms"]
+                window_parts.append(seg["text"])
+                if idx < len(segments) - 1:
+                    nxt = segments[idx + 1]
+                    window_parts.append(nxt["text"])
+                    win_end = nxt["start_ms"]
+
+                window_text = " ".join(window_parts)
+
+                # 1. Score main segment (phrase → token_overlap → fuzzy)
+                seg_score, seg_match_type, norm_q = self._score_transcript(seg["text"], query)
+
+                # 2. Check window for phrase match only (catches split sentences)
+                win_phrase = False
+                if seg_match_type != "phrase" and window_text:
+                    from app.services.vietnamese_utils import normalize_vi, extract_keywords
+                    w_norm = normalize_vi(window_text)
+                    q_norm = extract_keywords(query)
+                    import re
+                    if q_norm and re.search(r"\b" + re.escape(q_norm) + r"\b", w_norm):
+                        win_phrase = True
+
+                # Use window phrase if main segment didn't phrase-match
+                if win_phrase:
+                    score = 1.0
+                    match_type = "phrase"
+                    # Keep window fields
+                else:
+                    score = seg_score
+                    match_type = seg_match_type
+                    window_text = ""
+                    win_start = None
+                    win_end = None
+
+                if score <= 0:
+                    continue
+
+                vid = videos_by_id.get(video_id, {})
+                nearest_frame = self._find_nearest_frame(video_id, seg["start_ms"])
+
+                scored.append({
+                    "video_id":            video_id,
+                    "youtube_id":          vid.get("youtube_id", ""),
+                    "start_time_ms":       seg["start_ms"],
+                    "end_time_ms":         seg["end_ms"],
+                    "text":                seg["text"],
+                    "score":               score,
+                    "match_type":          match_type,
+                    "normalized_query":    norm_q,
+                    "window_text":         window_text,
+                    "window_start_time_ms": win_start,
+                    "window_end_time_ms":  win_end,
+                    **self._nearest_frame_or_none(nearest_frame),
+                })
+
+        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored = self._deduplicate_nearby(scored)
+        return scored[:limit]
+
+    async def _transcript_search_remote(self, query: str, limit: int) -> list[dict]:
+        """Proxy transcript search to the remote server."""
+        if not REMOTE_SERVER_URL:
+            logger.warning("LOCAL mode but REMOTE_SERVER_URL not set. Returning empty results.")
+            return []
+
+        try:
+            async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=10.0) as client:
+                response = await client.post(
+                    "/api/search-transcript",
+                    json={"query": query, "top_k": limit},
+                )
+                response.raise_for_status()
+                data = response.json()
+                return data.get("results", [])
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning(
+                    "Remote server does not have /api/search-transcript endpoint. "
+                    "Returning empty results."
+                )
+                return []
+            logger.error("Remote transcript search failed: %s", exc)
+            return []
+        except Exception as exc:
+            logger.error("Remote transcript search error: %s", exc)
+            return []
 
     @staticmethod
     def _youtube_id_from_link(link: str, fallback: str) -> str:
