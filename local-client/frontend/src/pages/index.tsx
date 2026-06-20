@@ -6,15 +6,19 @@ import type {
   QueryGroup,
   SearchResult,
   SearchResponse,
+  TranscriptResult,
+  TranscriptSearchResponse,
 } from "@/types";
 import {
   fetchStrategies,
   runSearch,
   translateTexts,
   warmupTextEncoder,
+  searchTranscript,
 } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import ResultGrid from "@/components/ResultGrid";
+import TranscriptResultList from "@/components/TranscriptResultList";
 import VideoModal from "@/components/VideoModal";
 
 const DEFAULT_GROUP: QueryGroup = {
@@ -45,6 +49,14 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
 
+  // ── Transcript search state ────────────────────────────────────────────────
+  const [searchMode, setSearchMode] = useState<"frames" | "transcripts">("frames");
+  const [transcriptQuery, setTranscriptQuery] = useState("");
+  const [transcriptTopK, setTranscriptTopK] = useState("20");
+  const [transcriptResponse, setTranscriptResponse] = useState<TranscriptSearchResponse | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [transcriptTimeMs, setTranscriptTimeMs] = useState(0);
+
   // ── Load strategies on mount ───────────────────────────────────────────────
   useEffect(() => {
     fetchStrategies()
@@ -71,7 +83,7 @@ export default function Home() {
     setQueryGroups((prev) => prev.filter((_, i) => i !== index));
   }
 
-  // ── Search ─────────────────────────────────────────────────────────────────
+  // ── Frame search ───────────────────────────────────────────────────────────
   async function handleSearch() {
     const hasInput = queryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
@@ -123,8 +135,50 @@ export default function Home() {
     }
   }
 
+  // ── Transcript search ──────────────────────────────────────────────────────
+  async function handleTranscriptSearch() {
+    if (!transcriptQuery.trim()) {
+      setError("Enter a transcript search query.");
+      return;
+    }
+    setError(null);
+    setTranscriptLoading(true);
+    const topK = normalizeTopK(transcriptTopK);
+    setTranscriptTopK(String(topK));
+    const started = performance.now();
+    try {
+      const res = await searchTranscript(transcriptQuery.trim(), topK);
+      setTranscriptTimeMs(Math.round(performance.now() - started));
+      setTranscriptResponse(res);
+    } catch (err: any) {
+      setError(err.message || "Transcript search failed.");
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }
+
+  function handleTranscriptCardClick(transcriptResult: TranscriptResult) {
+    const searchResult: SearchResult = {
+      video_id: transcriptResult.video_id,
+      youtube_id: transcriptResult.youtube_id,
+      frame_id: transcriptResult.nearest_frame_id || `${transcriptResult.video_id}_000000`,
+      frame_number: 0,
+      timestamp_ms: transcriptResult.start_time_ms,
+      confidence: transcriptResult.score,
+      frame_image_url: transcriptResult.frame_image_url || "",
+      fps: 25,
+    };
+    setActiveResult(searchResult);
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter") handleSearch();
+    if (e.key === "Enter") {
+      if (searchMode === "transcripts") {
+        handleTranscriptSearch();
+      } else {
+        handleSearch();
+      }
+    }
   }
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);
@@ -149,103 +203,163 @@ export default function Home() {
 
         {/* Header row */}
         <header className="px-6 py-3 flex items-center justify-between gap-4 border-b border-slate-800">
-          <div className="shrink-0">
-            <h1 className="text-lg font-bold text-white leading-tight">AIC 2026</h1>
-            <p className="text-xs text-slate-500">Video Retrieval Playground</p>
-          </div>
-
-          {/* Strategy selector */}
-          <div className="flex items-center gap-3 min-w-0">
-            <label className="text-sm text-slate-400 shrink-0">Strategy</label>
-            <select
-              value={selectedStrategy}
-              onChange={(e) => setSelectedStrategy(e.target.value)}
-              className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              {strategies.length === 0 && <option value="">Loading…</option>}
-              {strategies.map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-            {currentStrategy && (
-              <span className="hidden lg:inline text-xs text-slate-500 truncate max-w-xs">
-                {currentStrategy.description} — by {currentStrategy.author}
-              </span>
-            )}
-          </div>
-        </header>
-
-        {/* Search panel */}
-        <div className="px-4 py-3 space-y-3">
-
-          {/* Control row — always visible even when collapsed */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {/* Collapse toggle */}
-            <button
-              onClick={() => setCollapsed((v) => !v)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-white text-sm transition"
-              title={collapsed ? "Expand search panel" : "Collapse search panel"}
-            >
-              <span className="text-xs">{collapsed ? "▶" : "▼"}</span>
-              {collapsed ? "Show Search" : "Hide Search"}
-            </button>
-
-            {/* Add temporal step — only when expanded */}
-            {!collapsed && (
-              <button
-                onClick={addGroup}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-600 text-slate-400 hover:border-slate-400 hover:text-white text-sm transition"
-              >
-                <span className="text-base leading-none">+</span>
-                Add Temporal Step
-              </button>
-            )}
-
-            {/* Spacer */}
-            <div className="flex-1" />
-
-            {/* Top K input */}
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-slate-400 shrink-0">Top K</label>
-              <input
-                type="number"
-                min={1}
-                max={1000}
-                value={topKInput}
-                onChange={(e) => setTopKInput(e.target.value)}
-                onBlur={() => setTopKInput(String(normalizeTopK(topKInput)))}
-                className="w-20 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+          <div className="flex items-center gap-4 shrink-0">
+            <div>
+              <h1 className="text-lg font-bold text-white leading-tight">AIC 2026</h1>
+              <p className="text-xs text-slate-500">Video Retrieval Playground</p>
             </div>
 
-            {/* Search button */}
-            <button
-              onClick={handleSearch}
-              disabled={loading}
-              className="px-5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg text-sm transition"
-            >
-              {loading ? loadingLabel : "Search"}
-            </button>
+            {/* Frames / Transcripts toggle */}
+            <div className="flex rounded-lg border border-slate-600 overflow-hidden">
+              <button
+                onClick={() => { setSearchMode("frames"); setError(null); }}
+                className={`px-3 py-1 text-xs font-medium transition ${
+                  searchMode === "frames"
+                    ? "bg-blue-600 text-white"
+                    : "bg-slate-800 text-slate-400 hover:text-white"
+                }`}
+              >
+                Frames
+              </button>
+              <button
+                onClick={() => { setSearchMode("transcripts"); setError(null); }}
+                className={`px-3 py-1 text-xs font-medium transition ${
+                  searchMode === "transcripts"
+                    ? "bg-emerald-600 text-white"
+                    : "bg-slate-800 text-slate-400 hover:text-white"
+                }`}
+              >
+                Transcripts
+              </button>
+            </div>
           </div>
 
-          {/* Collapsible query groups */}
-          {!collapsed && (
-            <div className="space-y-3">
-              {queryGroups.map((group, i) => (
-                <QueryGroupComponent
-                  key={i}
-                  group={group}
-                  index={i}
-                  isFirst={i === 0}
-                  onChange={(updated) => updateGroup(i, updated)}
-                  onRemove={() => removeGroup(i)}
-                />
-              ))}
-              <p className="text-xs text-slate-600 pl-1">Tip: Ctrl+Enter to search</p>
+          {/* Strategy selector — only in frames mode */}
+          {searchMode === "frames" && (
+            <div className="flex items-center gap-3 min-w-0">
+              <label className="text-sm text-slate-400 shrink-0">Strategy</label>
+              <select
+                value={selectedStrategy}
+                onChange={(e) => setSelectedStrategy(e.target.value)}
+                className="bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {strategies.length === 0 && <option value="">Loading…</option>}
+                {strategies.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              {currentStrategy && (
+                <span className="hidden lg:inline text-xs text-slate-500 truncate max-w-xs">
+                  {currentStrategy.description} — by {currentStrategy.author}
+                </span>
+              )}
             </div>
           )}
+          {searchMode === "transcripts" && <div />}
+        </header>
 
-        </div>
+        {/* Frames search panel */}
+        {searchMode === "frames" && (
+          <div className="px-4 py-3 space-y-3">
+            {/* Control row */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => setCollapsed((v) => !v)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-400 hover:text-white text-sm transition"
+                title={collapsed ? "Expand search panel" : "Collapse search panel"}
+              >
+                <span className="text-xs">{collapsed ? "▶" : "▼"}</span>
+                {collapsed ? "Show Search" : "Hide Search"}
+              </button>
+
+              {!collapsed && (
+                <button
+                  onClick={addGroup}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-dashed border-slate-600 text-slate-400 hover:border-slate-400 hover:text-white text-sm transition"
+                >
+                  <span className="text-base leading-none">+</span>
+                  Add Temporal Step
+                </button>
+              )}
+
+              <div className="flex-1" />
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-400 shrink-0">Top K</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={topKInput}
+                  onChange={(e) => setTopKInput(e.target.value)}
+                  onBlur={() => setTopKInput(String(normalizeTopK(topKInput)))}
+                  className="w-20 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <button
+                onClick={handleSearch}
+                disabled={loading}
+                className="px-5 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg text-sm transition"
+              >
+                {loading ? loadingLabel : "Search"}
+              </button>
+            </div>
+
+            {!collapsed && (
+              <div className="space-y-3">
+                {queryGroups.map((group, i) => (
+                  <QueryGroupComponent
+                    key={i}
+                    group={group}
+                    index={i}
+                    isFirst={i === 0}
+                    onChange={(updated) => updateGroup(i, updated)}
+                    onRemove={() => removeGroup(i)}
+                  />
+                ))}
+                <p className="text-xs text-slate-600 pl-1">Tip: Enter to search</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Transcripts search panel */}
+        {searchMode === "transcripts" && (
+          <div className="px-4 py-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                type="text"
+                placeholder="Search transcript text (e.g. flood, goal, hospital)…"
+                value={transcriptQuery}
+                onChange={(e) => setTranscriptQuery(e.target.value)}
+                className="flex-1 min-w-[200px] bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-400 shrink-0">Top K</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={200}
+                  value={transcriptTopK}
+                  onChange={(e) => setTranscriptTopK(e.target.value)}
+                  onBlur={() => setTranscriptTopK(String(normalizeTopK(transcriptTopK)))}
+                  className="w-20 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <button
+                onClick={handleTranscriptSearch}
+                disabled={transcriptLoading}
+                className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white font-semibold rounded-lg text-sm transition"
+              >
+                {transcriptLoading ? "Searching…" : "Search Transcripts"}
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
 
       {/* ── Main content ── */}
@@ -256,7 +370,8 @@ export default function Home() {
           </div>
         )}
 
-        {response && (
+        {/* Frame search results */}
+        {searchMode === "frames" && response && (
           <ResultGrid
             results={response.results}
             total={response.total}
@@ -264,10 +379,20 @@ export default function Home() {
             onCardClick={(r) => setActiveResult(r)}
           />
         )}
+
+        {/* Transcript search results */}
+        {searchMode === "transcripts" && transcriptResponse && (
+          <TranscriptResultList
+            results={transcriptResponse.results}
+            total={transcriptResponse.total}
+            executionTimeMs={transcriptTimeMs}
+            onCardClick={handleTranscriptCardClick}
+          />
+        )}
       </main>
 
-      {/* ── Floating back-to-top button — visible whenever there are results ── */}
-      {response && (
+      {/* ── Floating back-to-top button ── */}
+      {(response || transcriptResponse) && (
         <button
           onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
           className="fixed bottom-6 right-6 z-40 w-11 h-11 flex items-center justify-center rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/50 transition"
