@@ -114,6 +114,29 @@ class SearchRequest(BaseModel):
     top_k: int = 100
 
 
+class TranscriptSearchRequest(BaseModel):
+    query: str
+    top_k: int = 10
+
+
+class TranscriptResultItem(BaseModel):
+    video_id: str
+    youtube_id: str = ""
+    start_time_ms: int
+    end_time_ms: int
+    text: str
+    score: float
+    nearest_frame_id: str | None = None
+    nearest_timestamp_ms: int | None = None
+    frame_image_url: str | None = None
+    # New optional fields for Vietnamese upgrade
+    normalized_query: str = ""
+    match_type: str = "token_overlap"
+    window_text: str = ""
+    window_start_time_ms: int | None = None
+    window_end_time_ms: int | None = None
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -184,5 +207,28 @@ async def search(req: SearchRequest):
         "results":           results,
         "strategy_id":       req.strategy_id,
         "total":             len(results),
+        "execution_time_ms": int((time.monotonic() - t0) * 1000),
+    }
+
+
+@app.post("/api/search-transcript")
+async def search_transcript(req: TranscriptSearchRequest):
+    """Search transcripts independently, without running a full strategy pipeline."""
+    if not _data_provider:
+        raise HTTPException(503, "DataProvider is not ready.")
+    if not req.query.strip():
+        raise HTTPException(400, "Query must not be empty.")
+
+    t0 = time.monotonic()
+    top_k = min(max(req.top_k, 1), 200)
+
+    try:
+        results = await _data_provider.search_transcripts(req.query.strip(), limit=top_k)
+    except Exception as exc:
+        raise HTTPException(500, f"Transcript search error: {exc}")
+
+    return {
+        "results":           results[:top_k],
+        "total":             min(len(results), top_k),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }

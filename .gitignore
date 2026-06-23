@@ -226,6 +226,7 @@ node_modules/
 .next/
 out/
 .vercel/
+*.tsbuildinfo
 
 # Docker volumes
 volumes/
@@ -238,3 +239,4 @@ static/frames/
 **/keyframes/
 **/PECore-features/
 .skills/
+.claude/
