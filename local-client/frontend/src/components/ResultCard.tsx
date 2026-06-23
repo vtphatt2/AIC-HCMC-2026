@@ -5,6 +5,8 @@ interface Props {
   result: SearchResult;
   rank: number;
   onClick: (result: SearchResult) => void;
+  hideBadge?: boolean;
+  compact?: boolean;
 }
 
 function formatTimestamp(ms: number): string {
@@ -20,7 +22,7 @@ function confidenceColor(score: number): string {
   return "text-red-400";
 }
 
-export default function ResultCard({ result, rank, onClick }: Props) {
+export default function ResultCard({ result, rank, onClick, hideBadge, compact }: Props) {
   const imageUrl = result.frame_image_url.startsWith("http")
     ? result.frame_image_url
     : apiUrl(result.frame_image_url);
@@ -41,9 +43,11 @@ export default function ResultCard({ result, rank, onClick }: Props) {
           decoding="async"
         />
         {/* Rank badge */}
-        <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
-          #{rank}
-        </span>
+        {!hideBadge && (
+          <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
+            #{rank}
+          </span>
+        )}
         {/* Play overlay on hover */}
         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
           <svg className="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 24 24">
@@ -53,13 +57,19 @@ export default function ResultCard({ result, rank, onClick }: Props) {
       </div>
 
       {/* Metadata */}
-      <div className="p-2 space-y-0.5">
-        <p className="text-xs text-slate-400 truncate font-mono">{result.video_id}</p>
+      <div className={compact ? "p-1.5 space-y-0" : "p-2 space-y-0.5"}>
+        {!compact && (
+          <p className="text-xs text-slate-400 truncate font-mono">{result.video_id}</p>
+        )}
         <div className="flex items-center justify-between">
-          <span className="text-sm text-white font-medium">{formatTimestamp(result.timestamp_ms)}</span>
-          <span className={`text-xs font-semibold ${confidenceColor(result.confidence)}`}>
-            {(result.confidence * 100).toFixed(1)}%
+          <span className={`${compact ? "text-xs" : "text-sm"} text-white font-medium`}>
+            {formatTimestamp(result.timestamp_ms)}
           </span>
+          {result.confidence >= 0 && (
+            <span className={`text-xs font-semibold ${confidenceColor(result.confidence)}`}>
+              {(result.confidence * 100).toFixed(1)}%
+            </span>
+          )}
         </div>
         <p className="text-xs text-slate-500">frame {result.frame_number}</p>
       </div>

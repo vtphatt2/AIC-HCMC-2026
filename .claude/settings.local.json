@@ -4,7 +4,8 @@
       "Bash(New-Item -ItemType File -Path \"d:\\\\Coding\\\\side-project\\\\AIC-2026\\\\AIC-HCMC-2026\\\\.gitignore\" -Force)",
       "Bash(Out-Null)",
       "Bash(Write-Output \"created\")",
-      "Bash(touch \"d:/Coding/side-project/AIC-2026/AIC-HCMC-2026/.gitignore\" && echo \"done\")"
+      "Bash(touch \"d:/Coding/side-project/AIC-2026/AIC-HCMC-2026/.gitignore\" && echo \"done\")",
+      "Bash(grep -E \"\\\\.\\(tsx|ts|jsx|js|css|scss\\)$\")"
     ],
     "additionalDirectories": [
       "d:\\Coding\\side-project\\AIC-2026\\AIC-HCMC-2026"

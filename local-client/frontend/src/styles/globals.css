@@ -6,3 +6,17 @@ html, body {
   background-color: #0f172a; /* slate-900 */
   color: #e2e8f0;            /* slate-200 */
 }
+
+.scrollbar-thin::-webkit-scrollbar {
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 3px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}

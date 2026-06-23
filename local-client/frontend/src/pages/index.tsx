@@ -15,6 +15,7 @@ import {
 } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import ResultGrid from "@/components/ResultGrid";
+import VideoGroupGrid from "@/components/VideoGroupGrid";
 import VideoModal from "@/components/VideoModal";
 
 const DEFAULT_GROUP: QueryGroup = {
@@ -44,6 +45,7 @@ export default function Home() {
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
+  const [viewMode, setViewMode] = useState<"score" | "video">("score");
 
   // ── Load strategies on mount ───────────────────────────────────────────────
   useEffect(() => {
@@ -204,6 +206,30 @@ export default function Home() {
             {/* Spacer */}
             <div className="flex-1" />
 
+            {/* View mode toggle */}
+            <div className="flex items-center bg-slate-800 border border-slate-600 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setViewMode("score")}
+                className={`px-3 py-1.5 text-sm transition ${
+                  viewMode === "score"
+                    ? "bg-blue-600 text-white"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Score
+              </button>
+              <button
+                onClick={() => setViewMode("video")}
+                className={`px-3 py-1.5 text-sm transition ${
+                  viewMode === "video"
+                    ? "bg-blue-600 text-white"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                Video
+              </button>
+            </div>
+
             {/* Top K input */}
             <div className="flex items-center gap-2">
               <label className="text-sm text-slate-400 shrink-0">Top K</label>
@@ -256,8 +282,16 @@ export default function Home() {
           </div>
         )}
 
-        {response && (
+        {response && viewMode === "score" && (
           <ResultGrid
+            results={response.results}
+            total={response.total}
+            executionTimeMs={totalTimeMs}
+            onCardClick={(r) => setActiveResult(r)}
+          />
+        )}
+        {response && viewMode === "video" && (
+          <VideoGroupGrid
             results={response.results}
             total={response.total}
             executionTimeMs={totalTimeMs}
