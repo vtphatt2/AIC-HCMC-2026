@@ -135,6 +135,8 @@ class TranscriptResultItem(BaseModel):
     window_text: str = ""
     window_start_time_ms: int | None = None
     window_end_time_ms: int | None = None
+class TranslationRequest(BaseModel):
+    texts: list[str]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -178,9 +180,39 @@ async def list_strategies():
     ]
 
 
+@app.post("/api/translate")
+async def translate(req: TranslationRequest):
+    """Proxy translation to the remote server when local-backend runs in LOCAL mode."""
+    if os.getenv("ENV_MODE", "MOCK").upper() != "LOCAL":
+        raise HTTPException(501, "Translation requires ENV_MODE=LOCAL or direct remote-server mode.")
+
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if not remote_base:
+        raise HTTPException(500, "REMOTE_SERVER_URL is required for translation proxy.")
+
+    async with httpx.AsyncClient(base_url=remote_base, timeout=30.0) as client:
+        try:
+            response = await client.post(
+                "/api/translate",
+                json=req.model_dump(),
+                headers={"ngrok-skip-browser-warning": "1"},
+            )
+        except httpx.RequestError as exc:
+            raise HTTPException(502, f"Remote translation request failed: {exc}") from exc
+
+    if response.status_code >= 400:
+        detail = response.text
+        try:
+            detail = response.json().get("detail", detail)
+        except ValueError:
+            pass
+        raise HTTPException(response.status_code, detail)
+
+    return response.json()
+
+
 @app.post("/api/search")
 async def search(req: SearchRequest):
-    print(req)
     """Run a search with the selected strategy and return ranked results."""
     if req.strategy_id not in _strategies:
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found. Available: {list(_strategies)}")
@@ -191,7 +223,7 @@ async def search(req: SearchRequest):
 
     try:
         results = await strategy.search(
-            [g.model_dump() for g in req.query_groups], 
+            [g.model_dump() for g in req.query_groups],
             limit=top_k,
         )
     except TimeoutError as exc:
