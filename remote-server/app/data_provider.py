@@ -6,9 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.db import milvus_client, postgres_client
 from app.services.text_encoder import PECoreTextEncoder
+from app.services.transcript_search import TranscriptSearchService
 
 ENV_MODE = os.getenv("ENV_MODE", "SERVER")
 VECTOR_SEARCH_BACKEND = os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower()
+TRANSCRIPT_CHUNK_SEARCH_ENABLED = os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}
 logger = logging.getLogger(__name__)
 
 
@@ -40,6 +42,15 @@ class DataProvider:
         elif VECTOR_SEARCH_BACKEND != "milvus":
             raise ValueError("VECTOR_SEARCH_BACKEND must be 'milvus' or 'cagra'")
 
+        self._transcript_search: TranscriptSearchService | None = None
+        if TRANSCRIPT_CHUNK_SEARCH_ENABLED:
+            try:
+                self._transcript_search = TranscriptSearchService()
+                logger.info("Transcript chunk search enabled")
+            except Exception as exc:
+                logger.warning("Transcript chunk search unavailable: %s", exc)
+                self._transcript_search = None
+
     async def warmup_text_encoder(self, query: str = "warmup query", passes: int = 10) -> dict:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
@@ -60,16 +71,26 @@ class DataProvider:
     def close(self) -> None:
         self._text_executor.shutdown(wait=False)
 
-    async def get_raw_data(self, query_groups: list[dict], limit: int = 1000) -> dict:
+    async def get_raw_data(self, query_groups: list[dict], limit: int = 1000, video_genre: str = "All") -> dict:
         """
         Fetch multi-modal raw data for all query groups from local databases.
-        Returns a unified dict that strategies receive as `raw_data`.
+        Returns a unified dict that strategies receive as ``raw_data``.
+
+        Args:
+            video_genre: optional genre filter (e.g. "Ẩm thực", "Công nghệ").
+                         "All" or "" disables filtering.
         """
         all_frame_ids: set[str] = set()
         all_video_ids: set[str] = set()
         frames: list[dict] = []
         ocr: list[dict] = []
         transcripts: list[dict] = []
+        transcript_chunks: list[dict] = []
+
+        # Build combined text query for transcript chunk search
+        combined_text_query = " ".join(
+            g.get("text_query", "").strip() for g in query_groups
+        ).strip()
 
         for group_index, group in enumerate(query_groups):
             semantic_query = group.get("semantic_query", "").strip()
@@ -79,11 +100,13 @@ class DataProvider:
                 query_vector = await self._encode_text(semantic_query)
                 search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
+                genre = video_genre if video_genre and video_genre != "All" else None
                 if self._cagra is None:
                     hits = milvus_client.vector_search(
                         self._collection,
                         query_vector.tolist(),
                         top_k=search_limit,
+                        genre_filter=genre,
                     )
                 else:
                     hits = self._cagra.search(query_vector, top_k=search_limit)
@@ -107,7 +130,6 @@ class DataProvider:
                     len(hits),
                 )
 
-            # OCR / transcript text search
             if text_query:
                 ocr_hits = await postgres_client.search_ocr_text(text_query, limit=limit)
                 for hit in ocr_hits:
@@ -129,6 +151,23 @@ class DataProvider:
                     len(transcript_hits),
                 )
 
+        # Transcript chunk vector search (topic-based, one search across all text queries)
+        if self._transcript_search is not None and combined_text_query:
+            try:
+                chunk_results = await self._transcript_search.search(
+                    combined_text_query,
+                    top_k=limit,
+                )
+                transcript_chunks = chunk_results
+                all_video_ids.update(h["video_id"] for h in chunk_results)
+                frames.extend(self._frames_for_transcript_chunks(chunk_results, limit=limit))
+                logger.info(
+                    "Transcript chunk search returned %s chunks",
+                    len(chunk_results),
+                )
+            except Exception as exc:
+                logger.exception("Transcript chunk search failed: %s", exc)
+
         # Fetch video metadata for all referenced videos
         video_rows = await postgres_client.fetch_video_metadata(list(all_video_ids))
         videos = {v["video_id"]: dict(v) for v in video_rows}
@@ -137,14 +176,32 @@ class DataProvider:
                 fps = float(videos.get(frame["video_id"], {}).get("fps") or 25.0)
                 frame["timestamp_ms"] = int(frame["frame_number"] / fps * 1000)
 
-        # DataProvider applies limit per query group above. Keep all groups here
-        # so temporal strategies do not lose later-step candidates.
         return {
-            "frames":      _dedupe_frames(frames),
-            "ocr":         _dedupe_by_key(ocr, "frame_id"),
-            "transcripts": transcripts,
-            "videos":      videos,
+            "frames":             _dedupe_frames(frames),
+            "ocr":                _dedupe_by_key(ocr, "frame_id"),
+            "transcripts":        transcripts,
+            "transcript_chunks":  transcript_chunks,
+            "videos":             videos,
+            "video_genre":        video_genre or "All",
         }
+
+    def _frames_for_transcript_chunks(self, chunks: list[dict], limit: int) -> list[dict]:
+        frames = []
+        if not chunks:
+            return frames
+        per_chunk_limit = max(1, min(20, limit // max(1, len(chunks))))
+        for chunk in chunks:
+            chunk_frames = milvus_client.query_frames_in_time_range(
+                self._collection,
+                chunk["video_id"],
+                int(chunk["start_time_ms"]),
+                int(chunk["end_time_ms"]),
+                limit=per_chunk_limit,
+            )
+            frames.extend(chunk_frames)
+            if len(frames) >= limit:
+                break
+        return frames[:limit]
 
     def _frames_for_transcripts(self, transcript_hits: list[dict], limit: int) -> list[dict]:
         frames = []

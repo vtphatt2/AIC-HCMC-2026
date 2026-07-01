@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS videos (
     fps          FLOAT        NOT NULL DEFAULT 25.0,
     duration_ms  BIGINT       NOT NULL,
     frame_count  INT          NOT NULL,
+    genre        VARCHAR(64),
     created_at   TIMESTAMPTZ  DEFAULT NOW()
 );
 
@@ -55,6 +56,19 @@ CREATE TABLE IF NOT EXISTS transcripts (
 -- Fast interval range queries: WHERE video_id = $1 AND start_time_ms <= $2 AND end_time_ms >= $3
 CREATE INDEX IF NOT EXISTS idx_transcripts_video    ON transcripts(video_id);
 CREATE INDEX IF NOT EXISTS idx_transcripts_interval ON transcripts(video_id, start_time_ms, end_time_ms);
+
+CREATE TABLE IF NOT EXISTS transcript_chunks_metadata (
+    chunk_id      BIGINT       PRIMARY KEY,
+    video_id      VARCHAR(64)  NOT NULL,
+    topic         VARCHAR(64)  NOT NULL,
+    start_time_ms BIGINT       NOT NULL,
+    end_time_ms   BIGINT       NOT NULL,
+    raw_text      TEXT         NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chunks_video    ON transcript_chunks_metadata(video_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_topic    ON transcript_chunks_metadata(topic);
+CREATE INDEX IF NOT EXISTS idx_chunks_interval ON transcript_chunks_metadata(video_id, start_time_ms, end_time_ms);
 """
 
 
@@ -62,6 +76,13 @@ async def init_schema():
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(CREATE_TABLES_SQL)
+        # Migration: add genre column if missing (safe to call repeatedly)
+        await conn.execute(
+            "ALTER TABLE videos ADD COLUMN IF NOT EXISTS genre VARCHAR(64)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_videos_genre ON videos(genre)"
+        )
 
 
 # ── Query helpers ─────────────────────────────────────────────────────────────
@@ -123,3 +144,78 @@ async def fetch_transcripts_in_range(video_id: str, start_ms: int, end_ms: int) 
         video_id, end_ms, start_ms,
     )
     return [dict(r) for r in rows]
+
+
+# ── Transcript Chunks Metadata ─────────────────────────────────────────────────
+
+async def upsert_transcript_chunks(records: list[dict]) -> int:
+    pool = await get_pool()
+    inserted = 0
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO transcript_chunks_metadata (chunk_id, video_id, topic, start_time_ms, end_time_ms, raw_text)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (chunk_id) DO UPDATE SET
+                video_id = EXCLUDED.video_id,
+                topic = EXCLUDED.topic,
+                start_time_ms = EXCLUDED.start_time_ms,
+                end_time_ms = EXCLUDED.end_time_ms,
+                raw_text = EXCLUDED.raw_text
+            """,
+            [
+                (
+                    int(r["chunk_id"]),
+                    str(r["video_id"]),
+                    str(r["topic"]),
+                    int(r["start_time_ms"]),
+                    int(r["end_time_ms"]),
+                    str(r["raw_text"]),
+                )
+                for r in records
+            ],
+        )
+        inserted = len(records)
+    return inserted
+
+
+async def fetch_transcript_chunks_by_ids(chunk_ids: list[int]) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT chunk_id, video_id, topic, start_time_ms, end_time_ms, raw_text "
+        "FROM transcript_chunks_metadata WHERE chunk_id = ANY($1)",
+        chunk_ids,
+    )
+    return [dict(r) for r in rows]
+
+
+async def clear_transcript_chunks_for_video(video_id: str) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "DELETE FROM transcript_chunks_metadata WHERE video_id = $1", video_id
+        )
+    return int(result.split()[-1]) if result else 0
+
+
+# ── Video Genre ───────────────────────────────────────────────────────────────
+
+async def fetch_video_ids_by_genre(genre: str) -> list[str]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT video_id FROM videos WHERE genre = $1", genre
+    )
+    return [r["video_id"] for r in rows]
+
+
+async def update_video_genres(genre_map: dict[str, str]) -> int:
+    """Bulk-update genre for multiple videos. genre_map: {video_id: genre}."""
+    pool = await get_pool()
+    updated = 0
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "UPDATE videos SET genre = $2 WHERE video_id = $1",
+            [(vid, genre) for vid, genre in genre_map.items()],
+        )
+        updated = len(genre_map)
+    return updated
