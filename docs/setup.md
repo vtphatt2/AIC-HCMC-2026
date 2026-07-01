@@ -187,10 +187,12 @@ uvicorn main:app --reload --port 8000
 
 Expected startup output:
 ```
+Starting local backend…
 DataProvider: MOCK mode — 3 videos, 105 frames loaded
 Discovering strategies…
-  ✓ example_strategy  [Example (Mock)]  by Team AIC 2026
-Ready — 1 strategy/strategies available.
+  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
+  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
+Ready — 2 strategy/strategies available.
 ```
 
 Verify: open http://localhost:8000/api/strategies — you should see a JSON list.
@@ -263,8 +265,9 @@ Expected startup output:
 ```
 DataProvider: LOCAL mode → https://xxxx.ngrok.io
 Discovering strategies…
-  ✓ example_strategy  [Example (Mock)]  by Team AIC 2026
-Ready — 1 strategy/strategies available.
+  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
+  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
+Ready — 2 strategy/strategies available.
 ```
 
 The frontend setup is identical to Option A.
@@ -395,7 +398,7 @@ Milvus, so it is safe to rerun after correcting metadata.
 After ingestion, verify:
 ```bash
 curl http://localhost:8000/api/health
-# {"status":"ok","env_mode":"SERVER","strategies":1}
+# {"status":"ok","env_mode":"SERVER","strategies":2}
 ```
 
 Before the first demo search, load the text model once:
@@ -410,7 +413,7 @@ curl -X POST http://localhost:8000/api/warmup_text_encoder
 
 ```bash
 # 1. Copy the template
-cp local-client/local-backend/app/strategies/example_strategy.py \
+cp local-client/local-backend/app/strategies/_example_strategy.py \
    local-client/local-backend/app/strategies/yourname_v1.py
 
 # 2. Edit the file — set name, description, author, implement fusion_and_temporal()

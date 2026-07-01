@@ -77,13 +77,16 @@ HNSW in `video_frames`, FLAT in `video_frames_flat`, and SCANN in `video_frames_
 
 ```bash
 cd remote-server
-python scripts/ingest_embeddings_to_milvus.py --copy-keyframes
+python scripts/ingest_embeddings_to_milvus.py
 ```
+
+* **Default Path:** Served directly from `AIC2026_sample/keyframes`. To configure a custom path, set `FRAME_STATIC_DIR=/path/to/custom/keyframes` in `.env`.
+* **Staging Option:** Use the `--copy-keyframes` flag to duplicate images under `remote-server/static/frames` if static caching is required.
 
 For runtime algorithm selection (HNSW/FLAT/ScaNN), ingest all three Milvus collections:
 
 ```bash
-python scripts/ingest_embeddings_to_milvus.py --copy-keyframes --vector-index all --recreate-milvus
+python scripts/ingest_embeddings_to_milvus.py --vector-index all --recreate-milvus
 ```
 
 Defaults:

@@ -6,7 +6,7 @@ This report summarizes the performance evaluation of vector search algorithms fo
 
 ## 📋 Executive Summary
 
-Based on empirical testing of 160 queries against the 4,088 keyframe dataset, **five primary algorithms** are recommended for production deployment and baseline validation:
+Based on empirical testing of 160 queries against the 4,088 keyframe dataset, the current recommendation is to keep HNSW as the CPU default, CAGRA as the GPU default, and use FLAT/GPU brute force as exact validation baselines. IVF_FLAT and ScaNN are useful comparison backends, but they are not recommended as defaults yet.
 
 ### 1. cuVS CAGRA (GPU Default) — *Recommended GPU Engine*
 * **Recall / Accuracy:** Matches FLAT exact search perfectly (**100.0% exact overlap** at all depths).
@@ -24,11 +24,11 @@ Based on empirical testing of 160 queries against the 4,088 keyframe dataset, **
 * **Performance:** Comparable search latency (**p50: 2.65 ms**, **p95: 3.19 ms**).
 * **Verdict:** A suitable alternative if trading slightly higher RAM footprint for increased recall is desired.
 
-### 4. Milvus ScaNN (CPU High-Scale) — *Recommended CPU Engine for 1M+ Vectors*
-* **Recall / Accuracy:** High approximation quality (**98.1% exact overlap** with FLAT).
+### 4. Milvus ScaNN (Quantized CPU ANN) — *Supported, Not Default Yet*
+* **Recall / Accuracy:** Good approximation quality (**96.6% exact overlap@100** with FLAT).
 * **Performance:** Fast CPU scan latency (**p50: 2.09 ms**, **p95: 2.65 ms**).
-* **Memory Overhead:** $4\times$ memory compression via 8-bit quantization ($1.28$ GB for raw vectors at 1M).
-* **Verdict:** The optimal choice for high-scale, memory-constrained CPU deployments.
+* **Memory:** Current benchmark uses `with_raw_data=true`, so it should not be treated as a proven compressed-memory deployment.
+* **Verdict:** Supported as a runtime option, but do not make it the CPU default before larger-scale tuning.
 
 ### 5. Milvus FLAT (CPU Exact) — *Validation Baseline*
 * **Recall / Accuracy:** Serves as the exact nearest-neighbor reference (100.0% ground-truth baseline).
@@ -71,7 +71,7 @@ The following configurations were evaluated:
 | **cuVS GPU brute force** | Exact inner-product search | Benchmark only |
 | **Milvus IVF_FLAT CPU** | `nlist=127`, `nprobe=32` | Benchmark only |
 | **cuVS GPU IVF_FLAT** | `n_lists=127`, `n_probes=32` | Benchmark only |
-| **Milvus SCANN** | `nlist=127`, `nprobe=32`, `reorder_k=500`, `with_raw_data=true` | Benchmark only |
+| **Milvus SCANN** | `nlist=127`, `nprobe=32`, `reorder_k=500`, `with_raw_data=true` | Supported |
 
 ### Fairness Verification
 * **Exact Baselines:** FLAT CPU and GPU brute force represent the exact mathematical baselines.
@@ -183,7 +183,7 @@ Estimated RAM / VRAM overhead at scale ($1,000,000$ vectors, dimension 1,280):
 | **HNSW M=16 CPU** | ~5.5 - 7.0 GB | Raw vectors plus graph links/metadata |
 | **HNSW M=32 CPU** | ~6.0 - 8.5 GB | Higher graph memory overhead |
 | **IVF_FLAT CPU** | ~5.2 - 6.5 GB | Centroid and list overhead |
-| **SCANN CPU** | ~5.5 - 7.0 GB | Raw data plus SCANN structures |
+| **SCANN CPU, raw=true** | ~5.5 - 7.0 GB | Raw data plus SCANN structures; not a proven compressed-memory setup |
 | **CAGRA GPU** | ~6.0 - 9.0 GB VRAM | High graph density, constant latency |
 | **GPU brute force** | ~5.1 - 6.5 GB VRAM | Baseline exact GPU index |
 | **GPU IVF_FLAT** | ~5.3 - 7.0 GB VRAM | Requires large-scale tuning |
@@ -193,19 +193,16 @@ Estimated RAM / VRAM overhead at scale ($1,000,000$ vectors, dimension 1,280):
 ## 💡 Recommendations & System Constraints
 
 1. **System Default Configurations:**
-   * Configure HNSW as the standard CPU default, ScaNN as the high-scale CPU default, and CAGRA as the GPU default.
+   * Configure HNSW as the CPU default and CAGRA as the GPU default.
    ```env
-   # CPU Deployment (standard scale)
+   # CPU Deployment
    VECTOR_SEARCH_BACKEND=hnsw
-
-   # CPU Deployment (large scale 1M+)
-   VECTOR_SEARCH_BACKEND=scann
 
    # GPU Deployment
    VECTOR_SEARCH_BACKEND=cagra
    ```
 2. **HNSW & ScaNN Index Selection:**
    * HNSW M=32 shows marginal overlap improvement over M=16 ($0.1\%$ difference at Top 100), but is worth keeping as an alternative configuration if memory overhead is not a bottleneck.
-   * ScaNN is highly recommended for larger-scale deployments because its anisotropic vector quantization shrinks raw vector memory requirements by $4\times$ (from $5.12$ GB to $1.28$ GB at 1M) while preserving $98.1\%$ exact overlap.
+   * ScaNN is worth keeping for experiments, but the current `with_raw_data=true` benchmark does not prove a $4\times$ memory reduction. It should be retuned and remeasured at larger scale before becoming a default.
 3. **Retrieval Bottlenecks:**
    * The vector search backend is not the primary retrieval bottleneck. Since FLAT exact, GPU brute force, and CAGRA produce identical results, quality limitations stem from query design and visual embedding alignment.

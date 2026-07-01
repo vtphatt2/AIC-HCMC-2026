@@ -170,7 +170,7 @@ On startup the backend scans `app/strategies/*.py` and auto-registers any class 
 - Is **not** `BaseStrategy` itself
 - Has non-empty `name`, `description`, and `author` class attributes
 
-The file stem becomes the `strategy_id` (e.g. `duy_temporal_v1.py` → `"duy_temporal_v1"`).
+The file stem becomes the `strategy_id` (e.g. `custom_strategy_v1.py` → `"custom_strategy_v1"`).
 
 A reload of the backend (or `--reload` watching the `.py` file) is all that's needed to pick up a new strategy.
 

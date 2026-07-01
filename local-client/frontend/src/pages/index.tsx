@@ -426,11 +426,11 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* ANN Section */}
+                      {/* Graph ANN Section */}
                       {vectorAlgorithms.some(a => a.id === "hnsw" || (a.id === "cagra" && a.available)) && (
                         <div className="py-1">
                           <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                            ANN
+                            Graph ANN
                           </div>
                           {vectorAlgorithms
                             .filter(a => a.id === "hnsw" || (a.id === "cagra" && a.available))
@@ -466,11 +466,11 @@ export default function Home() {
                         </div>
                       )}
 
-                      {/* QUANTIZATION Section */}
+                      {/* Quantized CPU ANN Section */}
                       {vectorAlgorithms.some(a => a.id === "scann") && (
                         <div className="py-1">
                           <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                            Quantization ANN
+                            Quantized CPU ANN
                           </div>
                           {vectorAlgorithms
                             .filter(a => a.id === "scann")

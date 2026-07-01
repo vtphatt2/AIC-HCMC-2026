@@ -19,8 +19,10 @@ from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 from app.services.translation import TranslationService
+from scripts.sample_paths import default_sample_root, sample_subdir
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
+REMOTE_ROOT = Path(__file__).parent
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
@@ -92,9 +94,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve pre-extracted frame images
-STATIC_DIR = Path(__file__).parent / "static"
+def _frame_static_dir() -> Path:
+    configured = os.getenv("FRAME_STATIC_DIR", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_dir():
+            raise RuntimeError(f"FRAME_STATIC_DIR does not exist or is not a directory: {path}")
+        return path
+
+    sample_root = default_sample_root(REMOTE_ROOT.parent)
+    sample_keyframes = sample_subdir(sample_root, "keyframes")
+    if sample_keyframes.is_dir():
+        return sample_keyframes
+
+    return REMOTE_ROOT / "static" / "frames"
+
+
+# Serve frame images without requiring a duplicate copy under remote-server/static.
+STATIC_DIR = REMOTE_ROOT / "static"
+FRAME_STATIC_DIR = _frame_static_dir()
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+if not FRAME_STATIC_DIR.exists():
+    FRAME_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/frames", StaticFiles(directory=str(FRAME_STATIC_DIR)), name="frames")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -137,11 +159,19 @@ async def health():
 
 @app.get("/api/static-debug")
 async def static_debug(path: str = "frames/L01_V001/000022.jpg"):
-    target = (STATIC_DIR / path).resolve()
+    clean_path = path.removeprefix("/").removeprefix("static/")
+    if clean_path.startswith("frames/"):
+        target = (FRAME_STATIC_DIR / clean_path.removeprefix("frames/")).resolve()
+        source_dir = FRAME_STATIC_DIR
+    else:
+        target = (STATIC_DIR / clean_path).resolve()
+        source_dir = STATIC_DIR
     return {
         "static_dir": str(STATIC_DIR.resolve()),
+        "frame_static_dir": str(FRAME_STATIC_DIR.resolve()),
         "path": path,
         "target": str(target),
+        "source_dir": str(source_dir.resolve()),
         "exists": target.exists(),
         "is_file": target.is_file(),
         "size": target.stat().st_size if target.exists() else None,

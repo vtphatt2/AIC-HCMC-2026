@@ -16,7 +16,7 @@ The engine handles everything else: fetching data, enforcing timeouts, applying 
 
 ```bash
 # 1. Copy the example file
-cp local-client/local-backend/app/strategies/example_strategy.py \
+cp local-client/local-backend/app/strategies/_example_strategy.py \
    local-client/local-backend/app/strategies/yourname_v1.py
 
 # 2. Edit the file (see below)
@@ -260,7 +260,7 @@ def fusion_and_temporal(self, raw_data, query_groups):
 Use descriptive file names so teammates can identify strategies in the dropdown:
 
 ```
-yourname_approach_v1.py     # e.g. duy_temporal_v1.py
+yourname_approach_v1.py     # e.g. custom_strategy_v1.py
 yourname_approach_v2.py     # iterate in new files, keep v1 as baseline
 ```
 

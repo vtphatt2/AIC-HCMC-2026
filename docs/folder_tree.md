@@ -1,38 +1,41 @@
+# Repository Folder Structure
+
+```text
 aic2026-vbs/
 │
-├── remote-server/                  # 1. TRIỂN KHAI TRÊN MÁY TRẠM GPU (PRODUCTION)
-│   ├── docker-compose.yml          # Quản lý Docker cho Milvus + PostgreSQL
+├── remote-server/                  # Production GPU server deployment
+│   ├── docker-compose.yml          # Docker composition for Milvus + PostgreSQL
 │   ├── requirements.txt
-│   ├── main.py                     # FastAPI Server chính (Chạy với ENV_MODE=SERVER)
+│   ├── main.py                     # Main FastAPI Server entry point (runs with ENV_MODE=SERVER)
 │   └── app/
-│       ├── db/                     # Kết nối cơ sở dữ liệu gốc (Native SDKs)
+│       ├── db/                     # Native database connection layers
 │       │   ├── milvus_client.py
 │       │   └── postgres_client.py
 │       │
-│       ├── data_provider.py        # Chế độ SERVER: Đọc/Ghi trực tiếp từ DB local ra RAM
+│       ├── data_provider.py        # Direct database query orchestration layer
 │       │
-│       └── strategies/             # NƠI CHỨA CÁC CHIẾN THUẬT ĐÃ NGHIỆM THU (BẢN STABLE)
+│       └── strategies/             # Verified production-ready search strategies
 │           ├── __init__.py
-│           ├── base_strategy.py    # Class trừu tượng mẫu (chứa Timeout + Fetch Cap)
-│           └── stable_fusion.py    # <--- File chiến thuật chuẩn (Bê nguyên xi từ local lên)
+│           ├── base_strategy.py    # Abstract base strategy (enforces timeouts & fetch caps)
+│           └── stable_fusion.py    # Stable multi-modal fusion strategy baseline
 │
-└── local-client/                   # 2. CHẠY TRÊN LAPTOP CỦA THÀNH VIÊN TRONG ĐỘI (LOCAL)
+└── local-client/                   # Local developer workspace components
     │
-    ├── frontend/                   # Web UI (Next.js / React - Chỉ làm giao diện)
+    ├── frontend/                   # React / Next.js client application
     │   ├── package.json
     │   └── src/
-    │       ├── components/         # VideoPlayer (YouTube API), SearchSemantic, SearchText...
-    │       └── pages/index.tsx     # Giao diện chính, gọi API về localhost:8000
+    │       ├── components/         # Interactive UI components (VideoPlayer, Search inputs)
+    │       └── pages/index.tsx     # Main dashboard interface
     │
-    └── local-backend/              # SÂN CHƠI PHÁT TRIỂN THUẬT TOÁN PYTHON (LOCAL BACKEND)
+    └── local-backend/              # Local Python playground backend (runs with ENV_MODE=LOCAL/MOCK)
         ├── requirements.txt
-        ├── main.py                 # FastAPI Local (Chạy với ENV_MODE=LOCAL)
+        ├── main.py                 # Local FastAPI server entry point
         └── app/
-            ├── data_provider.py    # Chế độ LOCAL: Đóng vai trò Proxy gọi API qua Ngrok/LAN sang Server để lấy dữ liệu thô
+            ├── data_provider.py    # Data proxy layer (routes calls to Remote Server or local mock JSON)
             │
-            └── strategies/         # NƠI ANH EM TỰ DO CODE & THỬ NGHIỆM THUẬT TOÁN MỚI
+            └── strategies/         # Strategy development and prototyping directory
                 ├── __init__.py
-                ├── base_strategy.py # Giống hệt file base trên Server để đảm bảo tính đồng bộ
-                ├── stable_fusion.py # Bản stable hiện tại để đối chiếu điểm số
-                ├── duy_temporal_v1.py # Duy tự tạo file này để test thuật toán của mình
-                └── nam_matrix_v2.py   # Nam tự tạo file này để test thuật toán của mình
+                ├── base_strategy.py # Base class (identical to server base class for compatibility)
+                ├── stable_fusion.py # Copy of production stable strategy for benchmarking
+                └── custom_strategy_v1.py # Custom developer strategy implementation
+```
