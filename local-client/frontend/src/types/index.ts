@@ -36,25 +36,18 @@ export interface SearchResponse {
   execution_time_ms: number;
 }
 
-export interface TranscriptResult {
+export interface TranscriptChunkResult {
+  chunk_id: number;
   video_id: string;
-  youtube_id: string;
+  topic: string;
   start_time_ms: number;
   end_time_ms: number;
   text: string;
   score: number;
-  nearest_frame_id: string | null;
-  nearest_timestamp_ms: number | null;
-  frame_image_url: string | null;
-  normalized_query?: string;
-  match_type?: string;
-  window_text?: string;
-  window_start_time_ms?: number | null;
-  window_end_time_ms?: number | null;
 }
 
-export interface TranscriptSearchResponse {
-  results: TranscriptResult[];
+export interface TranscriptChunkSearchResponse {
+  results: TranscriptChunkResult[];
   total: number;
   execution_time_ms: number;
 }

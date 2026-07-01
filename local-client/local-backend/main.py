@@ -112,29 +112,15 @@ class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
     top_k: int = 100
+    video_genre: str = "All"
 
 
-class TranscriptSearchRequest(BaseModel):
+class TranscriptChunkSearchRequest(BaseModel):
     query: str
-    top_k: int = 10
+    top_k: int = 100
+    topic_filter: str = ""
 
 
-class TranscriptResultItem(BaseModel):
-    video_id: str
-    youtube_id: str = ""
-    start_time_ms: int
-    end_time_ms: int
-    text: str
-    score: float
-    nearest_frame_id: str | None = None
-    nearest_timestamp_ms: int | None = None
-    frame_image_url: str | None = None
-    # New optional fields for Vietnamese upgrade
-    normalized_query: str = ""
-    match_type: str = "token_overlap"
-    window_text: str = ""
-    window_start_time_ms: int | None = None
-    window_end_time_ms: int | None = None
 class TranslationRequest(BaseModel):
     texts: list[str]
 
@@ -225,6 +211,7 @@ async def search(req: SearchRequest):
         results = await strategy.search(
             [g.model_dump() for g in req.query_groups],
             limit=top_k,
+            video_genre=req.video_genre,
         )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
@@ -243,21 +230,23 @@ async def search(req: SearchRequest):
     }
 
 
-@app.post("/api/search-transcript")
-async def search_transcript(req: TranscriptSearchRequest):
-    """Search transcripts independently, without running a full strategy pipeline."""
+@app.post("/api/search/transcript")
+async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
+    """Search topic-based transcript chunks (vector search)."""
     if not _data_provider:
         raise HTTPException(503, "DataProvider is not ready.")
     if not req.query.strip():
         raise HTTPException(400, "Query must not be empty.")
 
     t0 = time.monotonic()
-    top_k = min(max(req.top_k, 1), 200)
+    top_k = min(max(req.top_k, 1), FETCH_CAP)
 
     try:
-        results = await _data_provider.search_transcripts(req.query.strip(), limit=top_k)
+        results = await _data_provider.search_transcript_chunks(
+            req.query.strip(), limit=top_k, topic_filter=req.topic_filter or None,
+        )
     except Exception as exc:
-        raise HTTPException(500, f"Transcript search error: {exc}")
+        raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
     return {
         "results":           results[:top_k],

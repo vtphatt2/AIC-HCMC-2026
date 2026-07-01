@@ -6,20 +6,20 @@ import type {
   QueryGroup,
   SearchResult,
   SearchResponse,
-  TranscriptResult,
-  TranscriptSearchResponse,
+  TranscriptChunkResult,
+  TranscriptChunkSearchResponse,
 } from "@/types";
 import {
   fetchStrategies,
   runSearch,
   translateTexts,
   warmupTextEncoder,
-  searchTranscript,
+  searchTranscriptChunks,
 } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import ResultGrid from "@/components/ResultGrid";
 import VideoGroupGrid from "@/components/VideoGroupGrid";
-import TranscriptResultList from "@/components/TranscriptResultList";
+import TranscriptChunkCard from "@/components/TranscriptChunkCard";
 import VideoModal from "@/components/VideoModal";
 
 const DEFAULT_GROUP: QueryGroup = {
@@ -29,6 +29,13 @@ const DEFAULT_GROUP: QueryGroup = {
   translateSemantic: false,
   translatedQuery: "",
 };
+
+const ALL_GENRES = [
+  "All",
+  "Ẩm thực", "Công nghệ", "Du lịch", "Thể thao", "Giáo dục",
+  "Kinh tế", "Sức khỏe", "Giải trí", "Thời sự", "Văn hóa",
+  "Đời sống", "Môi trường", "Giao thông", "Pháp luật",
+];
 
 function normalizeTopK(value: string): number {
   return Math.min(1000, Math.max(1, Number.parseInt(value, 10) || 1));
@@ -50,14 +57,16 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [viewMode, setViewMode] = useState<"score" | "video">("score");
+  const [videoGenre, setVideoGenre] = useState("All");
 
   // ── Transcript search state ────────────────────────────────────────────────
   const [searchMode, setSearchMode] = useState<"frames" | "transcripts">("frames");
   const [transcriptQuery, setTranscriptQuery] = useState("");
   const [transcriptTopK, setTranscriptTopK] = useState("20");
-  const [transcriptResponse, setTranscriptResponse] = useState<TranscriptSearchResponse | null>(null);
+  const [transcriptResponse, setTranscriptResponse] = useState<TranscriptChunkSearchResponse | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptTimeMs, setTranscriptTimeMs] = useState(0);
+  const [transcriptGenre, setTranscriptGenre] = useState("");
 
   // ── Load strategies on mount ───────────────────────────────────────────────
   useEffect(() => {
@@ -127,7 +136,7 @@ export default function Home() {
       }
 
       setLoadingLabel("Searching…");
-      const res = await runSearch(selectedStrategy, groupsForSearch, topK);
+      const res = await runSearch(selectedStrategy, groupsForSearch, topK, videoGenre);
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
     } catch (err: any) {
@@ -149,7 +158,10 @@ export default function Home() {
     setTranscriptTopK(String(topK));
     const started = performance.now();
     try {
-      const res = await searchTranscript(transcriptQuery.trim(), topK);
+      const res = await searchTranscriptChunks(
+        transcriptQuery.trim(), topK,
+        transcriptGenre || undefined,
+      );
       setTranscriptTimeMs(Math.round(performance.now() - started));
       setTranscriptResponse(res);
     } catch (err: any) {
@@ -159,15 +171,15 @@ export default function Home() {
     }
   }
 
-  function handleTranscriptCardClick(transcriptResult: TranscriptResult) {
+  function handleChunkCardClick(chunk: TranscriptChunkResult) {
     const searchResult: SearchResult = {
-      video_id: transcriptResult.video_id,
-      youtube_id: transcriptResult.youtube_id,
-      frame_id: transcriptResult.nearest_frame_id || `${transcriptResult.video_id}_000000`,
+      video_id: chunk.video_id,
+      youtube_id: undefined,
+      frame_id: `${chunk.video_id}_000000`,
       frame_number: 0,
-      timestamp_ms: transcriptResult.start_time_ms,
-      confidence: transcriptResult.score,
-      frame_image_url: transcriptResult.frame_image_url || "",
+      timestamp_ms: chunk.start_time_ms,
+      confidence: chunk.score,
+      frame_image_url: "",
       fps: 25,
     };
     setActiveResult(searchResult);
@@ -323,6 +335,19 @@ export default function Home() {
                 />
               </div>
 
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-400 shrink-0">Genre</label>
+                <select
+                  value={videoGenre}
+                  onChange={(e) => setVideoGenre(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  {ALL_GENRES.map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
+              </div>
+
               <button
                 onClick={handleSearch}
                 disabled={loading}
@@ -356,7 +381,7 @@ export default function Home() {
             <div className="flex items-center gap-2 flex-wrap">
               <input
                 type="text"
-                placeholder="Search transcript text (e.g. flood, goal, hospital)…"
+                placeholder="Search transcript chunks (e.g. cách nấu phở, kẹt xe, AI chip)…"
                 value={transcriptQuery}
                 onChange={(e) => setTranscriptQuery(e.target.value)}
                 className="flex-1 min-w-[200px] bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
@@ -373,6 +398,20 @@ export default function Home() {
                   onBlur={() => setTranscriptTopK(String(normalizeTopK(transcriptTopK)))}
                   className="w-20 bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-slate-400 shrink-0">Topic</label>
+                <select
+                  value={transcriptGenre}
+                  onChange={(e) => setTranscriptGenre(e.target.value)}
+                  className="bg-slate-800 border border-slate-600 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                >
+                  <option value="">Auto</option>
+                  {ALL_GENRES.filter(g => g !== "All").map((g) => (
+                    <option key={g} value={g}>{g}</option>
+                  ))}
+                </select>
               </div>
 
               <button
@@ -414,14 +453,36 @@ export default function Home() {
           />
         )}
 
-        {/* Transcript search results */}
+        {/* Transcript chunk search results */}
         {searchMode === "transcripts" && transcriptResponse && (
-          <TranscriptResultList
-            results={transcriptResponse.results}
-            total={transcriptResponse.total}
-            executionTimeMs={transcriptTimeMs}
-            onCardClick={handleTranscriptCardClick}
-          />
+          <div className="space-y-4">
+            <div className="flex items-center gap-4 text-sm text-slate-400">
+              <span>
+                <span className="text-white font-semibold">{transcriptResponse.total}</span> chunk matches
+              </span>
+              <span>·</span>
+              <span title="Total time for transcript chunk search">
+                <span className="text-white font-semibold">{transcriptTimeMs}</span> ms
+              </span>
+            </div>
+
+            {transcriptResponse.results.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {transcriptResponse.results.map((chunk, i) => (
+                  <TranscriptChunkCard
+                    key={chunk.chunk_id}
+                    result={chunk}
+                    rank={i + 1}
+                    onClick={handleChunkCardClick}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-slate-500 text-center py-16">
+                No matching chunks. Try different keywords.
+              </p>
+            )}
+          </div>
         )}
       </main>
 
