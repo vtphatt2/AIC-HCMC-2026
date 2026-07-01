@@ -114,8 +114,12 @@ fields = [
 
 **Embedding model:** `timm/PE-Core-bigG-14-448` → 1280-dimensional float vectors.
 
-**Index:** HNSW with COSINE metric.
+**Index Profiles:** The system supports three indexed collections depending on the selected search backend:
+1. `video_frames` — HNSW with COSINE metric.
+2. `video_frames_flat` — FLAT exact search.
+3. `video_frames_scann` — ScaNN approximate index.
 
+**HNSW Index Parameters:**
 ```python
 index_params = {
     "metric_type":  "COSINE",
@@ -127,12 +131,35 @@ index_params = {
 }
 ```
 
-**Search parameters:**
+**ScaNN Index Parameters:**
+```python
+index_params = {
+    "metric_type":  "COSINE",
+    "index_type":   "SCANN",
+    "params": {
+        "nlist":          127,   # number of centroids
+        "with_raw_data":  True   # keep raw vectors for float32 re-ranking
+    }
+}
+```
+
+**HNSW Search Parameters:**
 ```python
 search_params = {
     "metric_type": "COSINE",
     "params": {
         "ef": max(512 if top_k >= 50 else 256, top_k)
+    }
+}
+```
+
+**ScaNN Search Parameters:**
+```python
+search_params = {
+    "metric_type": "COSINE",
+    "params": {
+        "nprobe": 32,
+        "reorder_k": max(top_k, top_k * 5)
     }
 }
 ```

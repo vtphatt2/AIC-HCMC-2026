@@ -110,6 +110,7 @@ class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
     top_k: int = 100
+    vector_search_algorithm: str | None = None
 
 
 class TranslationRequest(BaseModel):
@@ -124,6 +125,10 @@ async def health():
         "status": "ok",
         "env_mode": os.getenv("ENV_MODE"),
         "vector_search_backend": os.getenv("VECTOR_SEARCH_BACKEND", "milvus"),
+        "milvus_collections": {
+            algorithm: milvus_client.collection_name_for_algorithm(algorithm)
+            for algorithm in ("hnsw", "flat", "scann")
+        },
         "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
@@ -187,6 +192,15 @@ async def list_strategies():
     ]
 
 
+@app.get("/api/vector-search-algorithms")
+async def list_vector_search_algorithms():
+    algorithms = _vector_search_algorithm_options()
+    return {
+        "default": _default_vector_algorithm(),
+        "algorithms": algorithms,
+    }
+
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
@@ -225,10 +239,15 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found.")
 
     strategy = _strategies[req.strategy_id]
+    query_groups = [g.model_dump() for g in req.query_groups]
+    if req.vector_search_algorithm:
+        algorithm = _normalize_vector_algorithm(req.vector_search_algorithm)
+        for group in query_groups:
+            group["_vector_search_algorithm"] = algorithm
 
     try:
         results = await strategy.search(
-            [g.model_dump() for g in req.query_groups],
+            query_groups,
             limit=top_k,
         )
     except TimeoutError as exc:
@@ -268,5 +287,72 @@ async def search(req: SearchRequest):
 async def raw_data(body: dict):
     query_groups = body.get("query_groups", [])
     limit = min(int(body.get("limit", 1000)), 1000)
+    if body.get("vector_search_algorithm"):
+        algorithm = _normalize_vector_algorithm(str(body["vector_search_algorithm"]))
+        for group in query_groups:
+            group["_vector_search_algorithm"] = algorithm
     data = await _data_provider.get_raw_data(query_groups, limit=limit)
     return data
+
+
+def _normalize_vector_algorithm(value: str) -> str:
+    algorithm = value.strip().lower()
+    if algorithm not in {"hnsw", "flat", "cagra", "scann"}:
+        raise HTTPException(400, "vector_search_algorithm must be 'hnsw', 'flat', 'cagra', or 'scann'.")
+    return algorithm
+
+
+def _default_vector_algorithm() -> str:
+    configured = os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower()
+    if configured == "flat":
+        return "flat"
+    if configured == "cagra":
+        return "cagra"
+    if configured == "scann":
+        return "scann"
+    return "hnsw"
+
+
+def _vector_search_algorithm_options() -> list[dict]:
+    available = milvus_client.available_milvus_algorithms()
+    return [
+        {
+            "id": "hnsw",
+            "name": "HNSW",
+            "available": available.get("hnsw", False),
+            "collection": milvus_client.collection_name_for_algorithm("hnsw"),
+            "description": "Milvus HNSW ANN search from the vector collection.",
+        },
+        {
+            "id": "scann",
+            "name": "ScaNN",
+            "available": available.get("scann", False),
+            "collection": milvus_client.collection_name_for_algorithm("scann"),
+            "description": "Milvus ScaNN approximate search with raw vector reordering.",
+        },
+        {
+            "id": "flat",
+            "name": "FLAT",
+            "available": available.get("flat", False),
+            "collection": milvus_client.collection_name_for_algorithm("flat"),
+            "description": "Milvus FLAT exact CPU search from the vector collection.",
+        },
+        {
+            "id": "cagra",
+            "name": "CAGRA",
+            "available": _cagra_available(),
+            "description": "NVIDIA GPU ANN search from the prepared cuVS CAGRA index.",
+        },
+    ]
+
+
+def _cagra_available() -> bool:
+    if importlib.util.find_spec("cuvs") is None or importlib.util.find_spec("cupy") is None:
+        return False
+    index_path = Path(os.getenv("CAGRA_INDEX_PATH", "cache/cagra/index.bin"))
+    frame_ids_path = Path(os.getenv("CAGRA_FRAME_IDS_PATH", "cache/cagra/frame_ids.txt"))
+    if not index_path.is_absolute():
+        index_path = Path(__file__).parent / index_path
+    if not frame_ids_path.is_absolute():
+        frame_ids_path = Path(__file__).parent / frame_ids_path
+    return index_path.is_file() and frame_ids_path.is_file()

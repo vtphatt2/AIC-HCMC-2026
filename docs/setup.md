@@ -379,6 +379,16 @@ python scripts/ingest_embeddings_to_milvus.py \
   --copy-keyframes
 ```
 
+To enable runtime HNSW/FLAT/ScaNN selection, build all three Milvus collections:
+
+```bash
+python scripts/ingest_embeddings_to_milvus.py \
+  --sample-root /path/to/AIC2026_sample \
+  --copy-keyframes \
+  --vector-index all \
+  --recreate-milvus
+```
+
 The script upserts video metadata into PostgreSQL and frame embeddings into
 Milvus, so it is safe to rerun after correcting metadata.
 
@@ -457,9 +467,12 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `ENV_MODE` | `SERVER` | Should always be `SERVER` on the GPU machine |
 | `MILVUS_HOST` | `localhost` | Milvus hostname |
 | `MILVUS_PORT` | `19530` | Milvus port |
-| `MILVUS_COLLECTION` | `video_frames` | Milvus collection name |
+| `MILVUS_COLLECTION` | `video_frames` | Default Milvus HNSW collection name |
+| `MILVUS_COLLECTION_HNSW` | `video_frames` | HNSW collection used for runtime selection |
+| `MILVUS_COLLECTION_FLAT` | `video_frames_flat` | FLAT collection used for runtime selection |
+| `MILVUS_COLLECTION_SCANN` | `video_frames_scann` | ScaNN collection used for runtime selection |
 | `VECTOR_DIM` | `1280` | Embedding dimension (PE-Core-bigG-14-448) |
-| `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus` for HNSW or `cagra` for cuVS GPU search |
+| `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus`/`hnsw`, `flat`, `scann`, or `cagra` |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |

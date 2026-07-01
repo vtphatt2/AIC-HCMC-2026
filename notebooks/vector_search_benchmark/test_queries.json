@@ -1,0 +1,2430 @@
+{
+  "summary": {
+    "purpose": "text retrieval benchmark queries for unique, visually clear keyframe scenes",
+    "query_count": 160,
+    "candidate_count": 79,
+    "source_candidate_count": 79,
+    "language": "vi",
+    "ground_truth_rule": "a retrieval is correct if it returns any same-moment keyframe in target.ground_truth_frame_ids",
+    "note": "Designed for vector-search algorithm comparison; queries are visually grounded and avoid full QA reasoning.",
+    "ground_truth_expansion": "core cluster plus immediate nearby same-video keyframes within 75 frame numbers, only if visually similar to the scene centroid; other selected candidate core frames are protected"
+  },
+  "queries": [
+    {
+      "id": "q001",
+      "candidate_id": "c001",
+      "language": "vi",
+      "query": "tìm cảnh màn hình trình chiếu tiếng Anh về Bộ trưởng giao thông, bên dưới có ảnh hai người đang họp báo",
+      "target": {
+        "frame_id": "L01_V003_020127",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020090",
+          "L01_V003_020127",
+          "L01_V003_020164"
+        ]
+      }
+    },
+    {
+      "id": "q002",
+      "candidate_id": "c001",
+      "language": "vi",
+      "query": "đoạn có slide trắng về giao thông năng lượng, giữa slide là khung ảnh hai diễn giả ngồi tại bàn họp báo",
+      "target": {
+        "frame_id": "L01_V003_020127",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020090",
+          "L01_V003_020127",
+          "L01_V003_020164"
+        ]
+      }
+    },
+    {
+      "id": "q003",
+      "candidate_id": "c002",
+      "language": "vi",
+      "query": "cảnh bên ngoài sân vận động Lincoln Financial Field, bảng tên lớn bị nắng chiếu ngược rất mạnh",
+      "target": {
+        "frame_id": "L01_V001_031270",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031270"
+        ]
+      }
+    },
+    {
+      "id": "q004",
+      "candidate_id": "c002",
+      "language": "vi",
+      "query": "tìm khung hình cổng sân bóng bầu dục với chữ Lincoln Financial Field và ánh mặt trời lóa phía trên",
+      "target": {
+        "frame_id": "L01_V001_031270",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031270"
+        ]
+      }
+    },
+    {
+      "id": "q005",
+      "candidate_id": "c003",
+      "language": "vi",
+      "query": "cận cảnh bên trong hộp kỹ thuật có nhiều dây điện màu xanh đỏ vàng và một mã QR nhỏ trên thiết bị",
+      "target": {
+        "frame_id": "L01_V004_002578",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_002578"
+        ]
+      }
+    },
+    {
+      "id": "q006",
+      "candidate_id": "c003",
+      "language": "vi",
+      "query": "tìm cảnh một người đang kiểm tra hộp thiết bị điện, phía trước có bó dây nhiều màu rất rõ",
+      "target": {
+        "frame_id": "L01_V004_002578",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_002578"
+        ]
+      }
+    },
+    {
+      "id": "q007",
+      "candidate_id": "c004",
+      "language": "vi",
+      "query": "người đàn ông mặc áo sơ mi xanh cúi xuống kiểm tra đường ống cạnh một bồn nhựa trắng lớn",
+      "target": {
+        "frame_id": "L01_V003_016024",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_015964",
+          "L01_V003_016024"
+        ]
+      }
+    },
+    {
+      "id": "q008",
+      "candidate_id": "c004",
+      "language": "vi",
+      "query": "cảnh trong khu kỹ thuật, một người đang thao tác với ống nước nối vào bồn màu trắng",
+      "target": {
+        "frame_id": "L01_V003_016024",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_015964",
+          "L01_V003_016024"
+        ]
+      }
+    },
+    {
+      "id": "q009",
+      "candidate_id": "c005",
+      "language": "vi",
+      "query": "hai người mặc đồ trang trọng đi trong hành lang sáng, người phụ nữ mặc váy màu nhạt ở phía trước",
+      "target": {
+        "frame_id": "L01_V005_032560",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_032539",
+          "L01_V005_032560",
+          "L01_V005_032582"
+        ]
+      }
+    },
+    {
+      "id": "q010",
+      "candidate_id": "c005",
+      "language": "vi",
+      "query": "tìm cảnh trong nhà có người phụ nữ váy sáng màu đi cạnh một người đàn ông lớn tuổi mặc vest",
+      "target": {
+        "frame_id": "L01_V005_032560",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_032539",
+          "L01_V005_032560",
+          "L01_V005_032582"
+        ]
+      }
+    },
+    {
+      "id": "q011",
+      "candidate_id": "c006",
+      "language": "vi",
+      "query": "màn hình phỏng vấn trực tuyến một phụ nữ da màu, phía sau là hình bản đồ lớn màu xám",
+      "target": {
+        "frame_id": "L01_V001_031118",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031089",
+          "L01_V001_031118",
+          "L01_V001_031147"
+        ]
+      }
+    },
+    {
+      "id": "q012",
+      "candidate_id": "c006",
+      "language": "vi",
+      "query": "người phụ nữ nói qua video call với nền bản đồ thế giới, khung hình là một cuộc phỏng vấn từ xa",
+      "target": {
+        "frame_id": "L01_V001_031118",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031089",
+          "L01_V001_031118",
+          "L01_V001_031147"
+        ]
+      }
+    },
+    {
+      "id": "q013",
+      "candidate_id": "c007",
+      "language": "vi",
+      "query": "cô dâu mặc váy trắng và chú rể mặc đồ trang trọng đang bước xuống cầu thang phủ thảm đỏ",
+      "target": {
+        "frame_id": "L01_V002_025319",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025300",
+          "L01_V002_025319",
+          "L01_V002_025338"
+        ]
+      }
+    },
+    {
+      "id": "q014",
+      "candidate_id": "c007",
+      "language": "vi",
+      "query": "cảnh đám cưới ngoài trời, cặp cô dâu chú rể đứng trên bậc thang đỏ trước một tòa nhà",
+      "target": {
+        "frame_id": "L01_V002_025319",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025300",
+          "L01_V002_025319",
+          "L01_V002_025338"
+        ]
+      }
+    },
+    {
+      "id": "q015",
+      "candidate_id": "c008",
+      "language": "vi",
+      "query": "màn hình máy tính y khoa hiển thị ảnh quét cơ thể màu trắng đen, bên cạnh có các thông số kỹ thuật",
+      "target": {
+        "frame_id": "L01_V002_024311",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024268",
+          "L01_V002_024290",
+          "L01_V002_024311"
+        ]
+      }
+    },
+    {
+      "id": "q016",
+      "candidate_id": "c008",
+      "language": "vi",
+      "query": "tìm cảnh phần mềm bệnh viện đang mở hình chụp y khoa màu trắng trên nền giao diện tối",
+      "target": {
+        "frame_id": "L01_V002_024311",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024268",
+          "L01_V002_024290",
+          "L01_V002_024311"
+        ]
+      }
+    },
+    {
+      "id": "q017",
+      "candidate_id": "c009",
+      "language": "vi",
+      "query": "người phụ nữ tóc dài được phỏng vấn trong căn phòng nhỏ, phía sau có nhiều khăn treo trên tường",
+      "target": {
+        "frame_id": "L01_V002_025650",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025617",
+          "L01_V002_025650",
+          "L01_V002_025683"
+        ]
+      }
+    },
+    {
+      "id": "q018",
+      "candidate_id": "c009",
+      "language": "vi",
+      "query": "cảnh phỏng vấn một phụ nữ mặc áo vàng nhạt, nền phía sau là phòng làm việc có tranh và khăn vải",
+      "target": {
+        "frame_id": "L01_V002_025650",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025617",
+          "L01_V002_025650",
+          "L01_V002_025683"
+        ]
+      }
+    },
+    {
+      "id": "q019",
+      "candidate_id": "c010",
+      "language": "vi",
+      "query": "nhóm người đứng sát mép nước, đang bê một thùng nhựa trắng xanh khá lớn",
+      "target": {
+        "frame_id": "L01_V004_022858",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_022794",
+          "L01_V004_022813",
+          "L01_V004_022858"
+        ]
+      }
+    },
+    {
+      "id": "q020",
+      "candidate_id": "c010",
+      "language": "vi",
+      "query": "cảnh vận chuyển đồ gần thuyền gỗ, vài người cùng nâng thùng nhựa trong không gian chật",
+      "target": {
+        "frame_id": "L01_V004_022858",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_022794",
+          "L01_V004_022813",
+          "L01_V004_022858"
+        ]
+      }
+    },
+    {
+      "id": "q021",
+      "candidate_id": "c011",
+      "language": "vi",
+      "query": "người đàn ông đội nón đứng giữa đồng cỏ và nhìn một trực thăng đang bay thấp phía trước",
+      "target": {
+        "frame_id": "L01_V004_022902",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_022902",
+          "L01_V004_022957"
+        ]
+      }
+    },
+    {
+      "id": "q022",
+      "candidate_id": "c011",
+      "language": "vi",
+      "query": "tìm cảnh trực thăng hạ thấp trên bãi đất rộng, có người dân đứng quan sát từ phía sau",
+      "target": {
+        "frame_id": "L01_V004_022902",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_022902",
+          "L01_V004_022957"
+        ]
+      }
+    },
+    {
+      "id": "q023",
+      "candidate_id": "c012",
+      "language": "vi",
+      "query": "màn hình mạng xã hội hiển thị trang Donald J. Trump, phía trên là ảnh đám đông và máy bay",
+      "target": {
+        "frame_id": "L01_V004_032250",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_032250",
+          "L01_V004_032316"
+        ]
+      }
+    },
+    {
+      "id": "q024",
+      "candidate_id": "c012",
+      "language": "vi",
+      "query": "ảnh chụp giao diện Facebook của Donald Trump với ảnh bìa là sân khấu đông người ngoài trời",
+      "target": {
+        "frame_id": "L01_V004_032250",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_032250",
+          "L01_V004_032316"
+        ]
+      }
+    },
+    {
+      "id": "q025",
+      "candidate_id": "c013",
+      "language": "vi",
+      "query": "món rau xào được đặt trên đĩa trắng, nền đỏ có chữ HTV Online mờ phía sau",
+      "target": {
+        "frame_id": "L03_V001_000085",
+        "video_id": "L03_V001",
+        "ground_truth_frame_ids": [
+          "L03_V001_000043",
+          "L03_V001_000085"
+        ]
+      }
+    },
+    {
+      "id": "q026",
+      "candidate_id": "c013",
+      "language": "vi",
+      "query": "tìm cảnh chương trình ẩm thực nền đỏ, giữa khung hình là đĩa rau xanh xào nhìn từ trên xuống",
+      "target": {
+        "frame_id": "L03_V001_000085",
+        "video_id": "L03_V001",
+        "ground_truth_frame_ids": [
+          "L03_V001_000043",
+          "L03_V001_000085"
+        ]
+      }
+    },
+    {
+      "id": "q027",
+      "candidate_id": "c014",
+      "language": "vi",
+      "query": "người đàn ông đứng cạnh máy chụp CT màu trắng trong phòng y tế, tay đang chỉ vào màn điều khiển",
+      "target": {
+        "frame_id": "L01_V002_024141",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024117",
+          "L01_V002_024141",
+          "L01_V002_024165"
+        ]
+      }
+    },
+    {
+      "id": "q028",
+      "candidate_id": "c014",
+      "language": "vi",
+      "query": "cảnh giới thiệu thiết bị quét y khoa Philips, có kỹ thuật viên đứng bên trái máy lớn hình vòng",
+      "target": {
+        "frame_id": "L01_V002_024141",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024117",
+          "L01_V002_024141",
+          "L01_V002_024165"
+        ]
+      }
+    },
+    {
+      "id": "q029",
+      "candidate_id": "c015",
+      "language": "vi",
+      "query": "nhóm vận động viên mặc áo đỏ đang tập luyện ngoài trời, bên cạnh có một người ngồi xe lăn",
+      "target": {
+        "frame_id": "L01_V001_030802",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_030802"
+        ]
+      }
+    },
+    {
+      "id": "q030",
+      "candidate_id": "c015",
+      "language": "vi",
+      "query": "cảnh đội thể thao đứng thành nhóm trên sân, nhiều người mặc đồng phục đỏ và có xe lăn ở giữa",
+      "target": {
+        "frame_id": "L01_V001_030802",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_030802"
+        ]
+      }
+    },
+    {
+      "id": "q031",
+      "candidate_id": "c016",
+      "language": "vi",
+      "query": "một tô salad nhiều màu đặt trên nền đỏ, có rau xanh và các viên trắng tròn",
+      "target": {
+        "frame_id": "L03_V001_000127",
+        "video_id": "L03_V001",
+        "ground_truth_frame_ids": [
+          "L03_V001_000127"
+        ]
+      }
+    },
+    {
+      "id": "q032",
+      "candidate_id": "c016",
+      "language": "vi",
+      "query": "tìm cảnh món ăn trong chén thủy tinh, nền đỏ của chương trình nấu ăn làm nổi bật phần salad",
+      "target": {
+        "frame_id": "L03_V001_000127",
+        "video_id": "L03_V001",
+        "ground_truth_frame_ids": [
+          "L03_V001_000127"
+        ]
+      }
+    },
+    {
+      "id": "q033",
+      "candidate_id": "c017",
+      "language": "vi",
+      "query": "trận bóng đá với cầu thủ áo đỏ trắng số 7 ở gần cầu thủ áo xanh, phía sau là khán đài đông người",
+      "target": {
+        "frame_id": "L01_V004_031562",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_031468",
+          "L01_V004_031520",
+          "L01_V004_031562",
+          "L01_V004_031600"
+        ]
+      }
+    },
+    {
+      "id": "q034",
+      "candidate_id": "c017",
+      "language": "vi",
+      "query": "cảnh trên sân bóng, cầu thủ đội áo xanh chạm tay với cầu thủ đội áo đỏ trắng trước đám đông cổ động viên",
+      "target": {
+        "frame_id": "L01_V004_031562",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_031468",
+          "L01_V004_031520",
+          "L01_V004_031562",
+          "L01_V004_031600"
+        ]
+      }
+    },
+    {
+      "id": "q035",
+      "candidate_id": "c018",
+      "language": "vi",
+      "query": "mặt tiền tòa nhà kiến trúc cổ màu trắng, phía trước có vài người đi bộ và một biển đứng gần cửa",
+      "target": {
+        "frame_id": "L01_V001_024337",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_024264",
+          "L01_V001_024314",
+          "L01_V001_024337",
+          "L01_V001_024360"
+        ]
+      }
+    },
+    {
+      "id": "q036",
+      "candidate_id": "c018",
+      "language": "vi",
+      "query": "cảnh bên ngoài một công trình châu Âu màu trắng, có cửa vòm và người đi ngang trên vỉa hè",
+      "target": {
+        "frame_id": "L01_V001_024337",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_024264",
+          "L01_V001_024314",
+          "L01_V001_024337",
+          "L01_V001_024360"
+        ]
+      }
+    },
+    {
+      "id": "q037",
+      "candidate_id": "c019",
+      "language": "vi",
+      "query": "cận cảnh màn hình máy tính y tế đang phân tích ảnh quét màu trắng trên nền giao diện đen",
+      "target": {
+        "frame_id": "L01_V002_024218",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024218"
+        ]
+      }
+    },
+    {
+      "id": "q038",
+      "candidate_id": "c019",
+      "language": "vi",
+      "query": "tìm cảnh phần mềm chẩn đoán hiển thị hình quét y khoa, cạnh phải có bảng thông số",
+      "target": {
+        "frame_id": "L01_V002_024218",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_024218"
+        ]
+      }
+    },
+    {
+      "id": "q039",
+      "candidate_id": "c020",
+      "language": "vi",
+      "query": "ba người đứng trên vỉa hè nhiều cây xanh, một phụ nữ áo trắng đang cúi nhìn điện thoại",
+      "target": {
+        "frame_id": "L01_V004_030516",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_030450",
+          "L01_V004_030516"
+        ]
+      }
+    },
+    {
+      "id": "q040",
+      "candidate_id": "c020",
+      "language": "vi",
+      "query": "cảnh đường phố có trạm chờ bên trái, một nhóm người dừng lại cạnh bờ tường phủ cây",
+      "target": {
+        "frame_id": "L01_V004_030516",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_030450",
+          "L01_V004_030516"
+        ]
+      }
+    },
+    {
+      "id": "q041",
+      "candidate_id": "c021",
+      "language": "vi",
+      "query": "trạm xăng có mái che xanh, rất nhiều ô tô và xe máy đang xếp hàng ở khu vực bơm nhiên liệu",
+      "target": {
+        "frame_id": "L01_V003_023730",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023711",
+          "L01_V003_023730",
+          "L01_V003_023750"
+        ]
+      }
+    },
+    {
+      "id": "q042",
+      "candidate_id": "c021",
+      "language": "vi",
+      "query": "cảnh cây xăng ngoài trời đông xe chờ, phía trước có người đi xe máy và nhiều ô tô màu trắng xám",
+      "target": {
+        "frame_id": "L01_V003_023730",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023711",
+          "L01_V003_023730",
+          "L01_V003_023750"
+        ]
+      }
+    },
+    {
+      "id": "q043",
+      "candidate_id": "c022",
+      "language": "vi",
+      "query": "đoàn người mặc đồng phục đứng chụp ảnh trước cổng khu phố văn hóa, tay cầm băng rôn đỏ",
+      "target": {
+        "frame_id": "L01_V003_010782",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_010782"
+        ]
+      }
+    },
+    {
+      "id": "q044",
+      "candidate_id": "c022",
+      "language": "vi",
+      "query": "cảnh tập thể ngoài trời dưới nhiều lá cờ, phía sau là cổng có bảng chữ khu phố văn hóa",
+      "target": {
+        "frame_id": "L01_V003_010782",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_010782"
+        ]
+      }
+    },
+    {
+      "id": "q045",
+      "candidate_id": "c023",
+      "language": "vi",
+      "query": "sân khấu cuộc thi có phông xanh và dòng chữ đỏ lớn ở giữa, phía trên có biểu tượng công an",
+      "target": {
+        "frame_id": "L01_V001_008714",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_008714",
+          "L01_V001_008765",
+          "L01_V001_008784"
+        ]
+      }
+    },
+    {
+      "id": "q046",
+      "candidate_id": "c023",
+      "language": "vi",
+      "query": "màn hình hội thi trong hội trường, nền xanh ghi nhiều chữ tiếng Việt và tiêu đề CUỘC THI màu đỏ",
+      "target": {
+        "frame_id": "L01_V001_008714",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_008714",
+          "L01_V001_008765",
+          "L01_V001_008784"
+        ]
+      }
+    },
+    {
+      "id": "q047",
+      "candidate_id": "c024",
+      "language": "vi",
+      "query": "cận cảnh phần đầu xe Mercedes màu trắng, logo ngôi sao nằm trên lưới tản nhiệt màu đen",
+      "target": {
+        "frame_id": "L01_V003_021717",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021717"
+        ]
+      }
+    },
+    {
+      "id": "q048",
+      "candidate_id": "c024",
+      "language": "vi",
+      "query": "tìm cảnh quay sát mũi xe Mercedes-Benz, bên hông có bảng sự kiện màu tối phản chiếu trên xe",
+      "target": {
+        "frame_id": "L01_V003_021717",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021717"
+        ]
+      }
+    },
+    {
+      "id": "q049",
+      "candidate_id": "c025",
+      "language": "vi",
+      "query": "logo ngôi sao Mercedes màu bạc nằm giữa nền đen, khung hình gần như chỉ có biểu tượng xe",
+      "target": {
+        "frame_id": "L01_V003_021664",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021664"
+        ]
+      }
+    },
+    {
+      "id": "q050",
+      "candidate_id": "c025",
+      "language": "vi",
+      "query": "màn hình tối với biểu tượng Mercedes-Benz lớn ở trung tâm và góc trên có logo kênh truyền hình",
+      "target": {
+        "frame_id": "L01_V003_021664",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021664"
+        ]
+      }
+    },
+    {
+      "id": "q051",
+      "candidate_id": "c026",
+      "language": "vi",
+      "query": "slide bài giảng màu xanh về ôn tập môn toán, tiêu đề là tính chất đơn điệu của hàm số",
+      "target": {
+        "frame_id": "L02_V001_000127",
+        "video_id": "L02_V001",
+        "ground_truth_frame_ids": [
+          "L02_V001_000096",
+          "L02_V001_000127",
+          "L02_V001_000158"
+        ]
+      }
+    },
+    {
+      "id": "q052",
+      "candidate_id": "c026",
+      "language": "vi",
+      "query": "màn hình lớp học trực tuyến ghi chuyên đề toán, chữ vàng trắng nổi bật trên nền xanh dương",
+      "target": {
+        "frame_id": "L02_V001_000127",
+        "video_id": "L02_V001",
+        "ground_truth_frame_ids": [
+          "L02_V001_000096",
+          "L02_V001_000127",
+          "L02_V001_000158"
+        ]
+      }
+    },
+    {
+      "id": "q053",
+      "candidate_id": "c027",
+      "language": "vi",
+      "query": "màn hình camera nhiệt nhiều màu cho thấy một người đang đi qua cửa kiểm tra thân nhiệt",
+      "target": {
+        "frame_id": "L01_V003_017088",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_017026",
+          "L01_V003_017068",
+          "L01_V003_017088",
+          "L01_V003_017109"
+        ]
+      }
+    },
+    {
+      "id": "q054",
+      "candidate_id": "c027",
+      "language": "vi",
+      "query": "tìm cảnh ảnh nhiệt màu xanh đỏ vàng, giữa khung hình là dáng người hiện rõ trên màn giám sát",
+      "target": {
+        "frame_id": "L01_V003_017088",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_017026",
+          "L01_V003_017068",
+          "L01_V003_017088",
+          "L01_V003_017109"
+        ]
+      }
+    },
+    {
+      "id": "q055",
+      "candidate_id": "c028",
+      "language": "vi",
+      "query": "đôi tay đang xếp nhiều mẫu vật liệu hình chữ nhật màu nâu xám trên mặt bàn trắng",
+      "target": {
+        "frame_id": "L01_V002_025522",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025492",
+          "L01_V002_025522",
+          "L01_V002_025552"
+        ]
+      }
+    },
+    {
+      "id": "q056",
+      "candidate_id": "c028",
+      "language": "vi",
+      "query": "cận cảnh người đặt các miếng mẫu vật liệu thành nhiều hàng để so sánh màu sắc",
+      "target": {
+        "frame_id": "L01_V002_025522",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025492",
+          "L01_V002_025522",
+          "L01_V002_025552"
+        ]
+      }
+    },
+    {
+      "id": "q057",
+      "candidate_id": "c029",
+      "language": "vi",
+      "query": "người mặc áo đỏ xanh đang trao túi quà cho những người ngồi trong một căn phòng đông người",
+      "target": {
+        "frame_id": "L01_V002_008890",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_008870",
+          "L01_V002_008890",
+          "L01_V002_008910"
+        ]
+      }
+    },
+    {
+      "id": "q058",
+      "candidate_id": "c029",
+      "language": "vi",
+      "query": "cảnh phát quà trong nhà, nhiều người ngồi thành hàng còn người đứng phía trước đưa túi màu hồng",
+      "target": {
+        "frame_id": "L01_V002_008890",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_008870",
+          "L01_V002_008890",
+          "L01_V002_008910"
+        ]
+      }
+    },
+    {
+      "id": "q059",
+      "candidate_id": "c030",
+      "language": "vi",
+      "query": "xe bồn chở nhiên liệu màu trắng chạy ngang sân bay, phía sau có đuôi máy bay nhiều màu",
+      "target": {
+        "frame_id": "L01_V003_021048",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021025",
+          "L01_V003_021048",
+          "L01_V003_021072"
+        ]
+      }
+    },
+    {
+      "id": "q060",
+      "candidate_id": "c030",
+      "language": "vi",
+      "query": "cảnh xe bồn lớn di chuyển trên đường băng hoặc khu vực sân bay, nền sau là máy bay đỗ gần đó",
+      "target": {
+        "frame_id": "L01_V003_021048",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021025",
+          "L01_V003_021048",
+          "L01_V003_021072"
+        ]
+      }
+    },
+    {
+      "id": "q061",
+      "candidate_id": "c031",
+      "language": "vi",
+      "query": "biểu tượng cúp FIFA màu vàng đặt trước nền kính, phía sau có số 26 màu đỏ rất lớn",
+      "target": {
+        "frame_id": "L01_V001_031208",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031208"
+        ]
+      }
+    },
+    {
+      "id": "q062",
+      "candidate_id": "c031",
+      "language": "vi",
+      "query": "tìm cảnh logo World Cup 26, chiếc cúp vàng nằm giữa khung hình trên nền bạc lấp lánh",
+      "target": {
+        "frame_id": "L01_V001_031208",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031208"
+        ]
+      }
+    },
+    {
+      "id": "q063",
+      "candidate_id": "c032",
+      "language": "vi",
+      "query": "bảng trình chiếu trong xưởng dệt ghi chữ Weaving for Burberry, phía dưới có nhiều dòng chữ nhỏ",
+      "target": {
+        "frame_id": "L01_V002_025250",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025250"
+        ]
+      }
+    },
+    {
+      "id": "q064",
+      "candidate_id": "c032",
+      "language": "vi",
+      "query": "màn hình trắng treo trong nhà máy, tiêu đề nói về dệt vải cho Burberry và quy trình sản xuất",
+      "target": {
+        "frame_id": "L01_V002_025250",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025250"
+        ]
+      }
+    },
+    {
+      "id": "q065",
+      "candidate_id": "c033",
+      "language": "vi",
+      "query": "video dọc bị làm mờ hai bên, ở giữa là khu đất ven đường với cây lớn và vài xe phía xa",
+      "target": {
+        "frame_id": "L01_V003_019490",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_019490"
+        ]
+      }
+    },
+    {
+      "id": "q066",
+      "candidate_id": "c033",
+      "language": "vi",
+      "query": "khung hình điện thoại quay một khu đất trống gần đường, nền có cây cao và nhà hoặc xe đậu xa",
+      "target": {
+        "frame_id": "L01_V003_019490",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_019490"
+        ]
+      }
+    },
+    {
+      "id": "q067",
+      "candidate_id": "c034",
+      "language": "vi",
+      "query": "mặt tiền trạm xăng Petronas trong khu đô thị, có mái đỏ và nhiều cột bơm xăng phía trước",
+      "target": {
+        "frame_id": "L01_V003_020464",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020376",
+          "L01_V003_020437",
+          "L01_V003_020464",
+          "L01_V003_020491",
+          "L01_V003_020554",
+          "L01_V003_020610",
+          "L01_V003_020628"
+        ]
+      }
+    },
+    {
+      "id": "q068",
+      "candidate_id": "c034",
+      "language": "vi",
+      "query": "cảnh cây xăng rộng dưới trời nắng, phía sau là tòa nhà cao tầng và bảng Petronas màu đỏ xanh",
+      "target": {
+        "frame_id": "L01_V003_020464",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020376",
+          "L01_V003_020437",
+          "L01_V003_020464",
+          "L01_V003_020491",
+          "L01_V003_020554",
+          "L01_V003_020610",
+          "L01_V003_020628"
+        ]
+      }
+    },
+    {
+      "id": "q069",
+      "candidate_id": "c035",
+      "language": "vi",
+      "query": "cột biển hiệu cây xăng BP rất cao dưới bầu trời xanh, bên dưới có nhiều logo cửa hàng khác",
+      "target": {
+        "frame_id": "L01_V003_023882",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023808",
+          "L01_V003_023864",
+          "L01_V003_023882",
+          "L01_V003_023901"
+        ]
+      }
+    },
+    {
+      "id": "q070",
+      "candidate_id": "c035",
+      "language": "vi",
+      "query": "tìm cảnh biển giá hoặc biển thương hiệu nhiên liệu, nổi bật là logo BP màu xanh vàng ở trên cùng",
+      "target": {
+        "frame_id": "L01_V003_023882",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023808",
+          "L01_V003_023864",
+          "L01_V003_023882",
+          "L01_V003_023901"
+        ]
+      }
+    },
+    {
+      "id": "q071",
+      "candidate_id": "c036",
+      "language": "vi",
+      "query": "camera giám sát quay một nhóm người ngồi quanh bàn ăn trong căn phòng tường màu cam",
+      "target": {
+        "frame_id": "L01_V005_014017",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_013987",
+          "L01_V005_014017",
+          "L01_V005_014047"
+        ]
+      }
+    },
+    {
+      "id": "q072",
+      "candidate_id": "c036",
+      "language": "vi",
+      "query": "ảnh CCTV mờ từ trên cao, nhiều người đang ngồi ăn uống quanh bàn tròn trong phòng nhỏ",
+      "target": {
+        "frame_id": "L01_V005_014017",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_013987",
+          "L01_V005_014017",
+          "L01_V005_014047"
+        ]
+      }
+    },
+    {
+      "id": "q073",
+      "candidate_id": "c037",
+      "language": "vi",
+      "query": "cận cảnh bàn phím số của máy ATM hoặc thiết bị giao dịch, các phím trắng nằm trong khung đen",
+      "target": {
+        "frame_id": "L01_V003_023588",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023588",
+          "L01_V003_023651"
+        ]
+      }
+    },
+    {
+      "id": "q074",
+      "candidate_id": "c037",
+      "language": "vi",
+      "query": "tìm khung hình chụp sát cụm phím nhập mã, bên cạnh có khe hoặc bộ phận nhựa màu xám",
+      "target": {
+        "frame_id": "L01_V003_023588",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_023588",
+          "L01_V003_023651"
+        ]
+      }
+    },
+    {
+      "id": "q075",
+      "candidate_id": "c038",
+      "language": "vi",
+      "query": "người đàn ông mặc áo khoác xám được phỏng vấn trong chuồng bò, phía sau có nhiều con bò đang ăn",
+      "target": {
+        "frame_id": "L01_V002_020024",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_019992",
+          "L01_V002_020024",
+          "L01_V002_020056"
+        ]
+      }
+    },
+    {
+      "id": "q076",
+      "candidate_id": "c038",
+      "language": "vi",
+      "query": "cảnh trang trại bò trong nhà kho, một người đứng trước máy quay còn đàn bò nằm sau hàng rào sắt",
+      "target": {
+        "frame_id": "L01_V002_020024",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_019992",
+          "L01_V002_020024",
+          "L01_V002_020056"
+        ]
+      }
+    },
+    {
+      "id": "q077",
+      "candidate_id": "c039",
+      "language": "vi",
+      "query": "nhiều chiếc cà vạt sọc nhiều màu treo sát nhau trong tủ hoặc khu trưng bày quần áo",
+      "target": {
+        "frame_id": "L01_V002_025186",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025186"
+        ]
+      }
+    },
+    {
+      "id": "q078",
+      "candidate_id": "c039",
+      "language": "vi",
+      "query": "cận cảnh các cà vạt dài với hoa văn kẻ sọc, nền sau tối và khung hình chỉ thấy một góc tủ",
+      "target": {
+        "frame_id": "L01_V002_025186",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_025186"
+        ]
+      }
+    },
+    {
+      "id": "q079",
+      "candidate_id": "c040",
+      "language": "vi",
+      "query": "nhóm thủy thủ mặc quân phục trắng xanh ngồi trong sân hoặc hội trường có cầu thang phía sau",
+      "target": {
+        "frame_id": "L01_V002_004134",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_004084",
+          "L01_V002_004134",
+          "L01_V002_004169",
+          "L01_V002_004190"
+        ]
+      }
+    },
+    {
+      "id": "q080",
+      "candidate_id": "c040",
+      "language": "vi",
+      "query": "cảnh nhiều người mặc đồng phục hải quân đang ngồi thành hàng, một vài người quay sang nói chuyện",
+      "target": {
+        "frame_id": "L01_V002_004134",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_004084",
+          "L01_V002_004134",
+          "L01_V002_004169",
+          "L01_V002_004190"
+        ]
+      }
+    },
+    {
+      "id": "q081",
+      "candidate_id": "c041",
+      "language": "vi",
+      "query": "người đàn ông mặc vest đen được phỏng vấn trong không gian sáng, phía sau có nhiều người và tranh ảnh",
+      "target": {
+        "frame_id": "L01_V001_001717",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_001666",
+          "L01_V001_001717",
+          "L01_V001_001768"
+        ]
+      }
+    },
+    {
+      "id": "q082",
+      "candidate_id": "c041",
+      "language": "vi",
+      "query": "cảnh phỏng vấn một người đàn ông đeo kính, phía sau là khu trưng bày đông người và nhiều tranh ảnh",
+      "target": {
+        "frame_id": "L01_V001_001717",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_001666",
+          "L01_V001_001717",
+          "L01_V001_001768"
+        ]
+      }
+    },
+    {
+      "id": "q083",
+      "candidate_id": "c042",
+      "language": "vi",
+      "query": "người phụ nữ tóc xoăn đứng ngoài trời gần máy bay chở hàng màu trắng xanh phía sau",
+      "target": {
+        "frame_id": "L01_V003_016755",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_016645",
+          "L01_V003_016700",
+          "L01_V003_016755",
+          "L01_V003_016810",
+          "L01_V003_016865"
+        ]
+      }
+    },
+    {
+      "id": "q084",
+      "candidate_id": "c042",
+      "language": "vi",
+      "query": "cảnh phỏng vấn một phụ nữ lớn tuổi ở sân bay, nền có thân máy bay cargo và bầu trời sáng",
+      "target": {
+        "frame_id": "L01_V003_016755",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_016645",
+          "L01_V003_016700",
+          "L01_V003_016755",
+          "L01_V003_016810",
+          "L01_V003_016865"
+        ]
+      }
+    },
+    {
+      "id": "q085",
+      "candidate_id": "c043",
+      "language": "vi",
+      "query": "sảnh sân bay có rất nhiều xe đẩy hành lý xếp hàng, phía sau có biển Cuba và quầy thông tin",
+      "target": {
+        "frame_id": "L01_V003_021116",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021116"
+        ]
+      }
+    },
+    {
+      "id": "q086",
+      "candidate_id": "c043",
+      "language": "vi",
+      "query": "tìm cảnh trong nhà ga, dãy xe đẩy kim loại nằm trước bức tường có ảnh du lịch và chữ Cuba",
+      "target": {
+        "frame_id": "L01_V003_021116",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021116"
+        ]
+      }
+    },
+    {
+      "id": "q087",
+      "candidate_id": "c044",
+      "language": "vi",
+      "query": "sân trường đông học sinh và người lớn, phía sau là dãy phòng học màu xanh nhạt mái ngói đỏ",
+      "target": {
+        "frame_id": "L01_V002_004332",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_004272",
+          "L01_V002_004332"
+        ]
+      }
+    },
+    {
+      "id": "q088",
+      "candidate_id": "c044",
+      "language": "vi",
+      "query": "đám đông đứng trong sân trường dưới bóng cây, nhiều em mặc áo trắng còn người lớn mặc áo dài",
+      "target": {
+        "frame_id": "L01_V002_004332",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_004272",
+          "L01_V002_004332"
+        ]
+      }
+    },
+    {
+      "id": "q089",
+      "candidate_id": "c045",
+      "language": "vi",
+      "query": "người phụ nữ đứng cạnh bức phác họa chân dung bằng bút chì trên tường trắng",
+      "target": {
+        "frame_id": "L01_V001_023389",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_023389",
+          "L01_V001_023412",
+          "L01_V001_023435",
+          "L01_V001_023638"
+        ]
+      }
+    },
+    {
+      "id": "q090",
+      "candidate_id": "c045",
+      "language": "vi",
+      "query": "cận cảnh một phụ nữ tóc dài trong phòng triển lãm, phía sau là tranh vẽ khuôn mặt người",
+      "target": {
+        "frame_id": "L01_V001_023389",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_023389",
+          "L01_V001_023412",
+          "L01_V001_023435",
+          "L01_V001_023638"
+        ]
+      }
+    },
+    {
+      "id": "q091",
+      "candidate_id": "c046",
+      "language": "vi",
+      "query": "công nhân đội mũ bảo hộ vàng và găng tay đang kiểm tra tủ điện có rất nhiều dây màu",
+      "target": {
+        "frame_id": "L01_V004_002517",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_002498",
+          "L01_V004_002517",
+          "L01_V004_002536"
+        ]
+      }
+    },
+    {
+      "id": "q092",
+      "candidate_id": "c046",
+      "language": "vi",
+      "query": "thợ kỹ thuật mặc đồ xanh thao tác trong hộp điện, phía trên là bó cáp nhiều màu treo dày đặc",
+      "target": {
+        "frame_id": "L01_V004_002517",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_002498",
+          "L01_V004_002517",
+          "L01_V004_002536"
+        ]
+      }
+    },
+    {
+      "id": "q093",
+      "candidate_id": "c047",
+      "language": "vi",
+      "query": "cận cảnh hộ chiếu, điện thoại và một vật vàng đặt trên cân điện tử nhỏ trên mặt bàn",
+      "target": {
+        "frame_id": "L01_V005_019027",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_018984",
+          "L01_V005_019006",
+          "L01_V005_019027"
+        ]
+      }
+    },
+    {
+      "id": "q094",
+      "candidate_id": "c047",
+      "language": "vi",
+      "query": "bàn kiểm tra có giấy tờ tùy thân, điện thoại hiển thị mã QR và vật màu vàng hình tròn",
+      "target": {
+        "frame_id": "L01_V005_019027",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_018984",
+          "L01_V005_019006",
+          "L01_V005_019027"
+        ]
+      }
+    },
+    {
+      "id": "q095",
+      "candidate_id": "c048",
+      "language": "vi",
+      "query": "bảng thực đơn dinh dưỡng màu đỏ trắng cho người thừa cân, chia rõ bữa sáng trưa tối",
+      "target": {
+        "frame_id": "L03_V002_015882",
+        "video_id": "L03_V002",
+        "ground_truth_frame_ids": [
+          "L03_V002_015820",
+          "L03_V002_015882",
+          "L03_V002_015943"
+        ]
+      }
+    },
+    {
+      "id": "q096",
+      "candidate_id": "c048",
+      "language": "vi",
+      "query": "màn hình tư vấn ăn uống ghi nhiều món trong các ô đỏ, bên trái có logo món ngon mỗi ngày",
+      "target": {
+        "frame_id": "L03_V002_015882",
+        "video_id": "L03_V002",
+        "ground_truth_frame_ids": [
+          "L03_V002_015820",
+          "L03_V002_015882",
+          "L03_V002_015943"
+        ]
+      }
+    },
+    {
+      "id": "q097",
+      "candidate_id": "c049",
+      "language": "vi",
+      "query": "người đàn ông đi trên vỉa hè trước cửa hàng có bảng tròn màu hồng và làn sương hoặc hơi nước",
+      "target": {
+        "frame_id": "L01_V001_031339",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031339",
+          "L01_V001_031396"
+        ]
+      }
+    },
+    {
+      "id": "q098",
+      "candidate_id": "c049",
+      "language": "vi",
+      "query": "cảnh đường phố thời trang, một người mặc áo trắng quần nâu bước qua mặt tiền cửa hàng sáng màu",
+      "target": {
+        "frame_id": "L01_V001_031339",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031339",
+          "L01_V001_031396"
+        ]
+      }
+    },
+    {
+      "id": "q099",
+      "candidate_id": "c050",
+      "language": "vi",
+      "query": "người phụ nữ mặc áo khoác vàng đứng phát biểu trước micro trong phòng có màn chiếu bên trái",
+      "target": {
+        "frame_id": "L01_V001_024184",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_024102",
+          "L01_V001_024157",
+          "L01_V001_024184",
+          "L01_V001_024211"
+        ]
+      }
+    },
+    {
+      "id": "q100",
+      "candidate_id": "c050",
+      "language": "vi",
+      "query": "cảnh diễn giả nữ nói tại bục, phía sau là tường xám và khung tranh chữ nhỏ trong phòng họp",
+      "target": {
+        "frame_id": "L01_V001_024184",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_024102",
+          "L01_V001_024157",
+          "L01_V001_024184",
+          "L01_V001_024211"
+        ]
+      }
+    },
+    {
+      "id": "q101",
+      "candidate_id": "c051",
+      "language": "vi",
+      "query": "phòng họp có nhiều người lớn tuổi ngồi quanh bàn, trên màn hình có phụ đề tiếng Trung",
+      "target": {
+        "frame_id": "L01_V005_030640",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_030511",
+          "L01_V005_030538",
+          "L01_V005_030564",
+          "L01_V005_030617",
+          "L01_V005_030640",
+          "L01_V005_030662"
+        ]
+      }
+    },
+    {
+      "id": "q102",
+      "candidate_id": "c051",
+      "language": "vi",
+      "query": "bản tin Trung Quốc quay cảnh họp trong phòng rèm tím, một người đàn ông ngồi bên phải đang nói chuyện",
+      "target": {
+        "frame_id": "L01_V005_030640",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_030511",
+          "L01_V005_030538",
+          "L01_V005_030564",
+          "L01_V005_030617",
+          "L01_V005_030640",
+          "L01_V005_030662"
+        ]
+      }
+    },
+    {
+      "id": "q103",
+      "candidate_id": "c052",
+      "language": "vi",
+      "query": "người mặc áo khoác đen đứng chọn đồ trong cửa hàng đồ chơi đầy gấu bông màu hồng",
+      "target": {
+        "frame_id": "L01_V001_002472",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_002420",
+          "L01_V001_002472",
+          "L01_V001_002515",
+          "L01_V001_002534"
+        ]
+      }
+    },
+    {
+      "id": "q104",
+      "candidate_id": "c052",
+      "language": "vi",
+      "query": "khách hàng đeo ba lô đứng trước kệ thú nhồi bông và đồ chơi trẻ em sáng màu",
+      "target": {
+        "frame_id": "L01_V001_002472",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_002420",
+          "L01_V001_002472",
+          "L01_V001_002515",
+          "L01_V001_002534"
+        ]
+      }
+    },
+    {
+      "id": "q105",
+      "candidate_id": "c053",
+      "language": "vi",
+      "query": "khán đài sân vận động đông khán giả, nhiều người đang ngồi trên ghế đỏ và cầm điện thoại quay",
+      "target": {
+        "frame_id": "L01_V001_030725",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_030650",
+          "L01_V001_030706",
+          "L01_V001_030725",
+          "L01_V001_030744"
+        ]
+      }
+    },
+    {
+      "id": "q106",
+      "candidate_id": "c053",
+      "language": "vi",
+      "query": "cảnh đám đông cổ động viên trên khán đài, nổi bật có người đội mũ vàng và nhiều áo màu khác nhau",
+      "target": {
+        "frame_id": "L01_V001_030725",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_030650",
+          "L01_V001_030706",
+          "L01_V001_030725",
+          "L01_V001_030744"
+        ]
+      }
+    },
+    {
+      "id": "q107",
+      "candidate_id": "c054",
+      "language": "vi",
+      "query": "một người đàn ông cầm điện thoại quay người đàn ông khác mặc áo sáng đang đứng trong phòng",
+      "target": {
+        "frame_id": "L01_V005_033494",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_033494",
+          "L01_V005_033522",
+          "L01_V005_033551",
+          "L01_V005_033604",
+          "L01_V005_033625"
+        ]
+      }
+    },
+    {
+      "id": "q108",
+      "candidate_id": "c054",
+      "language": "vi",
+      "query": "cảnh trong nhà có người dùng điện thoại ghi hình, phía sau là tường trang trí nhiều giấy màu",
+      "target": {
+        "frame_id": "L01_V005_033494",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_033494",
+          "L01_V005_033522",
+          "L01_V005_033551",
+          "L01_V005_033604",
+          "L01_V005_033625"
+        ]
+      }
+    },
+    {
+      "id": "q109",
+      "candidate_id": "c055",
+      "language": "vi",
+      "query": "hai người đàn ông đứng trên thuyền hoặc bến cạnh mặt biển xanh, một người tóc trắng mặc áo sơ mi trắng",
+      "target": {
+        "frame_id": "L01_V002_022682",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_022630",
+          "L01_V002_022682",
+          "L01_V002_022702",
+          "L01_V002_022722"
+        ]
+      }
+    },
+    {
+      "id": "q110",
+      "candidate_id": "c055",
+      "language": "vi",
+      "query": "cảnh ngoài trời nhìn ra biển, hai người nói chuyện gần lan can với hòn đảo hoặc bờ biển phía xa",
+      "target": {
+        "frame_id": "L01_V002_022682",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_022630",
+          "L01_V002_022682",
+          "L01_V002_022702",
+          "L01_V002_022722"
+        ]
+      }
+    },
+    {
+      "id": "q111",
+      "candidate_id": "c056",
+      "language": "vi",
+      "query": "khu vực ngoài trời có rất nhiều ống kim loại xếp chồng, bên cạnh là bảng thông tin màu xanh",
+      "target": {
+        "frame_id": "L01_V001_005221",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_005166",
+          "L01_V001_005221"
+        ]
+      }
+    },
+    {
+      "id": "q112",
+      "candidate_id": "c056",
+      "language": "vi",
+      "query": "cảnh vật liệu công trình chất thành bó dài trước cổng, phía sau có tường xanh và biển chữ lớn",
+      "target": {
+        "frame_id": "L01_V001_005221",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_005166",
+          "L01_V001_005221"
+        ]
+      }
+    },
+    {
+      "id": "q113",
+      "candidate_id": "c057",
+      "language": "vi",
+      "query": "nhóm cảnh sát mặc đồ đen đứng trong hành lang có dây phong tỏa màu trắng kéo ngang",
+      "target": {
+        "frame_id": "L01_V005_031451",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_031335",
+          "L01_V005_031354",
+          "L01_V005_031373",
+          "L01_V005_031414",
+          "L01_V005_031432",
+          "L01_V005_031451",
+          "L01_V005_031492",
+          "L01_V005_031512",
+          "L01_V005_031531"
+        ]
+      }
+    },
+    {
+      "id": "q114",
+      "candidate_id": "c057",
+      "language": "vi",
+      "query": "nhiều người tụ tập dưới mái hiên tòa nhà màu vàng, phía trước có dải dây chặn lối đi",
+      "target": {
+        "frame_id": "L01_V005_031451",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_031335",
+          "L01_V005_031354",
+          "L01_V005_031373",
+          "L01_V005_031414",
+          "L01_V005_031432",
+          "L01_V005_031451",
+          "L01_V005_031492",
+          "L01_V005_031512",
+          "L01_V005_031531"
+        ]
+      }
+    },
+    {
+      "id": "q115",
+      "candidate_id": "c058",
+      "language": "vi",
+      "query": "tàu du lịch lớn màu trắng cập cảng, trên boong cao có nhiều hành khách đứng nhìn ra ngoài",
+      "target": {
+        "frame_id": "L01_V003_020688",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020688"
+        ]
+      }
+    },
+    {
+      "id": "q116",
+      "candidate_id": "c058",
+      "language": "vi",
+      "query": "cảnh du thuyền với phao cứu sinh màu cam phía dưới và đám đông người trên tầng trên cùng",
+      "target": {
+        "frame_id": "L01_V003_020688",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020688"
+        ]
+      }
+    },
+    {
+      "id": "q117",
+      "candidate_id": "c059",
+      "language": "vi",
+      "query": "huấn luyện viên bóng đá mặc đồ tối đứng trên sân cỏ trong buổi tập, phía sau có cầu thủ di chuyển",
+      "target": {
+        "frame_id": "L01_V004_000881",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_000784",
+          "L01_V004_000830",
+          "L01_V004_000881",
+          "L01_V004_000906"
+        ]
+      }
+    },
+    {
+      "id": "q118",
+      "candidate_id": "c059",
+      "language": "vi",
+      "query": "cảnh bản tin thể thao, một người đàn ông quan sát sân tập bóng đá với vài người mặc đồ xám xung quanh",
+      "target": {
+        "frame_id": "L01_V004_000881",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_000784",
+          "L01_V004_000830",
+          "L01_V004_000881",
+          "L01_V004_000906"
+        ]
+      }
+    },
+    {
+      "id": "q119",
+      "candidate_id": "c060",
+      "language": "vi",
+      "query": "nhân viên an ninh mặc đồng phục đen áp giải một người đàn ông áo xám vào cửa tòa nhà",
+      "target": {
+        "frame_id": "L01_V005_031796",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_031577",
+          "L01_V005_031601",
+          "L01_V005_031625",
+          "L01_V005_031676",
+          "L01_V005_031700",
+          "L01_V005_031725",
+          "L01_V005_031774",
+          "L01_V005_031796",
+          "L01_V005_031819"
+        ]
+      }
+    },
+    {
+      "id": "q120",
+      "candidate_id": "c060",
+      "language": "vi",
+      "query": "cảnh trước lối vào có nhiều cảnh sát hoặc bảo vệ, một người đang được đưa qua cánh cửa kính",
+      "target": {
+        "frame_id": "L01_V005_031796",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_031577",
+          "L01_V005_031601",
+          "L01_V005_031625",
+          "L01_V005_031676",
+          "L01_V005_031700",
+          "L01_V005_031725",
+          "L01_V005_031774",
+          "L01_V005_031796",
+          "L01_V005_031819"
+        ]
+      }
+    },
+    {
+      "id": "q121",
+      "candidate_id": "c061",
+      "language": "vi",
+      "query": "hai bảng quảng cáo kỹ thuật số lớn đặt gần khu thể thao, phía sau có chữ Verizon trên tòa nhà",
+      "target": {
+        "frame_id": "L01_V001_031434",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031434",
+          "L01_V001_031477"
+        ]
+      }
+    },
+    {
+      "id": "q122",
+      "candidate_id": "c061",
+      "language": "vi",
+      "query": "cảnh ngoài trời ở Mỹ với màn hình điện tử cao, nền sau là sân vận động hoặc nhà thi đấu lớn",
+      "target": {
+        "frame_id": "L01_V001_031434",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_031434",
+          "L01_V001_031477"
+        ]
+      }
+    },
+    {
+      "id": "q123",
+      "candidate_id": "c062",
+      "language": "vi",
+      "query": "người đàn ông lớn tuổi đeo kính và băng che một bên mắt, đứng trước tòa nhà màu hồng nhạt",
+      "target": {
+        "frame_id": "L01_V002_008462",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_008394",
+          "L01_V002_008444",
+          "L01_V002_008462",
+          "L01_V002_008481"
+        ]
+      }
+    },
+    {
+      "id": "q124",
+      "candidate_id": "c062",
+      "language": "vi",
+      "query": "cảnh phỏng vấn ngoài trời, người đàn ông áo sơ mi trắng có miếng băng lớn quanh mắt phải",
+      "target": {
+        "frame_id": "L01_V002_008462",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_008394",
+          "L01_V002_008444",
+          "L01_V002_008462",
+          "L01_V002_008481"
+        ]
+      }
+    },
+    {
+      "id": "q125",
+      "candidate_id": "c063",
+      "language": "vi",
+      "query": "người phụ nữ bị làm mờ khuôn mặt đứng phỏng vấn trong khu vườn nhiều cây hoa, phía sau có bảng thư viện",
+      "target": {
+        "frame_id": "L01_V001_009689",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_009689",
+          "L01_V001_009744",
+          "L01_V001_009800"
+        ]
+      }
+    },
+    {
+      "id": "q126",
+      "candidate_id": "c063",
+      "language": "vi",
+      "query": "cảnh ngoài trời trước biển gỗ ghi chữ thư viện, người được phỏng vấn mặc áo sọc xanh trắng",
+      "target": {
+        "frame_id": "L01_V001_009689",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_009689",
+          "L01_V001_009744",
+          "L01_V001_009800"
+        ]
+      }
+    },
+    {
+      "id": "q127",
+      "candidate_id": "c064",
+      "language": "vi",
+      "query": "biển đỏ ghi chữ trực ban đặt trên bàn làm việc, xung quanh có laptop và giấy tờ văn phòng",
+      "target": {
+        "frame_id": "L01_V001_014102",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_014036",
+          "L01_V001_014054",
+          "L01_V001_014102"
+        ]
+      }
+    },
+    {
+      "id": "q128",
+      "candidate_id": "c064",
+      "language": "vi",
+      "query": "cận cảnh bảng trực ban của cơ quan công an, phía sau là máy tính xách tay và tài liệu mở",
+      "target": {
+        "frame_id": "L01_V001_014102",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_014036",
+          "L01_V001_014054",
+          "L01_V001_014102"
+        ]
+      }
+    },
+    {
+      "id": "q129",
+      "candidate_id": "c065",
+      "language": "vi",
+      "query": "người mặc áo cam làm việc trong phòng kính, đang cúi bên cạnh nhiều giỏ kim loại xếp chồng",
+      "target": {
+        "frame_id": "L01_V001_022142",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_022079",
+          "L01_V001_022101",
+          "L01_V001_022142",
+          "L01_V001_022196"
+        ]
+      }
+    },
+    {
+      "id": "q130",
+      "candidate_id": "c065",
+      "language": "vi",
+      "query": "cảnh khu xử lý hàng hoặc kho lạnh, một nhân viên thao tác với lồng thép trong không gian trắng",
+      "target": {
+        "frame_id": "L01_V001_022142",
+        "video_id": "L01_V001",
+        "ground_truth_frame_ids": [
+          "L01_V001_022079",
+          "L01_V001_022101",
+          "L01_V001_022142",
+          "L01_V001_022196"
+        ]
+      }
+    },
+    {
+      "id": "q131",
+      "candidate_id": "c066",
+      "language": "vi",
+      "query": "người đàn ông đội mũ đen ngồi nói chuyện trong khu vui chơi màu hồng, phía sau có khung xích đu",
+      "target": {
+        "frame_id": "L01_V005_035683",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_035622",
+          "L01_V005_035652",
+          "L01_V005_035683"
+        ]
+      }
+    },
+    {
+      "id": "q132",
+      "candidate_id": "c066",
+      "language": "vi",
+      "query": "cảnh phỏng vấn ngoài trời, người đàn ông mặc áo đen cười trước cấu trúc màu hồng trong công viên",
+      "target": {
+        "frame_id": "L01_V005_035683",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_035622",
+          "L01_V005_035652",
+          "L01_V005_035683"
+        ]
+      }
+    },
+    {
+      "id": "q133",
+      "candidate_id": "c067",
+      "language": "vi",
+      "query": "video dọc quay khu bếp nhỏ với nồi, chảo và nhiều dụng cụ nấu ăn đặt trên mặt bàn đá",
+      "target": {
+        "frame_id": "L01_V005_019258",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_019226",
+          "L01_V005_019258",
+          "L01_V005_019291",
+          "L01_V005_019356",
+          "L01_V005_019386",
+          "L01_V005_019415",
+          "L01_V005_019471"
+        ]
+      }
+    },
+    {
+      "id": "q134",
+      "candidate_id": "c067",
+      "language": "vi",
+      "query": "khung hình điện thoại bị làm mờ hai bên, ở giữa là góc bếp có xoong nồi và ánh sáng cửa sổ",
+      "target": {
+        "frame_id": "L01_V005_019258",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_019226",
+          "L01_V005_019258",
+          "L01_V005_019291",
+          "L01_V005_019356",
+          "L01_V005_019386",
+          "L01_V005_019415",
+          "L01_V005_019471"
+        ]
+      }
+    },
+    {
+      "id": "q135",
+      "candidate_id": "c068",
+      "language": "vi",
+      "query": "cổng gỗ phủ rêu nằm trong khu rừng xanh, trên bảng có chữ Hán hoặc chữ Trung Quốc",
+      "target": {
+        "frame_id": "L01_V004_028546",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_028496",
+          "L01_V004_028546",
+          "L01_V004_028592"
+        ]
+      }
+    },
+    {
+      "id": "q136",
+      "candidate_id": "c068",
+      "language": "vi",
+      "query": "lối vào kiểu cổ giữa nhiều cây cối, phía dưới có mái gỗ và biển chữ màu vàng trên nền đen",
+      "target": {
+        "frame_id": "L01_V004_028546",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_028496",
+          "L01_V004_028546",
+          "L01_V004_028592"
+        ]
+      }
+    },
+    {
+      "id": "q137",
+      "candidate_id": "c069",
+      "language": "vi",
+      "query": "người mặc áo đỏ đang dùng laptop trong lớp học nhiều màu, màn hình máy tính hiển thị trang web xanh trắng",
+      "target": {
+        "frame_id": "L01_V005_033120",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_033091",
+          "L01_V005_033120",
+          "L01_V005_033148",
+          "L01_V005_033200",
+          "L01_V005_033222"
+        ]
+      }
+    },
+    {
+      "id": "q138",
+      "candidate_id": "c069",
+      "language": "vi",
+      "query": "cảnh trong phòng học, học sinh đặt tay lên máy tính xách tay còn nền sau có tường trang trí màu sắc",
+      "target": {
+        "frame_id": "L01_V005_033120",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_033091",
+          "L01_V005_033120",
+          "L01_V005_033148",
+          "L01_V005_033200",
+          "L01_V005_033222"
+        ]
+      }
+    },
+    {
+      "id": "q139",
+      "candidate_id": "c070",
+      "language": "vi",
+      "query": "thước kẻ nhựa màu vàng đặt trên tờ giấy có bài toán hoặc bản vẽ kỹ thuật bằng bút chì",
+      "target": {
+        "frame_id": "L01_V005_006932",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_006867",
+          "L01_V005_006932"
+        ]
+      }
+    },
+    {
+      "id": "q140",
+      "candidate_id": "c070",
+      "language": "vi",
+      "query": "cận cảnh mặt bàn học với giấy in nhiều chữ, một thước vàng nằm chéo trên hình vẽ đường cong",
+      "target": {
+        "frame_id": "L01_V005_006932",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_006867",
+          "L01_V005_006932"
+        ]
+      }
+    },
+    {
+      "id": "q141",
+      "candidate_id": "c071",
+      "language": "vi",
+      "query": "người đàn ông đeo kính đang cúi bước xuống khỏi xe ô tô màu đen, cửa xe mở rộng",
+      "target": {
+        "frame_id": "L01_V004_026243",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_026153",
+          "L01_V004_026222",
+          "L01_V004_026243",
+          "L01_V004_026264",
+          "L01_V004_026317"
+        ]
+      }
+    },
+    {
+      "id": "q142",
+      "candidate_id": "c071",
+      "language": "vi",
+      "query": "cảnh một người mặc áo xám rời khỏi ghế sau xe hơi, tay bám vào mép cửa trong lúc bước ra",
+      "target": {
+        "frame_id": "L01_V004_026243",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_026153",
+          "L01_V004_026222",
+          "L01_V004_026243",
+          "L01_V004_026264",
+          "L01_V004_026317"
+        ]
+      }
+    },
+    {
+      "id": "q143",
+      "candidate_id": "c072",
+      "language": "vi",
+      "query": "video dọc trong bản tin chính quay con đường đất cạnh hộp thư màu xanh dưới trời nhiều mây",
+      "target": {
+        "frame_id": "L01_V003_014813",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_014770",
+          "L01_V003_014813",
+          "L01_V003_014856",
+          "L01_V003_014900"
+        ]
+      }
+    },
+    {
+      "id": "q144",
+      "candidate_id": "c072",
+      "language": "vi",
+      "query": "khung hình điện thoại về khu nhà thưa dân, có hộp thư bên đường và bầu trời xanh nhiều mây",
+      "target": {
+        "frame_id": "L01_V003_014813",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_014770",
+          "L01_V003_014813",
+          "L01_V003_014856",
+          "L01_V003_014900"
+        ]
+      }
+    },
+    {
+      "id": "q145",
+      "candidate_id": "c073",
+      "language": "vi",
+      "query": "Nhà Trắng nhìn từ bên ngoài hàng rào sắt, phía trước có hàng cây và bãi cỏ rộng",
+      "target": {
+        "frame_id": "L01_V004_032819",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_032756",
+          "L01_V004_032819",
+          "L01_V004_032886",
+          "L01_V004_032952"
+        ]
+      }
+    },
+    {
+      "id": "q146",
+      "candidate_id": "c073",
+      "language": "vi",
+      "query": "toàn cảnh mặt trước Nhà Trắng vào ngày nhiều mây, khung hình lấy từ phía bên kia hàng rào",
+      "target": {
+        "frame_id": "L01_V004_032819",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_032756",
+          "L01_V004_032819",
+          "L01_V004_032886",
+          "L01_V004_032952"
+        ]
+      }
+    },
+    {
+      "id": "q147",
+      "candidate_id": "c074",
+      "language": "vi",
+      "query": "camera an ninh từ trên cao quay xe container màu xanh chạy trên con đường hẹp cạnh nhiều xe máy",
+      "target": {
+        "frame_id": "L01_V002_021328",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_021223",
+          "L01_V002_021328",
+          "L01_V002_021432"
+        ]
+      }
+    },
+    {
+      "id": "q148",
+      "candidate_id": "c074",
+      "language": "vi",
+      "query": "góc nhìn CCTV trong khu phố, một xe tải thùng xanh lớn đang đi qua đoạn đường có nhà và vỉa hè",
+      "target": {
+        "frame_id": "L01_V002_021328",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_021223",
+          "L01_V002_021328",
+          "L01_V002_021432"
+        ]
+      }
+    },
+    {
+      "id": "q149",
+      "candidate_id": "c075",
+      "language": "vi",
+      "query": "màn hình điều khiển máy công nghiệp hiển thị giao diện màu tím, bên phải có nhiều nút và thông số",
+      "target": {
+        "frame_id": "L01_V002_020644",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_020644",
+          "L01_V002_020662",
+          "L01_V002_020681"
+        ]
+      }
+    },
+    {
+      "id": "q150",
+      "candidate_id": "c075",
+      "language": "vi",
+      "query": "bảng điều khiển cảm ứng của thiết bị trong nhà máy, giữa màn hình là sơ đồ máy dạng trụ đứng",
+      "target": {
+        "frame_id": "L01_V002_020644",
+        "video_id": "L01_V002",
+        "ground_truth_frame_ids": [
+          "L01_V002_020644",
+          "L01_V002_020662",
+          "L01_V002_020681"
+        ]
+      }
+    },
+    {
+      "id": "q151",
+      "candidate_id": "c076",
+      "language": "vi",
+      "query": "giàn bơm dầu màu đen hoạt động trên nền trời hoàng hôn vàng cam, xung quanh là cánh đồng phẳng",
+      "target": {
+        "frame_id": "L01_V003_024494",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_024372",
+          "L01_V003_024433",
+          "L01_V003_024494"
+        ]
+      }
+    },
+    {
+      "id": "q152",
+      "candidate_id": "c076",
+      "language": "vi",
+      "query": "cảnh mỏ dầu lúc chiều tối, các máy bơm cần gật gù tạo bóng đen nổi bật trước bầu trời",
+      "target": {
+        "frame_id": "L01_V003_024494",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_024372",
+          "L01_V003_024433",
+          "L01_V003_024494"
+        ]
+      }
+    },
+    {
+      "id": "q153",
+      "candidate_id": "c077",
+      "language": "vi",
+      "query": "tòa nhà quốc hội Mỹ ở phía xa sau một du thuyền trắng lớn đang nằm trên sông",
+      "target": {
+        "frame_id": "L01_V003_021198",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021158",
+          "L01_V003_021178",
+          "L01_V003_021198",
+          "L01_V003_021242"
+        ]
+      }
+    },
+    {
+      "id": "q154",
+      "candidate_id": "c077",
+      "language": "vi",
+      "query": "cảnh Washington từ xa, mái vòm Capitol hiện phía sau tàu du lịch và các tòa nhà ven sông",
+      "target": {
+        "frame_id": "L01_V003_021198",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_021158",
+          "L01_V003_021178",
+          "L01_V003_021198",
+          "L01_V003_021242"
+        ]
+      }
+    },
+    {
+      "id": "q155",
+      "candidate_id": "c078",
+      "language": "vi",
+      "query": "thợ đang sửa chiếc xe đồ chơi màu hồng có chữ Barbie, phần hông xe bị tháo ra để lộ bên trong",
+      "target": {
+        "frame_id": "L01_V005_034984",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_034898",
+          "L01_V005_034960",
+          "L01_V005_034984",
+          "L01_V005_035007",
+          "L01_V005_035066"
+        ]
+      }
+    },
+    {
+      "id": "q156",
+      "candidate_id": "c078",
+      "language": "vi",
+      "query": "cận cảnh tay người cầm dụng cụ bên xe Barbie màu hồng, khung hình tập trung vào phần thân xe bị mở",
+      "target": {
+        "frame_id": "L01_V005_034984",
+        "video_id": "L01_V005",
+        "ground_truth_frame_ids": [
+          "L01_V005_034898",
+          "L01_V005_034960",
+          "L01_V005_034984",
+          "L01_V005_035007",
+          "L01_V005_035066"
+        ]
+      }
+    },
+    {
+      "id": "q157",
+      "candidate_id": "c079",
+      "language": "vi",
+      "query": "bức ảnh đen trắng cũ có hai người đứng trước một công trình bê tông lớn với nhiều vòm",
+      "target": {
+        "frame_id": "L01_V004_031312",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_031312",
+          "L01_V004_031366"
+        ]
+      }
+    },
+    {
+      "id": "q158",
+      "candidate_id": "c079",
+      "language": "vi",
+      "query": "ảnh tư liệu màu đen trắng, một người đàn ông và một phụ nữ đứng cạnh nhau với nền là các vòm bê tông",
+      "target": {
+        "frame_id": "L01_V004_031312",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_031312",
+          "L01_V004_031366"
+        ]
+      }
+    },
+    {
+      "id": "q159",
+      "candidate_id": "c001",
+      "language": "vi",
+      "query": "slide trắng về tin giao thông, có tiêu đề tiếng Anh ở góc trên và ảnh họp báo nằm ở giữa màn hình",
+      "target": {
+        "frame_id": "L01_V003_020127",
+        "video_id": "L01_V003",
+        "ground_truth_frame_ids": [
+          "L01_V003_020090",
+          "L01_V003_020127",
+          "L01_V003_020164"
+        ]
+      }
+    },
+    {
+      "id": "q160",
+      "candidate_id": "c003",
+      "language": "vi",
+      "query": "bảng thiết bị điện với dây màu và mã QR, một người đang cúi sát để kiểm tra chi tiết bên trong",
+      "target": {
+        "frame_id": "L01_V004_002578",
+        "video_id": "L01_V004",
+        "ground_truth_frame_ids": [
+          "L01_V004_002578"
+        ]
+      }
+    }
+  ]
+}

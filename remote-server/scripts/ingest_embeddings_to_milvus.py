@@ -51,6 +51,17 @@ def parse_args() -> argparse.Namespace:
         help="Copy keyframe jpgs into remote-server/static/frames for /static/frames URLs.",
     )
     parser.add_argument(
+        "--vector-index",
+        choices=["hnsw", "flat", "scann", "all"],
+        default="hnsw",
+        help="Milvus vector index collection to build. Use 'all' to build HNSW, FLAT, and SCANN.",
+    )
+    parser.add_argument(
+        "--recreate-milvus",
+        action="store_true",
+        help="Drop and recreate the selected Milvus collection(s) before inserting vectors.",
+    )
+    parser.add_argument(
         "--skip-postgres",
         action="store_true",
         help="Only ingest Milvus vectors; do not upsert video metadata to PostgreSQL.",
@@ -243,7 +254,6 @@ async def main() -> None:
     from app.db import milvus_client
 
     milvus_client.connect()
-    collection = milvus_client.create_collection_if_missing()
 
     if not args.skip_postgres:
         await upsert_videos(videos)
@@ -253,8 +263,19 @@ async def main() -> None:
         copied = copy_keyframes(records, REMOTE_ROOT / "static" / "frames")
         logger.info("Copied %s keyframes into %s", copied, REMOTE_ROOT / "static" / "frames")
 
-    indexed = upsert_vectors(collection, records, max(1, args.batch_size), milvus_client.VECTOR_DIM)
-    logger.info("Done. Indexed %s vectors into Milvus collection '%s'.", indexed, milvus_client.COLLECTION_NAME)
+    target_indexes = ["hnsw", "flat", "scann"] if args.vector_index == "all" else [args.vector_index]
+    for vector_index in target_indexes:
+        if args.recreate_milvus:
+            milvus_client.drop_collection_if_exists(vector_index)
+        collection = milvus_client.create_collection_if_missing(vector_index)
+        indexed = upsert_vectors(collection, records, max(1, args.batch_size), milvus_client.VECTOR_DIM)
+        collection_name = milvus_client.collection_name_for_algorithm(vector_index)
+        logger.info(
+            "Done. Indexed %s vectors into Milvus collection '%s' (%s).",
+            indexed,
+            collection_name,
+            vector_index,
+        )
 
 
 if __name__ == "__main__":

@@ -43,7 +43,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recreate-milvus",
         action="store_true",
-        help="Drop and recreate the Milvus collection before inserting vectors.",
+        help="Drop and recreate the selected Milvus collection(s) before inserting vectors.",
+    )
+    parser.add_argument(
+        "--vector-index",
+        choices=["hnsw", "flat", "scann", "all"],
+        default="hnsw",
+        help="Milvus vector index collection to build. Use 'all' to build HNSW, FLAT, and SCANN.",
     )
     parser.add_argument(
         "--copy-keyframes",
@@ -229,7 +235,6 @@ async def main() -> None:
     if args.dry_run:
         return
 
-    from pymilvus import utility
     from app.db import milvus_client, postgres_client
 
     await postgres_client.init_schema()
@@ -237,17 +242,20 @@ async def main() -> None:
     await upsert_videos(pool, videos)
 
     milvus_client.connect()
-    if args.recreate_milvus and utility.has_collection(milvus_client.COLLECTION_NAME):
-        utility.drop_collection(milvus_client.COLLECTION_NAME)
-    collection = milvus_client.create_collection_if_missing()
 
     if args.copy_keyframes:
         copied = copy_keyframes(all_records, REMOTE_ROOT / "static" / "frames")
         print(f"Copied {copied} keyframes into {REMOTE_ROOT / 'static' / 'frames'}")
 
-    indexed = upsert_vectors(collection, all_records, args.batch_size, milvus_client.VECTOR_DIM)
+    target_indexes = ["hnsw", "flat", "scann"] if args.vector_index == "all" else [args.vector_index]
+    for vector_index in target_indexes:
+        if args.recreate_milvus:
+            milvus_client.drop_collection_if_exists(vector_index)
+        collection = milvus_client.create_collection_if_missing(vector_index)
+        indexed = upsert_vectors(collection, all_records, args.batch_size, milvus_client.VECTOR_DIM)
+        collection_name = milvus_client.collection_name_for_algorithm(vector_index)
+        print(f"Done. Indexed {indexed} vectors into Milvus collection '{collection_name}' ({vector_index}).")
     await postgres_client.close_pool()
-    print(f"Done. Indexed {indexed} vectors into Milvus collection '{milvus_client.COLLECTION_NAME}'.")
 
 
 if __name__ == "__main__":

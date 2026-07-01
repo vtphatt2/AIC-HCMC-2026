@@ -6,6 +6,18 @@ export interface Strategy {
   version: string;
 }
 
+export interface VectorSearchAlgorithm {
+  id: string;
+  name: string;
+  available: boolean;
+  description: string;
+}
+
+export interface VectorSearchAlgorithmResponse {
+  default: string;
+  algorithms: VectorSearchAlgorithm[];
+}
+
 export interface QueryGroup {
   semanticQuery: string;
   textQuery: string;

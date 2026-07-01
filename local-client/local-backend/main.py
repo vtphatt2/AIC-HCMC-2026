@@ -112,6 +112,7 @@ class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
     top_k: int = 100
+    vector_search_algorithm: str | None = None
 
 
 class TranscriptSearchRequest(BaseModel):
@@ -180,6 +181,35 @@ async def list_strategies():
     ]
 
 
+@app.get("/api/vector-search-algorithms")
+async def list_vector_search_algorithms():
+    if os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
+        remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+        if remote_base:
+            async with httpx.AsyncClient(base_url=remote_base, timeout=10.0) as client:
+                try:
+                    response = await client.get(
+                        "/api/vector-search-algorithms",
+                        headers={"ngrok-skip-browser-warning": "1"},
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPError:
+                    pass
+    algorithms = [
+        {
+            "id": "linear",
+            "name": "Linear",
+            "available": True,
+            "description": "Local SAMPLE exact search over .npy vectors.",
+        }
+    ]
+    return {
+        "default": "linear",
+        "algorithms": algorithms,
+    }
+
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     """Proxy translation to the remote server when local-backend runs in LOCAL mode."""
@@ -220,10 +250,15 @@ async def search(req: SearchRequest):
     strategy = _strategies[req.strategy_id]
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
+    query_groups = [g.model_dump() for g in req.query_groups]
+    if req.vector_search_algorithm:
+        algorithm = req.vector_search_algorithm.strip().lower()
+        for group in query_groups:
+            group["_vector_search_algorithm"] = algorithm
 
     try:
         results = await strategy.search(
-            [g.model_dump() for g in req.query_groups],
+            query_groups,
             limit=top_k,
         )
     except TimeoutError as exc:

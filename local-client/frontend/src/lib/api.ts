@@ -4,6 +4,7 @@ import type {
   SearchResponse,
   TranslationResponse,
   TranscriptSearchResponse,
+  VectorSearchAlgorithmResponse,
 } from "@/types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -15,6 +16,12 @@ export function apiUrl(path: string): string {
 export async function fetchStrategies(): Promise<Strategy[]> {
   const res = await fetch(apiUrl("/api/strategies"));
   if (!res.ok) throw new Error("Failed to fetch strategies");
+  return res.json();
+}
+
+export async function fetchVectorSearchAlgorithms(): Promise<VectorSearchAlgorithmResponse> {
+  const res = await fetch(apiUrl("/api/vector-search-algorithms"));
+  if (!res.ok) throw new Error("Failed to fetch vector search algorithms");
   return res.json();
 }
 
@@ -40,7 +47,12 @@ export async function translateTexts(texts: string[]): Promise<TranslationRespon
   return res.json();
 }
 
-export async function runSearch(strategyId: string, queryGroups: QueryGroup[], topK: number): Promise<SearchResponse> {
+export async function runSearch(
+  strategyId: string,
+  queryGroups: QueryGroup[],
+  topK: number,
+  vectorSearchAlgorithm?: string,
+): Promise<SearchResponse> {
   const payload = {
     strategy_id: strategyId,
     query_groups: queryGroups.map(g => ({
@@ -48,7 +60,8 @@ export async function runSearch(strategyId: string, queryGroups: QueryGroup[], t
       text_query: g.textQuery,
       temporal_offset_ms: g.temporalOffsetMs
     })),
-    top_k: topK
+    top_k: topK,
+    ...(vectorSearchAlgorithm ? { vector_search_algorithm: vectorSearchAlgorithm } : {})
   };
 
   const res = await fetch(apiUrl("/api/search"), {

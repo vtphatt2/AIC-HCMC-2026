@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -8,7 +9,14 @@ from app.db import milvus_client, postgres_client
 from app.services.text_encoder import PECoreTextEncoder
 
 ENV_MODE = os.getenv("ENV_MODE", "SERVER")
-VECTOR_SEARCH_BACKEND = os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower()
+DEFAULT_VECTOR_SEARCH_ALGORITHM = {
+    "milvus": "hnsw",
+    "hnsw": "hnsw",
+    "flat": "flat",
+    "cagra": "cagra",
+    "scann": "scann",
+}.get(os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower(), "hnsw")
+VALID_VECTOR_SEARCH_ALGORITHMS = {"hnsw", "flat", "cagra", "scann"}
 logger = logging.getLogger(__name__)
 
 
@@ -26,19 +34,20 @@ class DataProvider:
             raise RuntimeError(
                 f"remote-server DataProvider only supports ENV_MODE=SERVER, got '{ENV_MODE}'"
             )
-        self._collection = milvus_client.get_collection()
+        self._collections = {}
         self._text_encoder = PECoreTextEncoder()
         self._text_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="text-encoder",
         )
         self._cagra = None
-        if VECTOR_SEARCH_BACKEND == "cagra":
-            from app.db.cagra_client import CagraClient
-
-            self._cagra = CagraClient()
-        elif VECTOR_SEARCH_BACKEND != "milvus":
-            raise ValueError("VECTOR_SEARCH_BACKEND must be 'milvus' or 'cagra'")
+        self._cagra_lock = threading.Lock()
+        if DEFAULT_VECTOR_SEARCH_ALGORITHM == "cagra":
+            self._cagra = self._get_cagra()
+        elif DEFAULT_VECTOR_SEARCH_ALGORITHM not in {"hnsw", "flat", "scann"}:
+            raise ValueError("VECTOR_SEARCH_BACKEND must be 'milvus', 'hnsw', 'flat', 'cagra', or 'scann'")
+        else:
+            self._get_collection(DEFAULT_VECTOR_SEARCH_ALGORITHM)
 
     async def warmup_text_encoder(self, query: str = "warmup query", passes: int = 10) -> dict:
         loop = asyncio.get_running_loop()
@@ -60,11 +69,40 @@ class DataProvider:
     def close(self) -> None:
         self._text_executor.shutdown(wait=False)
 
+    def _get_cagra(self):
+        if self._cagra is not None:
+            return self._cagra
+        with self._cagra_lock:
+            if self._cagra is None:
+                from app.db.cagra_client import CagraClient
+
+                self._cagra = CagraClient()
+        return self._cagra
+
+    def _get_collection(self, algorithm: str):
+        algorithm = milvus_client.normalize_algorithm(algorithm)
+        if algorithm not in self._collections:
+            collection_name = milvus_client.collection_name_for_algorithm(algorithm)
+            if not milvus_client.has_collection_for_algorithm(algorithm):
+                raise ValueError(
+                    f"{algorithm.upper()} collection '{collection_name}' is not available. "
+                    "Build it with scripts/ingest_embeddings_to_milvus.py --vector-index all."
+                )
+            self._collections[algorithm] = milvus_client.get_collection_for_name(collection_name)
+        return self._collections[algorithm]
+
+    def _metadata_collection(self):
+        algorithm = DEFAULT_VECTOR_SEARCH_ALGORITHM
+        if algorithm == "cagra":
+            algorithm = "hnsw"
+        return self._get_collection(algorithm)
+
     async def get_raw_data(self, query_groups: list[dict], limit: int = 1000) -> dict:
         """
         Fetch multi-modal raw data for all query groups from local databases.
         Returns a unified dict that strategies receive as `raw_data`.
         """
+        vector_algorithm = _requested_vector_algorithm(query_groups)
         all_frame_ids: set[str] = set()
         all_video_ids: set[str] = set()
         frames: list[dict] = []
@@ -79,18 +117,19 @@ class DataProvider:
                 query_vector = await self._encode_text(semantic_query)
                 search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
-                if self._cagra is None:
+                if vector_algorithm in {"hnsw", "flat", "scann"}:
                     hits = milvus_client.vector_search(
-                        self._collection,
+                        self._get_collection(vector_algorithm),
                         query_vector.tolist(),
                         top_k=search_limit,
+                        algorithm=vector_algorithm,
                     )
                 else:
-                    hits = self._cagra.search(query_vector, top_k=search_limit)
+                    hits = self._get_cagra().search(query_vector, top_k=search_limit)
                 logger.info(
                     "[TIMER] vector_search %.3f ms backend=%s group=%s top_k=%s hits=%s",
                     (time.monotonic() - timer_start) * 1000,
-                    VECTOR_SEARCH_BACKEND,
+                    vector_algorithm,
                     group_index,
                     search_limit,
                     len(hits),
@@ -102,7 +141,7 @@ class DataProvider:
                 all_video_ids.update(h["video_id"] for h in hits)
                 logger.info(
                     "%s semantic query group=%s returned %s hits",
-                    VECTOR_SEARCH_BACKEND,
+                    vector_algorithm,
                     group_index,
                     len(hits),
                 )
@@ -154,7 +193,7 @@ class DataProvider:
         per_interval_limit = max(1, min(20, limit // max(1, len(transcript_hits))))
         for hit in transcript_hits:
             interval_frames = milvus_client.query_frames_in_time_range(
-                self._collection,
+                self._metadata_collection(),
                 hit["video_id"],
                 int(hit["start_time_ms"]),
                 int(hit["end_time_ms"]),
@@ -176,6 +215,19 @@ def _dedupe_by_key(rows: list[dict], key: str) -> list[dict]:
         seen.add(value)
         deduped.append(row)
     return deduped
+
+
+def _requested_vector_algorithm(query_groups: list[dict]) -> str:
+    for group in query_groups:
+        algorithm = str(
+            group.get("_vector_search_algorithm")
+            or ""
+        ).strip().lower()
+        if algorithm:
+            if algorithm not in VALID_VECTOR_SEARCH_ALGORITHMS:
+                raise ValueError("vector_search_algorithm must be 'hnsw', 'flat', 'cagra', or 'scann'")
+            return algorithm
+    return DEFAULT_VECTOR_SEARCH_ALGORITHM
 
 
 def _dedupe_frames(rows: list[dict]) -> list[dict]:

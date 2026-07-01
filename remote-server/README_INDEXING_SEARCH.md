@@ -70,6 +70,8 @@ python scripts/create_milvus_index.py
 ```
 
 Use `--recreate` only when you want to drop and rebuild `video_frames`.
+Use `--vector-index all` to create all three runtime-selectable Milvus collections:
+HNSW in `video_frames`, FLAT in `video_frames_flat`, and SCANN in `video_frames_scann`.
 
 ## 4. Ingest embeddings
 
@@ -78,12 +80,20 @@ cd remote-server
 python scripts/ingest_embeddings_to_milvus.py --copy-keyframes
 ```
 
+For runtime algorithm selection (HNSW/FLAT/ScaNN), ingest all three Milvus collections:
+
+```bash
+python scripts/ingest_embeddings_to_milvus.py --copy-keyframes --vector-index all --recreate-milvus
+```
+
 Defaults:
 - sample root: first existing `AIC2026_sample` inside or beside the repository
-- Milvus collection: `video_frames`
+- Milvus HNSW collection: `video_frames`
+- Milvus FLAT collection: `video_frames_flat`
+- Milvus ScaNN collection: `video_frames_scann`
 - vector dim: `1280`
-- metric/index: `COSINE` + `HNSW`, `M=16`, `efConstruction=256`
-- search `ef`: `256` below top-50, `512` from top-50, and always at least `top_k`
+- metric/index: `COSINE` + HNSW (`M=16`, `efConstruction=256`), FLAT exact search, or ScaNN (`nlist=127`, `with_raw_data=True`)
+- search params: HNSW `ef=512`, ScaNN `nprobe=32`, `reorder_k=5x top_k` for raw reordering.
 
 ## 5. Run backend
 
@@ -124,7 +134,7 @@ precision.
 PostgreSQL and Milvus still run because OCR, transcript, and temporal text
 workflows use the existing databases.
 
-Use `VECTOR_SEARCH_BACKEND=milvus` to return to HNSW. CAGRA artifacts are stored
+Use `VECTOR_SEARCH_BACKEND=hnsw` (or `milvus`) to return to HNSW, or `VECTOR_SEARCH_BACKEND=scann` to run ScaNN. CAGRA artifacts are stored
 under `remote-server/cache/` and are not committed. Rebuild them after changing
 the cuVS version because its serialized index format is experimental.
 
