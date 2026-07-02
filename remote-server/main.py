@@ -19,6 +19,7 @@ from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 from app.services.translation import TranslationService
+from app.services.transcript_search import TranscriptSearchService
 from scripts.sample_paths import default_sample_root, sample_subdir
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -26,6 +27,7 @@ REMOTE_ROOT = Path(__file__).parent
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
+_transcript_search_service: TranscriptSearchService | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,7 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _strategies, _data_provider
+    global _strategies, _data_provider, _transcript_search_service
     print("Initialising DB schema...")
     await postgres_client.init_schema()
     milvus_client.connect()
@@ -72,6 +74,15 @@ async def lifespan(app: FastAPI):
             )
         except Exception:
             logger.exception("Translation warmup failed provider=%s", provider)
+
+    if os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
+        try:
+            milvus_client.create_transcript_collection_if_missing()
+            _transcript_search_service = TranscriptSearchService()
+            print("Transcript chunk search service ready")
+        except Exception as exc:
+            print(f"Transcript chunk search service unavailable: {exc}")
+            _transcript_search_service = None
 
     print("Discovering strategies...")
     _strategies = discover_strategies(_data_provider)
@@ -132,11 +143,18 @@ class SearchRequest(BaseModel):
     strategy_id: str
     query_groups: list[QueryGroup]
     top_k: int = 100
+    video_genre: str = "All"
     vector_search_algorithm: str | None = None
 
 
 class TranslationRequest(BaseModel):
     texts: list[str]
+
+
+class TranscriptSearchRequest(BaseModel):
+    query: str
+    top_k: int = 100
+    topic_filter: str = ""
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -279,6 +297,7 @@ async def search(req: SearchRequest):
         results = await strategy.search(
             query_groups,
             limit=top_k,
+            video_genre=req.video_genre,
         )
     except TimeoutError as exc:
         logger.info(
@@ -311,17 +330,52 @@ async def search(req: SearchRequest):
     }
 
 
+@app.post("/api/search/transcript")
+async def search_transcript(req: TranscriptSearchRequest):
+    if _transcript_search_service is None:
+        raise HTTPException(503, "Transcript chunk search is not available.")
+    if not req.query.strip():
+        raise HTTPException(400, "Query must not be empty.")
+
+    t0 = time.monotonic()
+    top_k = min(max(req.top_k, 1), FETCH_CAP)
+
+    try:
+        results = await _transcript_search_service.search(
+            req.query.strip(),
+            top_k=top_k,
+            topic_filter=req.topic_filter.strip() or None,
+        )
+    except Exception as exc:
+        logger.exception("Transcript chunk search error")
+        raise HTTPException(500, f"Transcript search error: {exc}")
+
+    total_ms = (time.monotonic() - t0) * 1000
+    logger.info(
+        "[TIMER] transcript_search %.3f ms query=%s results=%s",
+        total_ms,
+        req.query[:80],
+        len(results),
+    )
+    return {
+        "results":           results[:top_k],
+        "total":             min(len(results), top_k),
+        "execution_time_ms": int(total_ms),
+    }
+
+
 # ── Raw-data endpoint (called by local-client DataProvider in LOCAL mode) ─────
 
 @app.post("/api/raw-data")
 async def raw_data(body: dict):
     query_groups = body.get("query_groups", [])
     limit = min(int(body.get("limit", 1000)), 1000)
+    video_genre = str(body.get("video_genre", "All"))
     if body.get("vector_search_algorithm"):
         algorithm = _normalize_vector_algorithm(str(body["vector_search_algorithm"]))
         for group in query_groups:
             group["_vector_search_algorithm"] = algorithm
-    data = await _data_provider.get_raw_data(query_groups, limit=limit)
+    data = await _data_provider.get_raw_data(query_groups, limit=limit, video_genre=video_genre)
     return data
 
 

@@ -27,6 +27,7 @@ class StableFusion(BaseStrategy):
         ocr = raw_data.get("ocr", [])
         transcripts = raw_data.get("transcripts", [])
         videos = raw_data.get("videos", {})
+        video_genre = raw_data.get("video_genre", "All")
 
         text_query = " ".join(g.get("text_query", "") for g in query_groups)
         semantic_query_present = any(g.get("semantic_query", "").strip() for g in query_groups)
@@ -56,7 +57,7 @@ class StableFusion(BaseStrategy):
             visual_score = _visual_score(frame.get("score"), semantic_query_present)
             ocr_score = _text_score(ocr_by_frame.get(fid, {}).get("ocr_text", ""), query_tokens)
             transcript_score = _transcript_score(frame, transcripts_by_video, query_tokens)
-            confidence = _combine_scores(visual_score, ocr_score, transcript_score, semantic_query_present, bool(query_tokens))
+            confidence = _combine_scores(visual_score, ocr_score, transcript_score, semantic_query_present, bool(query_tokens), video_genre)
 
             scored.append({
                 "video_id":        frame["video_id"],
@@ -114,9 +115,16 @@ def _combine_scores(
     transcript_score: float,
     has_semantic: bool,
     has_text: bool,
+    video_genre: str = "All",
 ) -> float:
+    # Dynamic weight tuning based on video genre
+    w_visual, w_ocr, w_transcript = _genre_weights(video_genre)
+
     if has_semantic and has_text:
-        score = 0.65 * visual_score + 0.25 * ocr_score + 0.10 * transcript_score
+        total = w_visual + w_ocr + w_transcript
+        if total == 0:
+            total = 1.0
+        score = (w_visual * visual_score + w_ocr * ocr_score + w_transcript * transcript_score) / total
     elif has_semantic:
         score = visual_score
     elif has_text:
@@ -124,6 +132,27 @@ def _combine_scores(
     else:
         score = visual_score
     return round(max(0.0, min(1.0, score)), 4)
+
+
+def _genre_weights(genre: str) -> tuple[float, float, float]:
+    """Return (visual_weight, ocr_weight, transcript_weight) tuned per genre."""
+    mapping: dict[str, tuple[float, float, float]] = {
+        "Giáo dục":    (0.50, 0.40, 0.10),  # slides/onscreen text are highly informative
+        "Ẩm thực":     (0.70, 0.15, 0.15),  # cooking actions are highly visual
+        "Thể thao":    (0.70, 0.05, 0.25),  # visual action + commentary
+        "Công nghệ":   (0.55, 0.30, 0.15),  # demos/screenshots + narration
+        "Thời sự":     (0.50, 0.25, 0.25),  # balanced: anchors + overlays + speech
+        "Du lịch":     (0.75, 0.10, 0.15),  # scenery-heavy
+        "Giải trí":    (0.60, 0.15, 0.25),  # visual + dialogue
+        "Văn hóa":     (0.55, 0.20, 0.25),
+        "Sức khỏe":    (0.50, 0.25, 0.25),
+        "Kinh tế":     (0.45, 0.30, 0.25),  # charts/graphs + commentary
+        "Đời sống":    (0.55, 0.20, 0.25),
+        "Môi trường":  (0.65, 0.15, 0.20),
+        "Giao thông":  (0.60, 0.20, 0.20),
+        "Pháp luật":   (0.45, 0.35, 0.20),  # documents/text + speech
+    }
+    return mapping.get(genre, (0.65, 0.25, 0.10))  # default
 
 
 def _apply_temporal_boost(results: list[dict], query_groups: list[dict]) -> list[dict]:

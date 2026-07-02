@@ -130,6 +130,7 @@ def iter_video_records(sample_root: Path) -> Iterator[tuple[dict[str, Any], list
                 {
                     "frame_id": f"{video_id}_{frame_stem}",
                     "video_id": video_id,
+                    "video_genre": "",
                     "frame_number": frame_number,
                     "timestamp_ms": timestamp_ms,
                     "image_url": f"/static/frames/{video_id}/{frame_stem}.jpg",
@@ -258,6 +259,18 @@ async def main() -> None:
     if not args.skip_postgres:
         await upsert_videos(videos)
         logger.info("Upserted %s videos into PostgreSQL", len(videos))
+
+    # Hydrate video_genre from PostgreSQL (if indexed by index_transcripts.py prior)
+    if not args.skip_postgres:
+        try:
+            from app.db import postgres_client as _pg
+            genre_rows = await _pg.fetch_video_metadata([v["video_id"] for v in videos])
+            genre_map = {r["video_id"]: r.get("genre", "") or "" for r in genre_rows}
+            for record in records:
+                record["video_genre"] = genre_map.get(record["video_id"], "")
+            logger.info("Hydrated video_genre for %d videos from PostgreSQL", len(genre_map))
+        except Exception as exc:
+            logger.warning("Could not hydrate video_genre: %s", exc)
 
     if args.copy_keyframes:
         copied = copy_keyframes(records, REMOTE_ROOT / "static" / "frames")

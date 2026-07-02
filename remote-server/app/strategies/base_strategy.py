@@ -43,13 +43,15 @@ class BaseStrategy(ABC):
                 f"{self.__class__.__name__} must define class attributes: {', '.join(missing)}"
             )
 
-    async def search(self, query_groups: list[dict], limit: int = 100) -> list[dict]:
+    async def search(self, query_groups: list[dict], limit: int = 100, video_genre: str = "All") -> list[dict]:
         """Full pipeline: pre-process → fetch → execute (with timeout) → post-filter."""
         processed = self.pre_process(query_groups)
         fetch_limit = min(max(int(limit), 1), FETCH_CAP)
         if len(processed) > 1:
             fetch_limit = max(fetch_limit, MULTI_STEP_FETCH_MIN)
-        raw_data = await self.data_provider.get_raw_data(processed, limit=fetch_limit)
+        raw_data = await self.data_provider.get_raw_data(
+            processed, limit=fetch_limit, video_genre=video_genre
+        )
 
         try:
             timer_start = time.monotonic()
