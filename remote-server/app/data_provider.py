@@ -92,6 +92,17 @@ class DataProvider:
             g.get("text_query", "").strip() for g in query_groups
         ).strip()
 
+        # Resolve genre → video_ids for Milvus scalar filter
+        genre_expr: str | None = None
+        if video_genre and video_genre != "All":
+            genre_video_ids = await postgres_client.fetch_video_ids_by_genre(video_genre)
+            if genre_video_ids:
+                quoted = ", ".join(f'"{vid}"' for vid in genre_video_ids)
+                genre_expr = f"video_id in [{quoted}]"
+                logger.info("Genre filter: %s → %d videos", video_genre, len(genre_video_ids))
+            else:
+                logger.info("Genre filter: %s → 0 videos, skipping", video_genre)
+
         for group_index, group in enumerate(query_groups):
             semantic_query = group.get("semantic_query", "").strip()
             text_query = group.get("text_query", "").strip()
@@ -100,13 +111,12 @@ class DataProvider:
                 query_vector = await self._encode_text(semantic_query)
                 search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
-                genre = video_genre if video_genre and video_genre != "All" else None
                 if self._cagra is None:
                     hits = milvus_client.vector_search(
                         self._collection,
                         query_vector.tolist(),
                         top_k=search_limit,
-                        genre_filter=genre,
+                        expr=genre_expr,
                     )
                 else:
                     hits = self._cagra.search(query_vector, top_k=search_limit)

@@ -104,13 +104,11 @@ def vector_search(
     collection: Collection,
     query_vector: list[float],
     top_k: int = 100,
-    genre_filter: str | None = None,
+    expr: str | None = None,
 ) -> list[dict]:
     top_k = max(1, int(top_k))
     base_ef = DEEP_SEARCH_EF if top_k >= DEEP_SEARCH_TOP_K else int(SEARCH_PARAMS["ef"])
     search_params = {"ef": max(base_ef, top_k)}
-
-    expr = _build_genre_expr(genre_filter) if genre_filter and genre_filter != "All" else None
 
     results = collection.search(
         data=[query_vector],
@@ -131,62 +129,6 @@ def vector_search(
             "score":        hit.score,
         })
     return hits
-
-
-def _build_genre_expr(genre: str) -> str | None:
-    """Build a Milvus scalar filter expression for a given video genre.
-
-    Resolves the genre to a list of video_ids from PostgreSQL (fast cache lookup),
-    then builds ``video_id in ["V001","V002",...]``.  If the genre maps to zero
-    videos the search falls back to no filtering.
-
-    This avoids requiring the ``video_genre`` field in Milvus and works with
-    collections that were indexed before this feature was added.
-    """
-    import asyncio as _asyncio
-
-    try:
-        loop = _asyncio.get_running_loop()
-    except RuntimeError:
-        video_ids = _asyncio.run(_resolve_genre_video_ids(genre))
-    else:
-        # Create a new event loop in a thread — safe because _resolve is async
-        import concurrent.futures as _futures
-        import threading as _threading
-
-        future: _futures.Future = _futures.Future()
-
-        def _run():
-            new_loop = _asyncio.new_event_loop()
-            try:
-                _asyncio.set_event_loop(new_loop)
-                result = new_loop.run_until_complete(_resolve_genre_video_ids(genre))
-                future.set_result(result)
-            except Exception as exc:
-                future.set_exception(exc)
-            finally:
-                new_loop.close()
-
-        thread = _threading.Thread(target=_run, daemon=True)
-        thread.start()
-        thread.join(timeout=5.0)
-        if not future.done():
-            logger.warning("Genre video_id resolution timed out for genre=%s", genre)
-            return None
-        video_ids = future.result()
-
-    if not video_ids:
-        logger.info("No video_ids found for genre=%s; skipping genre filter", genre)
-        return None
-
-    quoted = ", ".join(f'"{vid}"' for vid in video_ids)
-    return f"video_id in [{quoted}]"
-
-
-async def _resolve_genre_video_ids(genre: str) -> list[str]:
-    from app.db import postgres_client as _pg
-
-    return await _pg.fetch_video_ids_by_genre(genre)
 
 
 def query_frames_in_time_range(
