@@ -208,6 +208,35 @@ async def fetch_video_ids_by_genre(genre: str) -> list[str]:
     return [r["video_id"] for r in rows]
 
 
+async def upsert_video_metadata(videos: list[dict]) -> int:
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO videos (video_id, title, youtube_id, fps, duration_ms, frame_count)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (video_id) DO UPDATE SET
+                title = EXCLUDED.title,
+                youtube_id = EXCLUDED.youtube_id,
+                fps = EXCLUDED.fps,
+                duration_ms = EXCLUDED.duration_ms,
+                frame_count = EXCLUDED.frame_count
+            """,
+            [
+                (
+                    v["video_id"],
+                    v.get("title") or v["video_id"],
+                    v.get("youtube_id") or "",
+                    float(v.get("fps") or 25.0),
+                    int(v.get("duration_ms") or 0),
+                    int(v.get("frame_count") or 0),
+                )
+                for v in videos
+            ],
+        )
+    return len(videos)
+
+
 async def update_video_genres(genre_map: dict[str, str]) -> int:
     """Bulk-update genre for multiple videos. genre_map: {video_id: genre}."""
     pool = await get_pool()

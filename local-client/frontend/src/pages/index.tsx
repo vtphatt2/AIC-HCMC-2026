@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import Head from "next/head";
 import Script from "next/script";
 import type {
@@ -72,6 +72,7 @@ export default function Home() {
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptTimeMs, setTranscriptTimeMs] = useState(0);
   const [transcriptGenre, setTranscriptGenre] = useState("");
+  const [transcriptViewMode, setTranscriptViewMode] = useState<"score" | "video">("score");
 
   // ── Load strategies on mount ───────────────────────────────────────────────
   useEffect(() => {
@@ -208,14 +209,34 @@ export default function Home() {
   }
 
   function handleChunkCardClick(chunk: TranscriptChunkResult) {
+    const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
+    const computedFrameNumber = Math.floor((midMs / 1000) * 25);
+    const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
+    const timestampMs = chunk.nearest_timestamp_ms ?? Math.round((frameNumber / 25) * 1000);
+    const frameImageUrl = chunk.frame_image_url || `/static/frames/${chunk.video_id}/${String(frameNumber).padStart(6, "0")}.jpg`;
+
     const searchResult: SearchResult = {
       video_id: chunk.video_id,
-      youtube_id: undefined,
-      frame_id: `${chunk.video_id}_000000`,
-      frame_number: 0,
-      timestamp_ms: chunk.start_time_ms,
+      youtube_id: chunk.youtube_id,
+      frame_id: `${chunk.video_id}_${String(frameNumber).padStart(6, "0")}`,
+      frame_number: frameNumber,
+      timestamp_ms: timestampMs,
       confidence: chunk.score,
-      frame_image_url: "",
+      frame_image_url: frameImageUrl,
+      fps: 25,
+    };
+    setActiveResult(searchResult);
+  }
+
+  function handleTranscriptFrameClick(videoId: string, youtubeId: string, frameNumber: number, timestampMs: number) {
+    const searchResult: SearchResult = {
+      video_id: videoId,
+      youtube_id: youtubeId || undefined,
+      frame_id: `${videoId}_${String(frameNumber).padStart(6, "0")}`,
+      frame_number: frameNumber,
+      timestamp_ms: timestampMs,
+      confidence: 0,
+      frame_image_url: `/static/frames/${videoId}/${String(frameNumber).padStart(6, "0")}.jpg`,
       fps: 25,
     };
     setActiveResult(searchResult);
@@ -233,6 +254,28 @@ export default function Home() {
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);
   const currentVectorAlgorithm = vectorAlgorithms.find((item) => item.id === selectedVectorAlgorithm);
+
+  const transcriptFrameResults = useMemo<SearchResult[]>(() => {
+    if (!transcriptResponse) return [];
+    return transcriptResponse.results.map((chunk) => {
+      const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
+      const computedFrameNumber = Math.floor((midMs / 1000) * 25);
+      const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
+      const timestampMs = chunk.nearest_timestamp_ms ?? Math.round((frameNumber / 25) * 1000);
+      const frameImageUrl = chunk.frame_image_url || `/static/frames/${chunk.video_id}/${String(frameNumber).padStart(6, "0")}.jpg`;
+
+      return {
+        video_id: chunk.video_id,
+        youtube_id: chunk.youtube_id,
+        frame_id: `${chunk.video_id}_${String(frameNumber).padStart(6, "0")}`,
+        frame_number: frameNumber,
+        timestamp_ms: timestampMs,
+        confidence: chunk.score,
+        frame_image_url: frameImageUrl,
+        fps: 25,
+      };
+    });
+  }, [transcriptResponse]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -578,6 +621,30 @@ export default function Home() {
                 />
               </div>
 
+              {/* View mode toggle for transcripts */}
+              <div className="flex items-center bg-slate-800 border border-slate-600 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => setTranscriptViewMode("score")}
+                  className={`px-3 py-1.5 text-sm transition ${
+                    transcriptViewMode === "score"
+                      ? "bg-emerald-600 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Score
+                </button>
+                <button
+                  onClick={() => setTranscriptViewMode("video")}
+                  className={`px-3 py-1.5 text-sm transition ${
+                    transcriptViewMode === "video"
+                      ? "bg-emerald-600 text-white"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  Video
+                </button>
+              </div>
+
               <div className="flex items-center gap-2">
                 <label className="text-sm text-slate-400 shrink-0">Topic</label>
                 <select
@@ -631,8 +698,8 @@ export default function Home() {
           />
         )}
 
-        {/* Transcript chunk search results */}
-        {searchMode === "transcripts" && transcriptResponse && (
+        {/* Transcript chunk search results — Score View */}
+        {searchMode === "transcripts" && transcriptResponse && transcriptViewMode === "score" && (
           <div className="space-y-4">
             <div className="flex items-center gap-4 text-sm text-slate-400">
               <span>
@@ -652,6 +719,7 @@ export default function Home() {
                     result={chunk}
                     rank={i + 1}
                     onClick={handleChunkCardClick}
+                    onFrameClick={handleTranscriptFrameClick}
                   />
                 ))}
               </div>
@@ -661,6 +729,16 @@ export default function Home() {
               </p>
             )}
           </div>
+        )}
+
+        {/* Transcript chunk search results — Video View */}
+        {searchMode === "transcripts" && transcriptResponse && transcriptViewMode === "video" && (
+          <VideoGroupGrid
+            results={transcriptFrameResults}
+            total={transcriptResponse.total}
+            executionTimeMs={transcriptTimeMs}
+            onCardClick={(r) => setActiveResult(r)}
+          />
         )}
       </main>
 

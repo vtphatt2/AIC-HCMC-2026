@@ -54,8 +54,13 @@ class DataProvider:
         self._transcript_search: TranscriptSearchService | None = None
         if TRANSCRIPT_CHUNK_SEARCH_ENABLED:
             try:
-                self._transcript_search = TranscriptSearchService()
-                logger.info("Transcript chunk search enabled")
+                from pathlib import Path
+                keyframe_dir = Path(os.getenv("FRAME_STATIC_DIR", ""))
+                if not keyframe_dir.is_dir():
+                    sample_root = Path(__file__).parent.parent.parent / "AIC2026_sample"
+                    keyframe_dir = sample_root / "keyframes" / "keyframes"
+                self._transcript_search = TranscriptSearchService(keyframe_dir=keyframe_dir)
+                logger.info("Transcript chunk search enabled (keyframe_dir=%s)", keyframe_dir)
             except Exception as exc:
                 logger.warning("Transcript chunk search unavailable: %s", exc)
                 self._transcript_search = None

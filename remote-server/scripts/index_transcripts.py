@@ -16,11 +16,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 from dotenv import load_dotenv
@@ -38,6 +40,7 @@ from app.db.milvus_client import TOPICS, TRANSCRIPT_VECTOR_DIM
 logger = logging.getLogger("index_transcripts")
 TIMESTAMP_RE = re.compile(r"\[(\d{2}):(\d{2}):(\d{2})\]\s+(.*)")
 VIDEO_ID_RE = re.compile(r"^(L\d{2}_V\d{3})")
+YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 FALLBACK_DURATION_MS = 5000
 CHUNK_MIN_S = 20
 CHUNK_TARGET_MIN_S = 40
@@ -170,6 +173,43 @@ def chunk_segments(segments: list[dict]) -> list[dict]:
     return chunks
 
 
+def youtube_id_from_link(link: str) -> str:
+    if not link:
+        return ""
+    try:
+        parsed = urlparse(link)
+        if parsed.netloc.endswith("youtu.be"):
+            return parsed.path.strip("/")
+        return parse_qs(parsed.query).get("v", [""])[0]
+    except Exception:
+        return ""
+
+
+def load_video_metadata(sample_root: Path) -> dict[str, dict]:
+    metadata_dir = sample_subdir(sample_root, "metadata")
+    if not metadata_dir.is_dir():
+        logger.warning("Metadata directory not found: %s", metadata_dir)
+        return {}
+    result: dict[str, dict] = {}
+    for path in sorted(metadata_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            video_id = path.stem
+            youtube_id = data.get("youtube_id") or youtube_id_from_link(data.get("video_link", ""))
+            if youtube_id and not YOUTUBE_ID_PATTERN.fullmatch(youtube_id):
+                logger.warning("%s: invalid youtube_id '%s', skipping", path.name, youtube_id)
+                continue
+            result[video_id] = {
+                "video_id": video_id,
+                "title": data.get("title") or video_id,
+                "youtube_id": youtube_id or "",
+                "fps": float(data.get("fps") or 25.0),
+            }
+        except Exception as exc:
+            logger.warning("Failed to parse %s: %s", path.name, exc)
+    return result
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = parse_args()
@@ -299,6 +339,19 @@ async def main() -> None:
     # ── Connect to databases ───────────────────────────────────────────────────
     milvus_client.connect()
     await postgres_client.init_schema()
+
+    # ── Upsert video metadata (youtube_id, title, fps) from metadata JSONs ────
+    video_metadata = load_video_metadata(sample_root)
+    if video_metadata:
+        for video_id, segments in all_video_segments.items():
+            if video_id in video_metadata:
+                last_seg = segments[-1] if segments else None
+                video_metadata[video_id]["duration_ms"] = last_seg["end_time_ms"] if last_seg else 0
+                video_metadata[video_id]["frame_count"] = len(segments)
+        upserted_videos = await postgres_client.upsert_video_metadata(list(video_metadata.values()))
+        logger.info("PostgreSQL: upserted %d video metadata rows (with youtube_id)", upserted_videos)
+    else:
+        logger.warning("No video metadata found — youtube_id will be missing from search results")
 
     if args.clear_existing:
         milvus_client.drop_transcript_collection_if_exists()

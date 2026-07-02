@@ -51,11 +51,15 @@ export interface SearchResponse {
 export interface TranscriptChunkResult {
   chunk_id: number;
   video_id: string;
+  youtube_id: string;
   topic: string;
   start_time_ms: number;
   end_time_ms: number;
   text: string;
   score: number;
+  frame_image_url: string;
+  frame_number: number;
+  nearest_timestamp_ms: number | null;
 }
 
 export interface TranscriptChunkSearchResponse {
