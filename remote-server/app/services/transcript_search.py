@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -19,12 +20,14 @@ TOPICS = milvus_client.TOPICS
 
 
 class TranscriptSearchService:
-    def __init__(self):
+    def __init__(self, keyframe_dir: Path | None = None):
         self._lock = threading.Lock()
         self._loaded = False
         self._model = None
         self._topic_vectors: np.ndarray | None = None
         self._collection = None
+        self._frames_collection = None
+        self._keyframe_dir = keyframe_dir
 
     def _ensure_loaded(self) -> None:
         if self._loaded:
@@ -69,6 +72,13 @@ class TranscriptSearchService:
         if self._collection is None:
             self._collection = milvus_client.get_transcript_collection()
 
+    def _ensure_frames_collection(self) -> None:
+        if self._frames_collection is None:
+            try:
+                self._frames_collection = milvus_client.get_collection()
+            except Exception:
+                logger.warning("video_frames collection not available for transcript frame lookup")
+
     def encode_passage(self, text: str) -> np.ndarray:
         self._ensure_loaded()
         return self._model.encode(
@@ -104,6 +114,7 @@ class TranscriptSearchService:
         timer_start = time.monotonic()
         self._ensure_loaded()
         self._ensure_collection()
+        self._ensure_frames_collection()
 
         query_vector = self.encode_query(query)
 
@@ -131,17 +142,31 @@ class TranscriptSearchService:
         metadata_rows = await postgres_client.fetch_transcript_chunks_by_ids(chunk_ids)
         metadata_by_id = {row["chunk_id"]: row for row in metadata_rows}
 
+        # Fetch video metadata for youtube_id lookup
+        all_video_ids = list({h["video_id"] for h in chunk_hits})
+        video_rows = await postgres_client.fetch_video_metadata(all_video_ids)
+        video_meta = {v["video_id"]: v for v in video_rows}
+
         results = []
         for hit in chunk_hits:
             meta = metadata_by_id.get(hit["chunk_id"], {})
+            vmeta = video_meta.get(hit["video_id"], {})
+            if not vmeta:
+                logger.warning("video_id=%s not found in videos table — youtube_id will be empty", hit["video_id"])
+            mid_ms = (int(hit["start_time_ms"]) + int(hit["end_time_ms"])) // 2
+            frame_info = self._nearest_frame(hit["video_id"], mid_ms)
             results.append({
-                "chunk_id":         hit["chunk_id"],
-                "video_id":         hit["video_id"],
-                "topic":            hit["topic"],
-                "start_time_ms":    hit["start_time_ms"],
-                "end_time_ms":      hit["end_time_ms"],
-                "text":             meta.get("raw_text", ""),
-                "score":            round(float(hit["score"]), 4),
+                "chunk_id":          hit["chunk_id"],
+                "video_id":          hit["video_id"],
+                "youtube_id":        str(vmeta.get("youtube_id", "")),
+                "topic":             hit["topic"],
+                "start_time_ms":     hit["start_time_ms"],
+                "end_time_ms":       hit["end_time_ms"],
+                "text":              meta.get("raw_text", ""),
+                "score":             round(float(hit["score"]), 4),
+                "frame_image_url":   frame_info.get("image_url", ""),
+                "frame_number":      frame_info.get("frame_number", 0),
+                "nearest_timestamp_ms": frame_info.get("timestamp_ms"),
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -156,3 +181,60 @@ class TranscriptSearchService:
             show_progress_bar=True,
             batch_size=32,
         ).astype("float32")
+
+    def _nearest_frame(self, video_id: str, target_ms: int) -> dict:
+        if self._frames_collection is not None:
+            try:
+                frames = milvus_client.query_frames_in_time_range(
+                    self._frames_collection,
+                    video_id,
+                    max(0, target_ms - 3000),
+                    target_ms + 3000,
+                    limit=3,
+                )
+                if frames:
+                    nearest = min(frames, key=lambda f: abs(int(f["timestamp_ms"]) - target_ms))
+                    return {
+                        "image_url":    nearest.get("image_url", ""),
+                        "frame_number": nearest.get("frame_number", 0),
+                        "timestamp_ms": nearest.get("timestamp_ms"),
+                    }
+            except Exception:
+                logger.warning("Milvus frame query failed for video_id=%s, using filesystem fallback", video_id)
+        return self._nearest_frame_fallback(video_id, target_ms)
+
+    def _nearest_frame_fallback(self, video_id: str, target_ms: int) -> dict:
+        if self._keyframe_dir is None:
+            return {}
+        frame_dir = self._keyframe_dir / video_id
+        if not frame_dir.is_dir():
+            return {}
+        try:
+            entries = list(frame_dir.glob("*.jpg"))
+            if not entries:
+                return {}
+            target_frame = int(target_ms / 1000 * 25)
+            best_path = None
+            best_diff = float("inf")
+            for p in entries:
+                try:
+                    fnum = int(p.stem)
+                except ValueError:
+                    continue
+                diff = abs(fnum - target_frame)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_path = p
+            if best_path is None:
+                return {}
+            frame_number = int(best_path.stem)
+            timestamp_ms = int(frame_number / 25 * 1000)
+            image_url = f"/static/frames/{video_id}/{best_path.name}"
+            return {
+                "image_url":    image_url,
+                "frame_number": frame_number,
+                "timestamp_ms": timestamp_ms,
+            }
+        except Exception:
+            logger.warning("Filesystem frame fallback failed for video_id=%s", video_id)
+            return {}

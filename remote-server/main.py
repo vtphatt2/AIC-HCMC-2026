@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import time
 import importlib
 import inspect
@@ -6,6 +8,7 @@ import logging
 import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +32,53 @@ _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
 _transcript_search_service: TranscriptSearchService | None = None
 logger = logging.getLogger(__name__)
+
+YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _youtube_id_from_link(link: str) -> str:
+    if not link:
+        return ""
+    try:
+        parsed = urlparse(link)
+        if parsed.netloc.endswith("youtu.be"):
+            return parsed.path.strip("/")
+        return parse_qs(parsed.query).get("v", [""])[0]
+    except Exception:
+        return ""
+
+
+def _load_video_metadata_from_disk() -> list[dict]:
+    sample_root = default_sample_root(REMOTE_ROOT.parent)
+    metadata_dir = sample_subdir(sample_root, "metadata")
+    if not metadata_dir.is_dir():
+        return []
+    videos = []
+    for path in sorted(metadata_dir.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            video_id = path.stem
+            youtube_id = data.get("youtube_id") or _youtube_id_from_link(data.get("video_link", ""))
+            if youtube_id and not YOUTUBE_ID_PATTERN.fullmatch(youtube_id):
+                continue
+            videos.append({
+                "video_id": video_id,
+                "title": data.get("title") or video_id,
+                "youtube_id": youtube_id or "",
+                "fps": float(data.get("fps") or 25.0),
+                "duration_ms": 0,
+                "frame_count": 0,
+            })
+        except Exception:
+            pass
+    return videos
+
+
+async def _auto_populate_video_metadata() -> int:
+    videos = _load_video_metadata_from_disk()
+    if not videos:
+        return 0
+    return await postgres_client.upsert_video_metadata(videos)
 
 
 def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
@@ -58,6 +108,10 @@ async def lifespan(app: FastAPI):
     milvus_client.connect()
     milvus_client.create_collection_if_missing()
 
+    populated = await _auto_populate_video_metadata()
+    if populated:
+        print(f"Auto-populated {populated} video metadata entries (with youtube_id)")
+
     print("Loading DataProvider...")
     _data_provider = DataProvider()
     if os.getenv("WARMUP_TEXT_ENCODER", "false").lower() in {"1", "true", "yes"}:
@@ -78,7 +132,7 @@ async def lifespan(app: FastAPI):
     if os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
         try:
             milvus_client.create_transcript_collection_if_missing()
-            _transcript_search_service = TranscriptSearchService()
+            _transcript_search_service = TranscriptSearchService(keyframe_dir=FRAME_STATIC_DIR)
             print("Transcript chunk search service ready")
         except Exception as exc:
             print(f"Transcript chunk search service unavailable: {exc}")
