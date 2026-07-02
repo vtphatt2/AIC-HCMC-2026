@@ -62,12 +62,12 @@ AIC-HCMC-2026/
             ├── mock/                 # 105 sample frames across 3 videos
             └── strategies/
                 ├── base_strategy.py  # Identical to server — copy strategies freely
-                └── example_strategy.py   # Template / UI smoke-test strategy
+                └── _example_strategy.py   # Template / UI smoke-test strategy
 ```
 
 ---
 
-## The Core Idea in One Paragraph
+## Core System Concept
 
 Every retrieval strategy is a Python file that subclasses `BaseStrategy` and
 implements `fusion_and_temporal()`. It receives visual-search results, OCR,
@@ -106,9 +106,9 @@ PostgreSQL for metadata and text retrieval.
 
 ---
 
-## Adding Your Own Strategy (TL;DR)
+## Strategy Development Quickstart
 
-1. Copy `local-client/local-backend/app/strategies/example_strategy.py`
+1. Copy `local-client/local-backend/app/strategies/_example_strategy.py`
 2. Rename to `yourname_idea_v1.py`
 3. Fill in `name`, `description`, `author`
 4. Implement `fusion_and_temporal()`

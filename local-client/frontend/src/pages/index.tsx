@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Head from "next/head";
 import Script from "next/script";
 import type {
@@ -8,8 +8,10 @@ import type {
   SearchResponse,
   TranscriptChunkResult,
   TranscriptChunkSearchResponse,
+  VectorSearchAlgorithm,
 } from "@/types";
 import {
+  fetchVectorSearchAlgorithms,
   fetchStrategies,
   runSearch,
   translateTexts,
@@ -58,6 +60,9 @@ export default function Home() {
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [viewMode, setViewMode] = useState<"score" | "video">("score");
   const [videoGenre, setVideoGenre] = useState("All");
+  const [vectorAlgorithms, setVectorAlgorithms] = useState<VectorSearchAlgorithm[]>([]);
+  const [selectedVectorAlgorithm, setSelectedVectorAlgorithm] = useState("");
+  const [algorithmMenuOpen, setAlgorithmMenuOpen] = useState(false);
 
   // ── Transcript search state ────────────────────────────────────────────────
   const [searchMode, setSearchMode] = useState<"frames" | "transcripts">("frames");
@@ -77,9 +82,36 @@ export default function Home() {
       })
       .catch(() => setError("Cannot connect to backend. Is the local backend running?"));
 
+    fetchVectorSearchAlgorithms()
+      .then((payload) => {
+        setVectorAlgorithms(payload.algorithms);
+        const fallback = payload.algorithms.find((item) => item.available)?.id || "";
+        const defaultIsAvailable = payload.algorithms.some(
+          (item) => item.id === payload.default && item.available
+        );
+        setSelectedVectorAlgorithm(defaultIsAvailable ? payload.default : fallback);
+      })
+      .catch(() => undefined);
+
     // Hide GPU wake-up work while the user prepares the first query.
     warmupTextEncoder().catch(() => undefined);
   }, []);
+
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setAlgorithmMenuOpen(false);
+      }
+    }
+    if (algorithmMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [algorithmMenuOpen]);
 
   // ── Query group helpers ────────────────────────────────────────────────────
   function updateGroup(index: number, updated: QueryGroup) {
@@ -136,7 +168,11 @@ export default function Home() {
       }
 
       setLoadingLabel("Searching…");
-      const res = await runSearch(selectedStrategy, groupsForSearch, topK, videoGenre);
+      const res = await runSearch(
+        selectedStrategy, groupsForSearch, topK,
+        videoGenre,
+        selectedVectorAlgorithm || undefined,
+      );
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
     } catch (err: any) {
@@ -196,6 +232,7 @@ export default function Home() {
   }
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);
+  const currentVectorAlgorithm = vectorAlgorithms.find((item) => item.id === selectedVectorAlgorithm);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -355,6 +392,147 @@ export default function Home() {
               >
                 {loading ? loadingLabel : "Search"}
               </button>
+
+
+              {vectorAlgorithms.length > 0 && (
+                <div className="relative" ref={menuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setAlgorithmMenuOpen((open) => !open)}
+                    className="h-8 min-w-20 px-2.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-300 hover:text-white hover:border-slate-400 text-xs font-medium transition"
+                    title="Vector search algorithm"
+                  >
+                    <span className="mr-1">⚙</span>
+                    {selectedVectorAlgorithm === "flat" ? "FLAT - Linear search" : (currentVectorAlgorithm?.name || "Vector")}
+                  </button>
+
+                  {algorithmMenuOpen && (
+                    <div className="absolute right-0 top-10 z-40 w-64 rounded-lg border border-slate-600 bg-slate-900 shadow-xl shadow-black/50 overflow-hidden divide-y divide-slate-800">
+                      {/* EXACT Section */}
+                      {vectorAlgorithms.some(a => a.id === "flat" || a.id === "linear") && (
+                        <div className="py-1">
+                          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Exact
+                          </div>
+                          {vectorAlgorithms
+                            .filter(a => a.id === "flat" || a.id === "linear")
+                            .map((algorithm) => (
+                              <button
+                                key={algorithm.id}
+                                type="button"
+                                disabled={!algorithm.available}
+                                onClick={() => {
+                                  if (!algorithm.available) return;
+                                  setSelectedVectorAlgorithm(algorithm.id);
+                                  setAlgorithmMenuOpen(false);
+                                }}
+                                className={`w-full px-3 py-1.5 text-left transition ${
+                                  selectedVectorAlgorithm === algorithm.id
+                                    ? "bg-blue-600/30 text-white"
+                                    : "text-slate-300 hover:bg-slate-800"
+                                } ${!algorithm.available ? "opacity-45 cursor-not-allowed hover:bg-transparent" : ""}`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-semibold">
+                                    {algorithm.id === "flat" ? "FLAT - Linear search" : algorithm.name}
+                                  </span>
+                                  {!algorithm.available && (
+                                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                                      Later
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-slate-500 leading-normal">
+                                  {algorithm.description}
+                                </p>
+                              </button>
+                            ))}
+                        </div>
+                      )}
+
+                      {/* Graph ANN Section */}
+                      {vectorAlgorithms.some(a => a.id === "hnsw" || (a.id === "cagra" && a.available)) && (
+                        <div className="py-1">
+                          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Graph ANN
+                          </div>
+                          {vectorAlgorithms
+                            .filter(a => a.id === "hnsw" || (a.id === "cagra" && a.available))
+                            .map((algorithm) => (
+                              <button
+                                key={algorithm.id}
+                                type="button"
+                                disabled={!algorithm.available}
+                                onClick={() => {
+                                  if (!algorithm.available) return;
+                                  setSelectedVectorAlgorithm(algorithm.id);
+                                  setAlgorithmMenuOpen(false);
+                                }}
+                                className={`w-full px-3 py-1.5 text-left transition ${
+                                  selectedVectorAlgorithm === algorithm.id
+                                    ? "bg-blue-600/30 text-white"
+                                    : "text-slate-300 hover:bg-slate-800"
+                                } ${!algorithm.available ? "opacity-45 cursor-not-allowed hover:bg-transparent" : ""}`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-semibold">{algorithm.name}</span>
+                                  {!algorithm.available && (
+                                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                                      Later
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-slate-500 leading-normal">
+                                  {algorithm.description}
+                                </p>
+                              </button>
+                            ))}
+                        </div>
+                      )}
+
+                      {/* Quantized CPU ANN Section */}
+                      {vectorAlgorithms.some(a => a.id === "scann") && (
+                        <div className="py-1">
+                          <div className="px-3 py-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                            Quantized CPU ANN
+                          </div>
+                          {vectorAlgorithms
+                            .filter(a => a.id === "scann")
+                            .map((algorithm) => (
+                              <button
+                                key={algorithm.id}
+                                type="button"
+                                disabled={!algorithm.available}
+                                onClick={() => {
+                                  if (!algorithm.available) return;
+                                  setSelectedVectorAlgorithm(algorithm.id);
+                                  setAlgorithmMenuOpen(false);
+                                }}
+                                className={`w-full px-3 py-1.5 text-left transition ${
+                                  selectedVectorAlgorithm === algorithm.id
+                                    ? "bg-blue-600/30 text-white"
+                                    : "text-slate-300 hover:bg-slate-800"
+                                } ${!algorithm.available ? "opacity-45 cursor-not-allowed hover:bg-transparent" : ""}`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-xs font-semibold">{algorithm.name}</span>
+                                  {!algorithm.available && (
+                                    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500">
+                                      Later
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-[10px] text-slate-500 leading-normal">
+                                  {algorithm.description}
+                                </p>
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {!collapsed && (

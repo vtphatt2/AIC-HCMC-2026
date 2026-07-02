@@ -4,6 +4,7 @@ import type {
   SearchResponse,
   TranslationResponse,
   TranscriptChunkSearchResponse,
+  VectorSearchAlgorithmResponse,
 } from "@/types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -15,6 +16,12 @@ export function apiUrl(path: string): string {
 export async function fetchStrategies(): Promise<Strategy[]> {
   const res = await fetch(apiUrl("/api/strategies"));
   if (!res.ok) throw new Error("Failed to fetch strategies");
+  return res.json();
+}
+
+export async function fetchVectorSearchAlgorithms(): Promise<VectorSearchAlgorithmResponse> {
+  const res = await fetch(apiUrl("/api/vector-search-algorithms"));
+  if (!res.ok) throw new Error("Failed to fetch vector search algorithms");
   return res.json();
 }
 
@@ -45,6 +52,7 @@ export async function runSearch(
   queryGroups: QueryGroup[],
   topK: number,
   videoGenre: string = "All",
+  vectorSearchAlgorithm?: string,
 ): Promise<SearchResponse> {
   const payload: Record<string, unknown> = {
     strategy_id: strategyId,
@@ -54,6 +62,7 @@ export async function runSearch(
       temporal_offset_ms: g.temporalOffsetMs
     })),
     top_k: topK,
+    ...(vectorSearchAlgorithm ? { vector_search_algorithm: vectorSearchAlgorithm } : {})
   };
   if (videoGenre && videoGenre !== "All") {
     payload.video_genre = videoGenre;

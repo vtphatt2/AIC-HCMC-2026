@@ -11,8 +11,31 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "video_frames")
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "1280"))  # PE-Core-bigG-14-448 produces 1280-dim
 METRIC_TYPE = "COSINE"
-INDEX_TYPE = "HNSW"
-INDEX_PARAMS = {"M": 16, "efConstruction": 256}
+DEFAULT_ALGORITHM = {
+    "milvus": "hnsw",
+    "hnsw": "hnsw",
+    "flat": "flat",
+    "scann": "scann",
+}.get(os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower(), "hnsw")
+VECTOR_INDEXES = {
+    "hnsw": {
+        "collection": os.getenv("MILVUS_COLLECTION_HNSW") or COLLECTION_NAME,
+        "index_type": "HNSW",
+        "index_params": {"M": 16, "efConstruction": 256},
+    },
+    "flat": {
+        "collection": os.getenv("MILVUS_COLLECTION_FLAT") or f"{COLLECTION_NAME}_flat",
+        "index_type": "FLAT",
+        "index_params": {},
+    },
+    "scann": {
+        "collection": os.getenv("MILVUS_COLLECTION_SCANN") or f"{COLLECTION_NAME}_scann",
+        "index_type": "SCANN",
+        "index_params": {"nlist": 127, "with_raw_data": True},
+    },
+}
+INDEX_TYPE = VECTOR_INDEXES[DEFAULT_ALGORITHM]["index_type"]
+INDEX_PARAMS = VECTOR_INDEXES[DEFAULT_ALGORITHM]["index_params"]
 SEARCH_PARAMS = {"ef": 256}
 DEEP_SEARCH_TOP_K = 50
 DEEP_SEARCH_EF = 512
@@ -27,16 +50,55 @@ def connect() -> None:
 
 
 def get_collection() -> Collection:
-    col = Collection(COLLECTION_NAME)
+    col = Collection(collection_name_for_algorithm())
     col.load()
     return col
 
 
-def create_collection_if_missing() -> Collection:
-    """Create the video_frames collection with an HNSW index if it does not exist."""
-    if utility.has_collection(COLLECTION_NAME):
-        logger.info("Milvus collection already exists: %s", COLLECTION_NAME)
-        return get_collection()
+def get_collection_for_name(collection_name: str) -> Collection:
+    col = Collection(collection_name)
+    col.load()
+    return col
+
+
+def collection_name_for_algorithm(algorithm: str | None = None) -> str:
+    return index_config(algorithm)["collection"]
+
+
+def index_config(algorithm: str | None = None) -> dict[str, Any]:
+    algorithm = normalize_algorithm(algorithm or DEFAULT_ALGORITHM)
+    return VECTOR_INDEXES[algorithm]
+
+
+def normalize_algorithm(algorithm: str) -> str:
+    algorithm = str(algorithm).strip().lower()
+    if algorithm == "milvus":
+        algorithm = "hnsw"
+    if algorithm not in VECTOR_INDEXES:
+        raise ValueError(f"Milvus vector algorithm must be one of {list(VECTOR_INDEXES.keys())}")
+    return algorithm
+
+
+def available_milvus_algorithms() -> dict[str, bool]:
+    return {
+        algorithm: has_collection_for_algorithm(algorithm)
+        for algorithm in VECTOR_INDEXES
+    }
+
+
+def has_collection_for_algorithm(algorithm: str) -> bool:
+    return utility.has_collection(collection_name_for_algorithm(algorithm))
+
+
+def create_collection_if_missing(algorithm: str | None = None) -> Collection:
+    """Create the configured Milvus collection/index if it does not exist."""
+    config = index_config(algorithm)
+    collection_name = config["collection"]
+    if utility.has_collection(collection_name):
+        logger.info("Milvus collection already exists: %s", collection_name)
+        col = Collection(collection_name)
+        col.load()
+        return col
 
     fields = [
         FieldSchema(name="frame_id",     dtype=DataType.VARCHAR, max_length=128, is_primary=True),
@@ -48,14 +110,14 @@ def create_collection_if_missing() -> Collection:
         FieldSchema(name="vector",       dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
     ]
     schema = CollectionSchema(fields, description="Frame-level visual embeddings (PE-Core-bigG-14-448)")
-    col = Collection(COLLECTION_NAME, schema)
+    col = Collection(collection_name, schema)
 
     col.create_index(
         "vector",
         {
             "metric_type": METRIC_TYPE,
-            "index_type": INDEX_TYPE,
-            "params": INDEX_PARAMS,
+            "index_type": config["index_type"],
+            "params": config["index_params"],
         },
     )
     try:
@@ -66,20 +128,21 @@ def create_collection_if_missing() -> Collection:
     col.load()
     logger.info(
         "Created Milvus collection=%s dim=%s index=%s metric=%s params=%s",
-        COLLECTION_NAME,
+        collection_name,
         VECTOR_DIM,
-        INDEX_TYPE,
+        config["index_type"],
         METRIC_TYPE,
-        INDEX_PARAMS,
+        config["index_params"],
     )
     return col
 
 
-def drop_collection_if_exists() -> bool:
-    if not utility.has_collection(COLLECTION_NAME):
+def drop_collection_if_exists(algorithm: str | None = None) -> bool:
+    collection_name = collection_name_for_algorithm(algorithm)
+    if not utility.has_collection(collection_name):
         return False
-    utility.drop_collection(COLLECTION_NAME)
-    logger.warning("Dropped Milvus collection: %s", COLLECTION_NAME)
+    utility.drop_collection(collection_name)
+    logger.warning("Dropped Milvus collection: %s", collection_name)
     return True
 
 
@@ -104,12 +167,18 @@ def vector_search(
     collection: Collection,
     query_vector: list[float],
     top_k: int = 100,
+    algorithm: str | None = None,
     expr: str | None = None,
 ) -> list[dict]:
     top_k = max(1, int(top_k))
-    base_ef = DEEP_SEARCH_EF if top_k >= DEEP_SEARCH_TOP_K else int(SEARCH_PARAMS["ef"])
-    search_params = {"ef": max(base_ef, top_k)}
-
+    config = index_config(algorithm)
+    if config["index_type"] == "HNSW":
+        base_ef = DEEP_SEARCH_EF if top_k >= DEEP_SEARCH_TOP_K else int(SEARCH_PARAMS["ef"])
+        search_params = {"ef": max(base_ef, top_k)}
+    elif config["index_type"] == "SCANN":
+        search_params = {"nprobe": 32, "reorder_k": max(top_k, top_k * 5)}
+    else:
+        search_params = {}
     results = collection.search(
         data=[query_vector],
         anns_field="vector",

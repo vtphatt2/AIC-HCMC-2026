@@ -13,7 +13,7 @@ flowchart LR
     RB[Remote server]
     MOCK[Mock JSON]
     SAMPLE[AIC sample vectors]
-    SEARCH[PE-Core + HNSW or CAGRA]
+    SEARCH[PE-Core + HNSW, CAGRA, or ScaNN]
     TEXT[PostgreSQL]
     TRANS[Optional VI/mixed to English]
 
@@ -65,7 +65,7 @@ sequenceDiagram
     participant API as Backend
     participant TR as Translation
     participant DP as DataProvider
-    participant VS as HNSW/CAGRA
+    participant VS as HNSW/ScaNN/CAGRA
     participant DB as PostgreSQL
     participant ST as Strategy
 
@@ -101,9 +101,14 @@ model/client initialization during the first user request.
 
 | Value | Behavior |
 |---|---|
-| `milvus` | Default Milvus HNSW search using COSINE similarity |
+| `milvus` / `hnsw` | Milvus HNSW ANN search using COSINE similarity |
+| `flat` | Milvus FLAT exact CPU search using COSINE similarity |
+| `scann` | Milvus ScaNN approximate search using raw vector reordering |
 | `cagra` | Optional cuVS CAGRA search using a local GPU index |
 
+Milvus runtime algorithm selection uses one collection per index profile, for
+example `video_frames` for HNSW, `video_frames_flat` for FLAT, and `video_frames_scann` for ScaNN. This keeps
+runtime switching real while still using Milvus search for these algorithms.
 CAGRA changes only semantic vector search. Milvus and PostgreSQL still run for
 collection access, metadata, OCR, transcripts, and temporal workflows.
 
@@ -165,7 +170,7 @@ On startup the backend scans `app/strategies/*.py` and auto-registers any class 
 - Is **not** `BaseStrategy` itself
 - Has non-empty `name`, `description`, and `author` class attributes
 
-The file stem becomes the `strategy_id` (e.g. `duy_temporal_v1.py` → `"duy_temporal_v1"`).
+The file stem becomes the `strategy_id` (e.g. `custom_strategy_v1.py` → `"custom_strategy_v1"`).
 
 A reload of the backend (or `--reload` watching the `.py` file) is all that's needed to pick up a new strategy.
 

@@ -20,8 +20,10 @@ from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 from app.services.translation import TranslationService
 from app.services.transcript_search import TranscriptSearchService
+from scripts.sample_paths import default_sample_root, sample_subdir
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
+REMOTE_ROOT = Path(__file__).parent
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
@@ -103,9 +105,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve pre-extracted frame images
-STATIC_DIR = Path(__file__).parent / "static"
+def _frame_static_dir() -> Path:
+    configured = os.getenv("FRAME_STATIC_DIR", "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if not path.is_dir():
+            raise RuntimeError(f"FRAME_STATIC_DIR does not exist or is not a directory: {path}")
+        return path
+
+    sample_root = default_sample_root(REMOTE_ROOT.parent)
+    sample_keyframes = sample_subdir(sample_root, "keyframes")
+    if sample_keyframes.is_dir():
+        return sample_keyframes
+
+    return REMOTE_ROOT / "static" / "frames"
+
+
+# Serve frame images without requiring a duplicate copy under remote-server/static.
+STATIC_DIR = REMOTE_ROOT / "static"
+FRAME_STATIC_DIR = _frame_static_dir()
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+if not FRAME_STATIC_DIR.exists():
+    FRAME_STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static/frames", StaticFiles(directory=str(FRAME_STATIC_DIR)), name="frames")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -122,6 +144,7 @@ class SearchRequest(BaseModel):
     query_groups: list[QueryGroup]
     top_k: int = 100
     video_genre: str = "All"
+    vector_search_algorithm: str | None = None
 
 
 class TranslationRequest(BaseModel):
@@ -142,6 +165,10 @@ async def health():
         "status": "ok",
         "env_mode": os.getenv("ENV_MODE"),
         "vector_search_backend": os.getenv("VECTOR_SEARCH_BACKEND", "milvus"),
+        "milvus_collections": {
+            algorithm: milvus_client.collection_name_for_algorithm(algorithm)
+            for algorithm in ("hnsw", "flat", "scann")
+        },
         "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
@@ -150,11 +177,19 @@ async def health():
 
 @app.get("/api/static-debug")
 async def static_debug(path: str = "frames/L01_V001/000022.jpg"):
-    target = (STATIC_DIR / path).resolve()
+    clean_path = path.removeprefix("/").removeprefix("static/")
+    if clean_path.startswith("frames/"):
+        target = (FRAME_STATIC_DIR / clean_path.removeprefix("frames/")).resolve()
+        source_dir = FRAME_STATIC_DIR
+    else:
+        target = (STATIC_DIR / clean_path).resolve()
+        source_dir = STATIC_DIR
     return {
         "static_dir": str(STATIC_DIR.resolve()),
+        "frame_static_dir": str(FRAME_STATIC_DIR.resolve()),
         "path": path,
         "target": str(target),
+        "source_dir": str(source_dir.resolve()),
         "exists": target.exists(),
         "is_file": target.is_file(),
         "size": target.stat().st_size if target.exists() else None,
@@ -205,6 +240,15 @@ async def list_strategies():
     ]
 
 
+@app.get("/api/vector-search-algorithms")
+async def list_vector_search_algorithms():
+    algorithms = _vector_search_algorithm_options()
+    return {
+        "default": _default_vector_algorithm(),
+        "algorithms": algorithms,
+    }
+
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
@@ -243,10 +287,15 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found.")
 
     strategy = _strategies[req.strategy_id]
+    query_groups = [g.model_dump() for g in req.query_groups]
+    if req.vector_search_algorithm:
+        algorithm = _normalize_vector_algorithm(req.vector_search_algorithm)
+        for group in query_groups:
+            group["_vector_search_algorithm"] = algorithm
 
     try:
         results = await strategy.search(
-            [g.model_dump() for g in req.query_groups],
+            query_groups,
             limit=top_k,
             video_genre=req.video_genre,
         )
@@ -322,5 +371,72 @@ async def raw_data(body: dict):
     query_groups = body.get("query_groups", [])
     limit = min(int(body.get("limit", 1000)), 1000)
     video_genre = str(body.get("video_genre", "All"))
+    if body.get("vector_search_algorithm"):
+        algorithm = _normalize_vector_algorithm(str(body["vector_search_algorithm"]))
+        for group in query_groups:
+            group["_vector_search_algorithm"] = algorithm
     data = await _data_provider.get_raw_data(query_groups, limit=limit, video_genre=video_genre)
     return data
+
+
+def _normalize_vector_algorithm(value: str) -> str:
+    algorithm = value.strip().lower()
+    if algorithm not in {"hnsw", "flat", "cagra", "scann"}:
+        raise HTTPException(400, "vector_search_algorithm must be 'hnsw', 'flat', 'cagra', or 'scann'.")
+    return algorithm
+
+
+def _default_vector_algorithm() -> str:
+    configured = os.getenv("VECTOR_SEARCH_BACKEND", "milvus").lower()
+    if configured == "flat":
+        return "flat"
+    if configured == "cagra":
+        return "cagra"
+    if configured == "scann":
+        return "scann"
+    return "hnsw"
+
+
+def _vector_search_algorithm_options() -> list[dict]:
+    available = milvus_client.available_milvus_algorithms()
+    return [
+        {
+            "id": "hnsw",
+            "name": "HNSW",
+            "available": available.get("hnsw", False),
+            "collection": milvus_client.collection_name_for_algorithm("hnsw"),
+            "description": "Milvus HNSW ANN search from the vector collection.",
+        },
+        {
+            "id": "scann",
+            "name": "ScaNN",
+            "available": available.get("scann", False),
+            "collection": milvus_client.collection_name_for_algorithm("scann"),
+            "description": "Milvus ScaNN approximate search with raw vector reordering.",
+        },
+        {
+            "id": "flat",
+            "name": "FLAT",
+            "available": available.get("flat", False),
+            "collection": milvus_client.collection_name_for_algorithm("flat"),
+            "description": "Milvus FLAT exact CPU search from the vector collection.",
+        },
+        {
+            "id": "cagra",
+            "name": "CAGRA",
+            "available": _cagra_available(),
+            "description": "NVIDIA GPU ANN search from the prepared cuVS CAGRA index.",
+        },
+    ]
+
+
+def _cagra_available() -> bool:
+    if importlib.util.find_spec("cuvs") is None or importlib.util.find_spec("cupy") is None:
+        return False
+    index_path = Path(os.getenv("CAGRA_INDEX_PATH", "cache/cagra/index.bin"))
+    frame_ids_path = Path(os.getenv("CAGRA_FRAME_IDS_PATH", "cache/cagra/frame_ids.txt"))
+    if not index_path.is_absolute():
+        index_path = Path(__file__).parent / index_path
+    if not frame_ids_path.is_absolute():
+        frame_ids_path = Path(__file__).parent / frame_ids_path
+    return index_path.is_file() and frame_ids_path.is_file()

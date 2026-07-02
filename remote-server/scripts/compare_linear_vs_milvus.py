@@ -153,9 +153,9 @@ def main() -> None:
     logger.info("Running linear search over %s", args.sample_root)
     linear_hits = linear_search(query_vector, args.sample_root, linear_top)
 
-    logger.info("Running Milvus search collection=%s", milvus_client.COLLECTION_NAME)
     milvus_client.connect()
     collection = milvus_client.get_collection()
+    logger.info("Running Milvus search collection=%s", collection.name)
     milvus_hits = milvus_client.vector_search(collection, query_vector.tolist(), top_k=linear_top)
 
     print(f"query: {args.query}")

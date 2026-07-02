@@ -187,10 +187,12 @@ uvicorn main:app --reload --port 8000
 
 Expected startup output:
 ```
+Starting local backend…
 DataProvider: MOCK mode — 3 videos, 105 frames loaded
 Discovering strategies…
-  ✓ example_strategy  [Example (Mock)]  by Team AIC 2026
-Ready — 1 strategy/strategies available.
+  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
+  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
+Ready — 2 strategy/strategies available.
 ```
 
 Verify: open http://localhost:8000/api/strategies — you should see a JSON list.
@@ -263,8 +265,9 @@ Expected startup output:
 ```
 DataProvider: LOCAL mode → https://xxxx.ngrok.io
 Discovering strategies…
-  ✓ example_strategy  [Example (Mock)]  by Team AIC 2026
-Ready — 1 strategy/strategies available.
+  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
+  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
+Ready — 2 strategy/strategies available.
 ```
 
 The frontend setup is identical to Option A.
@@ -379,13 +382,23 @@ python scripts/ingest_embeddings_to_milvus.py \
   --copy-keyframes
 ```
 
+To enable runtime HNSW/FLAT/ScaNN selection, build all three Milvus collections:
+
+```bash
+python scripts/ingest_embeddings_to_milvus.py \
+  --sample-root /path/to/AIC2026_sample \
+  --copy-keyframes \
+  --vector-index all \
+  --recreate-milvus
+```
+
 The script upserts video metadata into PostgreSQL and frame embeddings into
 Milvus, so it is safe to rerun after correcting metadata.
 
 After ingestion, verify:
 ```bash
 curl http://localhost:8000/api/health
-# {"status":"ok","env_mode":"SERVER","strategies":1}
+# {"status":"ok","env_mode":"SERVER","strategies":2}
 ```
 
 Before the first demo search, load the text model once:
@@ -400,7 +413,7 @@ curl -X POST http://localhost:8000/api/warmup_text_encoder
 
 ```bash
 # 1. Copy the template
-cp local-client/local-backend/app/strategies/example_strategy.py \
+cp local-client/local-backend/app/strategies/_example_strategy.py \
    local-client/local-backend/app/strategies/yourname_v1.py
 
 # 2. Edit the file — set name, description, author, implement fusion_and_temporal()
@@ -457,9 +470,12 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `ENV_MODE` | `SERVER` | Should always be `SERVER` on the GPU machine |
 | `MILVUS_HOST` | `localhost` | Milvus hostname |
 | `MILVUS_PORT` | `19530` | Milvus port |
-| `MILVUS_COLLECTION` | `video_frames` | Milvus collection name |
+| `MILVUS_COLLECTION` | `video_frames` | Default Milvus HNSW collection name |
+| `MILVUS_COLLECTION_HNSW` | `video_frames` | HNSW collection used for runtime selection |
+| `MILVUS_COLLECTION_FLAT` | `video_frames_flat` | FLAT collection used for runtime selection |
+| `MILVUS_COLLECTION_SCANN` | `video_frames_scann` | ScaNN collection used for runtime selection |
 | `VECTOR_DIM` | `1280` | Embedding dimension (PE-Core-bigG-14-448) |
-| `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus` for HNSW or `cagra` for cuVS GPU search |
+| `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus`/`hnsw`, `flat`, `scann`, or `cagra` |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
