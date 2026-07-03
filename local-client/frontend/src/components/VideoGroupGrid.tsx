@@ -71,12 +71,31 @@ interface VideoGroupSectionProps {
 }
 
 function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionProps) {
+  const elementRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const bestFrameRef = useRef<HTMLDivElement | null>(null);
   const bestDirectionRef = useRef<BestDirection>("visible");
   const [bestDirection, setBestDirection] = useState<BestDirection>("visible");
+  const [isVisible, setIsVisible] = useState(false);
   const bestScore = Math.max(...frames.map((f) => f.result.confidence));
   const bestFrame = frames.find((f) => f.rankInVideo === 1);
+
+  // Lazy render observer to drop off-screen DOM weight and network load
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setIsVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "250px" }
+    );
+    if (elementRef.current) {
+      observer.observe(elementRef.current);
+    }
+    return () => observer.disconnect();
+  }, []);
 
   function updateBestDirection() {
     const strip = stripRef.current;
@@ -107,13 +126,20 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
   }
 
   useEffect(() => {
-    updateBestDirection();
+    if (!isVisible) return;
+    const handle = setTimeout(updateBestDirection, 0);
     window.addEventListener("resize", updateBestDirection);
-    return () => window.removeEventListener("resize", updateBestDirection);
-  }, [frames]);
+    return () => {
+      clearTimeout(handle);
+      window.removeEventListener("resize", updateBestDirection);
+    };
+  }, [frames, isVisible]);
 
   return (
-    <div className="border border-slate-700 rounded-xl overflow-hidden bg-slate-800/50">
+    <div
+      ref={elementRef}
+      className="border border-slate-700 rounded-xl overflow-hidden bg-slate-800/50 min-h-[174px]"
+    >
       {/* Video header */}
       <div className="px-4 py-2 bg-slate-800 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -137,54 +163,59 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
       </div>
 
       {/* Horizontal scrollable frame strip */}
-      <div className="relative">
-        {bestDirection !== "visible" && (
-          <button
-            type="button"
-            onClick={jumpToBest}
-            className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border border-emerald-300/60 bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-emerald-200 shadow-lg shadow-black/30 backdrop-blur hover:border-emerald-300 hover:bg-emerald-500 hover:text-white transition"
-            title="Jump to the best frame in this video"
+      {isVisible ? (
+        <div className="relative">
+          {bestDirection !== "visible" && (
+            <button
+              type="button"
+              onClick={jumpToBest}
+              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border border-emerald-300/60 bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-emerald-200 shadow-lg shadow-black/30 backdrop-blur hover:border-emerald-300 hover:bg-emerald-500 hover:text-white transition"
+              title="Jump to the best frame in this video"
+            >
+              {bestDirection === "left" ? "← Best" : "Best →"}
+            </button>
+          )}
+          <div
+            ref={stripRef}
+            onScroll={updateBestDirection}
+            className="flex overflow-x-auto gap-2 p-3 scrollbar-thin"
           >
-            {bestDirection === "left" ? "← Best" : "Best →"}
-          </button>
-        )}
-        <div
-          ref={stripRef}
-          onScroll={updateBestDirection}
-          className="flex overflow-x-auto gap-2 p-3 scrollbar-thin"
-        >
-          {frames.map((df, i) => {
-            const badge = frameBadge(df.rankInVideo);
+            {frames.map((df, i) => {
+              const badge = frameBadge(df.rankInVideo);
 
-            return (
-              <div
-                key={df.result.frame_id}
-                ref={(node) => {
-                  if (df.rankInVideo === 1) bestFrameRef.current = node;
-                }}
-                className={`relative shrink-0 w-44 rounded-lg overflow-hidden ${frameHighlightClass(df.rankInVideo)}`}
-              >
-                {badge && (
-                  <span
-                    className={`pointer-events-none absolute right-1 top-1 z-10 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow ${
-                      df.rankInVideo === 1 ? "bg-emerald-500" : "bg-cyan-500"
-                    }`}
-                  >
-                    {badge}
-                  </span>
-                )}
-                <ResultCard
-                  result={df.result}
-                  rank={i + 1}
-                  onClick={onCardClick}
-                  hideBadge={df.rankInVideo <= 5}
-                  compact
-                />
-              </div>
-            );
-          })}
+              return (
+                <div
+                  key={df.result.frame_id}
+                  ref={(node) => {
+                    if (df.rankInVideo === 1) bestFrameRef.current = node;
+                  }}
+                  className={`relative shrink-0 w-44 rounded-lg overflow-hidden ${frameHighlightClass(df.rankInVideo)}`}
+                >
+                  {badge && (
+                    <span
+                      className={`pointer-events-none absolute right-1 top-1 z-10 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow ${df.rankInVideo === 1 ? "bg-emerald-500" : "bg-cyan-500"
+                        }`}
+                    >
+                      {badge}
+                    </span>
+                  )}
+                  <ResultCard
+                    result={df.result}
+                    rank={i + 1}
+                    onClick={onCardClick}
+                    hideBadge={df.rankInVideo <= 5}
+                    compact
+                  />
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="h-28 flex items-center justify-center text-slate-500 text-xs font-mono select-none">
+          Loading frames…
+        </div>
+      )}
     </div>
   );
 }

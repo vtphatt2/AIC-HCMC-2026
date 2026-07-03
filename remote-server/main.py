@@ -134,6 +134,9 @@ async def lifespan(app: FastAPI):
             milvus_client.create_transcript_collection_if_missing()
             _transcript_search_service = TranscriptSearchService(keyframe_dir=FRAME_STATIC_DIR)
             print("Transcript chunk search service ready")
+            if os.getenv("WARMUP_TRANSCRIPT_SEARCH", "true").lower() in {"1", "true", "yes"}:
+                print("Warming up transcript search service model...")
+                await asyncio.to_thread(_transcript_search_service.warmup)
         except Exception as exc:
             print(f"Transcript chunk search service unavailable: {exc}")
             _transcript_search_service = None

@@ -21,13 +21,15 @@ export default function VideoModal({ result, onClose }: Props) {
   const youtubeId = result.youtube_id || "";
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
-  const frameImageUrl = result.frame_image_url.startsWith("http")
-    ? result.frame_image_url
-    : apiUrl(result.frame_image_url);
+  const frameImageUrl = result.frame_image_url
+    ? result.frame_image_url.startsWith("http")
+      ? result.frame_image_url
+      : apiUrl(result.frame_image_url)
+    : "";
 
   // Live playback position — updated by the polling interval below
   const [currentTimeSec, setCurrentTimeSec] = useState(startSeconds);
-  const [playbackStarted, setPlaybackStarted] = useState(false);
+  const [playerMounted, setPlayerMounted] = useState(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
 
   // Close on Escape
@@ -39,20 +41,38 @@ export default function VideoModal({ result, onClose }: Props) {
     return () => window.removeEventListener("keydown", handleKey);
   }, [onClose]);
 
-  // Mount the YouTube player
+  // Mount the YouTube player (only when youtubeId changes to prevent redundant iframe rebuilds)
   useEffect(() => {
+    let player: any = null;
+    let cancelled = false;
+    setPlayerMounted(false);
+
     function createPlayer() {
-      if (!youtubeId || !document.getElementById(PLAYER_DOM_ID)) return;
-      playerRef.current = new window.YT.Player(PLAYER_DOM_ID, {
+      if (cancelled || !youtubeId || !document.getElementById(PLAYER_DOM_ID)) return;
+
+      player = new window.YT.Player(PLAYER_DOM_ID, {
         videoId: youtubeId,
-        playerVars: { autoplay: 1, rel: 0, start: Math.floor(startSeconds) },
+        playerVars: {
+          autoplay: 1,
+          rel: 0,
+          start: Math.floor(startSeconds),
+          playsinline: 1,
+          origin: typeof window !== "undefined" ? window.location.origin : undefined
+        },
         events: {
           onReady: (event: any) => {
+            if (cancelled) {
+              event.target.destroy();
+              return;
+            }
+            playerRef.current = event.target;
             event.target.playVideo();
+            event.target.seekTo(startSeconds, true);
+            setPlayerMounted(true);
           },
           onStateChange: (event: any) => {
-            if (event.data === window.YT.PlayerState.PLAYING) {
-              setPlaybackStarted(true);
+            if (!cancelled && event.data === window.YT.PlayerState.PLAYING) {
+              setPlayerMounted(true);
             }
           },
         },
@@ -72,12 +92,22 @@ export default function VideoModal({ result, onClose }: Props) {
     }
 
     return () => {
-      if (playerRef.current) {
-        playerRef.current.destroy();
-        playerRef.current = null;
+      cancelled = true;
+      if (player) {
+        player.destroy();
       }
+      playerRef.current = null;
     };
-  }, [startSeconds, youtubeId]);
+  }, [youtubeId]);
+
+  // Seek without rebuilding the iframe when only the target timestamp changes.
+  useEffect(() => {
+    if (playerRef.current && typeof playerRef.current.seekTo === "function") {
+      playerRef.current.seekTo(startSeconds, true);
+      playerRef.current.playVideo();
+    }
+    setCurrentTimeSec(startSeconds);
+  }, [startSeconds]);
 
   // Poll the player every 100ms to get the live playback position.
   // This updates frame number and timestamp whenever the video plays or the user scrubs.
@@ -109,13 +139,15 @@ export default function VideoModal({ result, onClose }: Props) {
 
         {/* 16:9 aspect ratio wrapper */}
         <div className="relative w-full bg-black" style={{ paddingTop: "56.25%" }}>
-          {!playbackStarted && (
+          {!playerMounted && (
             <div className="absolute inset-0">
-              <img
-                src={frameImageUrl}
-                alt=""
-                className="w-full h-full object-contain"
-              />
+              {frameImageUrl && (
+                <img
+                  src={frameImageUrl}
+                  alt=""
+                  className="w-full h-full object-contain"
+                />
+              )}
               {youtubeId && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/20 text-sm text-white">
                   Loading video…
@@ -126,7 +158,7 @@ export default function VideoModal({ result, onClose }: Props) {
           {youtubeId && (
             <div
               className={`absolute inset-0 transition-opacity ${
-                playbackStarted ? "opacity-100" : "opacity-0"
+                playerMounted ? "opacity-100" : "opacity-0"
               }`}
             >
               <div id={PLAYER_DOM_ID} className="w-full h-full" />

@@ -212,8 +212,7 @@ export default function Home() {
     const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
     const computedFrameNumber = Math.floor((midMs / 1000) * 25);
     const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
-    const timestampMs = chunk.nearest_timestamp_ms ?? Math.round((frameNumber / 25) * 1000);
-    const frameImageUrl = chunk.frame_image_url || `/static/frames/${chunk.video_id}/${String(frameNumber).padStart(6, "0")}.jpg`;
+    const timestampMs = chunk.nearest_timestamp_ms ?? chunk.start_time_ms;
 
     const searchResult: SearchResult = {
       video_id: chunk.video_id,
@@ -222,13 +221,19 @@ export default function Home() {
       frame_number: frameNumber,
       timestamp_ms: timestampMs,
       confidence: chunk.score,
-      frame_image_url: frameImageUrl,
+      frame_image_url: chunk.frame_image_url,
       fps: 25,
     };
     setActiveResult(searchResult);
   }
 
-  function handleTranscriptFrameClick(videoId: string, youtubeId: string, frameNumber: number, timestampMs: number) {
+  function handleTranscriptFrameClick(
+    videoId: string,
+    youtubeId: string,
+    frameNumber: number,
+    timestampMs: number,
+    frameImageUrl: string,
+  ) {
     const searchResult: SearchResult = {
       video_id: videoId,
       youtube_id: youtubeId || undefined,
@@ -236,7 +241,7 @@ export default function Home() {
       frame_number: frameNumber,
       timestamp_ms: timestampMs,
       confidence: 0,
-      frame_image_url: `/static/frames/${videoId}/${String(frameNumber).padStart(6, "0")}.jpg`,
+      frame_image_url: frameImageUrl,
       fps: 25,
     };
     setActiveResult(searchResult);
@@ -257,12 +262,11 @@ export default function Home() {
 
   const transcriptFrameResults = useMemo<SearchResult[]>(() => {
     if (!transcriptResponse) return [];
-    return transcriptResponse.results.map((chunk) => {
+    return transcriptResponse.results.filter((chunk) => chunk.frame_image_url).map((chunk) => {
       const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
       const computedFrameNumber = Math.floor((midMs / 1000) * 25);
       const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
       const timestampMs = chunk.nearest_timestamp_ms ?? Math.round((frameNumber / 25) * 1000);
-      const frameImageUrl = chunk.frame_image_url || `/static/frames/${chunk.video_id}/${String(frameNumber).padStart(6, "0")}.jpg`;
 
       return {
         video_id: chunk.video_id,
@@ -271,7 +275,7 @@ export default function Home() {
         frame_number: frameNumber,
         timestamp_ms: timestampMs,
         confidence: chunk.score,
-        frame_image_url: frameImageUrl,
+        frame_image_url: chunk.frame_image_url,
         fps: 25,
       };
     });

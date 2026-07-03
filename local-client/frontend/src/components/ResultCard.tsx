@@ -38,8 +38,8 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
           src={imageUrl}
           alt={`Frame ${result.frame_number} of ${result.video_id}`}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          loading={rank <= 12 ? "eager" : "lazy"}
-          fetchPriority={rank <= 6 ? "high" : "auto"}
+          loading={rank >= 0 && rank <= 12 ? "eager" : "lazy"}
+          fetchPriority={rank >= 0 && rank <= 6 ? "high" : "auto"}
           decoding="async"
         />
         {/* Rank badge */}

@@ -1,19 +1,17 @@
-import { useMemo } from "react";
 import type { TranscriptChunkResult } from "@/types";
 import { apiUrl } from "@/lib/api";
-
-interface FrameSample {
-  frameNumber: number;
-  timestampMs: number;
-  imageUrl: string;
-  isQueried: boolean;
-}
 
 interface Props {
   result: TranscriptChunkResult;
   rank: number;
   onClick: (result: TranscriptChunkResult) => void;
-  onFrameClick?: (videoId: string, youtubeId: string, frameNumber: number, timestampMs: number) => void;
+  onFrameClick?: (
+    videoId: string,
+    youtubeId: string,
+    frameNumber: number,
+    timestampMs: number,
+    frameImageUrl: string,
+  ) => void;
 }
 
 const TOPIC_COLORS: Record<string, string> = {
@@ -32,9 +30,6 @@ const TOPIC_COLORS: Record<string, string> = {
   "Giao thông":  "bg-yellow-700 text-yellow-200",
   "Pháp luật":   "bg-stone-700 text-stone-200",
 };
-
-const FPS = 25;
-const FILLER_INTERVAL = 10; // show filler frame every 10 frames
 
 function formatTimestamp(ms: number): string {
   const totalSec = Math.floor(ms / 1000);
@@ -66,53 +61,35 @@ function topicColor(topic: string): string {
   return TOPIC_COLORS[topic] ?? "bg-slate-700 text-slate-300";
 }
 
-function computeSampleFrames(
-  videoId: string,
-  startMs: number,
-  endMs: number,
-  queriedFrameNumber: number,
-): FrameSample[] {
-  const startFrame = Math.floor((startMs / 1000) * FPS);
-  const endFrame = Math.floor((endMs / 1000) * FPS);
-
-  const frames: FrameSample[] = [];
-  for (let fn = startFrame; fn <= endFrame; fn += FILLER_INTERVAL) {
-    const isQueried = queriedFrameNumber > 0 && fn === queriedFrameNumber;
-    frames.push({
-      frameNumber: fn,
-      timestampMs: Math.round((fn / FPS) * 1000),
-      imageUrl: `/static/frames/${videoId}/${String(fn).padStart(6, "0")}.jpg`,
-      isQueried,
-    });
-  }
-  return frames;
-}
-
 export default function TranscriptChunkCard({ result, rank, onClick, onFrameClick }: Props) {
-  const sampleFrames = useMemo(
-    () =>
-      computeSampleFrames(
-        result.video_id,
-        result.start_time_ms,
-        result.end_time_ms,
-        result.frame_number,
-      ),
-    [result.video_id, result.start_time_ms, result.end_time_ms, result.frame_number],
-  );
+  const imageUrl = result.frame_image_url
+    ? result.frame_image_url.startsWith("http")
+      ? result.frame_image_url
+      : apiUrl(result.frame_image_url)
+    : "";
 
   function handleImageError(e: React.SyntheticEvent<HTMLImageElement>) {
     (e.target as HTMLImageElement).style.display = "none";
   }
 
-  function handleFrameClick(fn: number, ts: number, e: React.MouseEvent) {
+  function handleFrameClick(e: React.MouseEvent) {
     e.stopPropagation();
-    onFrameClick?.(result.video_id, result.youtube_id, fn, ts);
+    const targetMs = result.nearest_timestamp_ms !== null
+      ? result.nearest_timestamp_ms
+      : result.start_time_ms;
+    onFrameClick?.(
+      result.video_id,
+      result.youtube_id,
+      result.frame_number,
+      targetMs,
+      result.frame_image_url,
+    );
   }
 
   return (
-    <div className="group bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-emerald-500 transition-all">
+    <div className="group bg-slate-800/50 border border-slate-700 rounded-xl overflow-hidden hover:border-emerald-500 transition-all flex flex-col h-full shadow-md shadow-black/25">
       {/* Header bar */}
-      <div className="px-3 py-2 bg-slate-800/80 border-b border-slate-700/60 flex items-center gap-2 flex-wrap">
+      <div className="px-3 py-2 bg-slate-800/80 border-b border-slate-700/60 flex items-center gap-2 flex-wrap text-xs select-none">
         <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-black/40 text-white font-mono">
           #{rank}
         </span>
@@ -133,56 +110,49 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
         </span>
       </div>
 
-      {/* Horizontal frame strip */}
-      {sampleFrames.length > 0 && (
-        <div className="flex overflow-x-auto gap-2 p-2 scrollbar-thin">
-          {sampleFrames.map((sf) => (
-            <button
-              key={sf.frameNumber}
-              onClick={(e) => handleFrameClick(sf.frameNumber, sf.timestampMs, e)}
-              className={`relative shrink-0 w-36 rounded-lg overflow-hidden border transition-all hover:scale-[1.02] ${
-                sf.isQueried
-                  ? "ring-2 ring-yellow-400 ring-offset-1 ring-offset-slate-900"
-                  : "opacity-60 ring-1 ring-slate-700 hover:opacity-100"
-              }`}
-              title={`Frame ${sf.frameNumber} — ${formatTimestamp(sf.timestampMs)}`}
-            >
-              <div className="aspect-video bg-slate-700">
-                <img
-                  src={apiUrl(sf.imageUrl)}
-                  alt={`Frame ${sf.frameNumber}`}
-                  className="w-full h-full object-cover"
-                  loading="lazy"
-                  decoding="async"
-                  onError={handleImageError}
-                />
-              </div>
-              {/* Timestamp badge */}
-              <span className="absolute bottom-0.5 left-0.5 bg-black/80 text-white text-[10px] px-1 py-px rounded font-mono leading-tight">
-                {formatTimestampCompact(sf.timestampMs)}
-              </span>
-              {/* Play overlay on hover */}
-              <div className="absolute inset-0 bg-black/30 opacity-0 hover:opacity-100 transition flex items-center justify-center">
-                <svg className="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-              </div>
-            </button>
-          ))}
-        </div>
+      {result.frame_image_url && (
+        <button
+          onClick={handleFrameClick}
+          className="relative w-full aspect-video bg-slate-700 overflow-hidden text-left border-b border-slate-700/60 group/btn shrink-0"
+        >
+          <img
+            src={imageUrl}
+            alt={`Nearest frame ${result.frame_number} for transcript segment`}
+            className="w-full h-full object-cover group-hover/btn:scale-105 transition-transform duration-300"
+            loading="lazy"
+            decoding="async"
+            onError={handleImageError}
+          />
+          {/* Timestamp badge */}
+          {result.nearest_timestamp_ms !== null && (
+            <span className="absolute bottom-1.5 left-1.5 bg-black/85 text-white text-[10px] px-1.5 py-0.5 rounded font-mono leading-tight shadow border border-slate-800/65">
+              {formatTimestampCompact(result.nearest_timestamp_ms)} (Match)
+            </span>
+          )}
+          {/* Play overlay on hover */}
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/btn:opacity-100 transition flex items-center justify-center">
+            <svg className="w-10 h-10 text-white drop-shadow-md" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
+        </button>
       )}
 
-      {/* Text content */}
+      {/* Spoken Text Content */}
       <button
         onClick={() => onClick(result)}
-        className="w-full text-left px-3 pb-3 pt-2 space-y-1"
+        className="w-full text-left p-3.5 flex-1 flex flex-col justify-between gap-3 hover:bg-slate-800/35 transition"
       >
-        <p className="text-xs text-slate-400 truncate font-mono hover:text-slate-300 transition">
-          {result.video_id}
-        </p>
-        <p className="text-sm text-slate-200 line-clamp-3 leading-relaxed">
+        <p className="text-sm text-slate-200 leading-relaxed font-sans font-normal line-clamp-4">
           {result.text}
         </p>
+        <div className="flex items-center gap-1 text-[11px] text-slate-500 font-mono select-none">
+          <svg className="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <span>Click to play segment</span>
+        </div>
       </button>
     </div>
   );

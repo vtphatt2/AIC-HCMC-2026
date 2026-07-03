@@ -4,6 +4,7 @@ import logging
 import os
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,8 @@ logger = logging.getLogger(__name__)
 MODEL_ID = os.getenv("TRANSCRIPT_MODEL_ID", "intfloat/multilingual-e5-small")
 MODEL_DEVICE = os.getenv("TRANSCRIPT_MODEL_DEVICE", "cpu")
 EXPECTED_DIM = int(os.getenv("TRANSCRIPT_VECTOR_DIM", "384"))
+NEAREST_FRAME_WINDOW_MS = int(os.getenv("TRANSCRIPT_NEAREST_FRAME_WINDOW_MS", "3000"))
+NEAREST_FRAME_QUERY_LIMIT = int(os.getenv("TRANSCRIPT_NEAREST_FRAME_QUERY_LIMIT", "256"))
 
 TOPICS = milvus_client.TOPICS
 
@@ -87,13 +90,22 @@ class TranscriptSearchService:
             show_progress_bar=False,
         ).astype("float32")
 
-    def encode_query(self, text: str) -> np.ndarray:
+    @lru_cache(maxsize=128)
+    def _cached_encode_query(self, text: str) -> bytes:
+        vector = self._encode_query_uncached(text)
+        return vector.tobytes()
+
+    def _encode_query_uncached(self, text: str) -> np.ndarray:
         self._ensure_loaded()
         return self._model.encode(
             f"query: {text}",
             normalize_embeddings=True,
             show_progress_bar=False,
         ).astype("float32")
+
+    def encode_query(self, text: str) -> np.ndarray:
+        buffer = self._cached_encode_query(text)
+        return np.frombuffer(buffer, dtype="float32")
 
     def classify_topic(self, vector: np.ndarray) -> str:
         self._ensure_loaded()
@@ -118,9 +130,6 @@ class TranscriptSearchService:
 
         query_vector = self.encode_query(query)
 
-        if topic_filter is None:
-            topic_filter = self.classify_topic(query_vector)
-
         chunk_hits = milvus_client.search_transcript_chunks(
             self._collection,
             query_vector.tolist(),
@@ -130,7 +139,7 @@ class TranscriptSearchService:
         logger.info(
             "[TIMER] transcript_chunk_search %.3f ms topic=%s top_k=%s hits=%s",
             (time.monotonic() - timer_start) * 1000,
-            topic_filter,
+            topic_filter or "All",
             top_k,
             len(chunk_hits),
         )
@@ -182,15 +191,16 @@ class TranscriptSearchService:
             batch_size=32,
         ).astype("float32")
 
+    @lru_cache(maxsize=1024)
     def _nearest_frame(self, video_id: str, target_ms: int) -> dict:
         if self._frames_collection is not None:
             try:
                 frames = milvus_client.query_frames_in_time_range(
                     self._frames_collection,
                     video_id,
-                    max(0, target_ms - 3000),
-                    target_ms + 3000,
-                    limit=3,
+                    max(0, target_ms - NEAREST_FRAME_WINDOW_MS),
+                    target_ms + NEAREST_FRAME_WINDOW_MS,
+                    limit=NEAREST_FRAME_QUERY_LIMIT,
                 )
                 if frames:
                     nearest = min(frames, key=lambda f: abs(int(f["timestamp_ms"]) - target_ms))
@@ -238,3 +248,24 @@ class TranscriptSearchService:
         except Exception:
             logger.warning("Filesystem frame fallback failed for video_id=%s", video_id)
             return {}
+
+    def warmup(self, query: str = "warmup query", passes: int = 5) -> None:
+        load_start = time.monotonic()
+        was_loaded = self._loaded
+        self._ensure_loaded()
+        model_load_ms = 0.0 if was_loaded else (time.monotonic() - load_start) * 1000
+
+        encode_start = time.monotonic()
+        passes = max(1, int(passes))
+        for _ in range(passes):
+            # Bypass the cache for warmup passes to ensure GPU execution is fully evaluated
+            self._encode_query_uncached(query)
+        encode_ms = (time.monotonic() - encode_start) * 1000
+
+        logger.info(
+            "[TIMER] warmup_transcript_search model_load_ms=%.3f encode_ms=%.3f passes=%s device=%s",
+            model_load_ms,
+            encode_ms,
+            passes,
+            MODEL_DEVICE,
+        )
