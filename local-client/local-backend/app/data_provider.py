@@ -68,6 +68,7 @@ class DataProvider:
         elif self.mode == "SAMPLE":
             self._videos, self._frames = self._load_sample()
             self._frames_by_id = {frame["frame_id"]: frame for frame in self._frames}
+            self._videos_by_id = {video["video_id"]: video for video in self._videos}
             self._ocr = []
             self._transcripts = []
             print(
@@ -237,6 +238,19 @@ class DataProvider:
 
             self._text_encoder = PECoreTextEncoder()
         return self._text_encoder.encode(text)
+
+    def get_frame_and_video(self, frame_id: str) -> tuple[dict, dict] | None:
+        """Look up (frame, video) by frame_id in SAMPLE mode. Used by the
+        youtube_storyboard thumbnail workaround to resolve timestamp_ms/youtube_id."""
+        if self.mode != "SAMPLE":
+            return None
+        frame = self._frames_by_id.get(frame_id)
+        if frame is None:
+            return None
+        video = self._videos_by_id.get(frame["video_id"])
+        if video is None:
+            return None
+        return frame, video
 
     def resolve_sample_frame_id(self, query: str) -> str | None:
         """Accept L01_V001_000022, L01_V001/000022, or L01_V001 000022."""

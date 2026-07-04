@@ -241,3 +241,12 @@ static/frames/
 .skills/
 .claude/
 *patch
+
+# weights
+*.onnx
+
+# data files
+data/*
+
+# youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
+/cache/

@@ -13,11 +13,14 @@ or run the complete PE-Core retrieval pipeline directly on the server.
 
 | Document | Description |
 |---|---|
+| [docs/running.md](docs/running.md) | **Start here** — scenario picker + exact commands |
 | [docs/setup.md](docs/setup.md) | Step-by-step setup for local dev and GPU server |
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
 | [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | PE-Core ingestion, HNSW/CAGRA, translation, validation, and performance |
+| [docs/PE-Core-bigG-14-448-Text-Encoder.README.md](docs/PE-Core-bigG-14-448-Text-Encoder.README.md) | Lightweight ONNX text encoder (no torch) |
+| [docs/youtube-storyboard-thumbnails-workaround.md](docs/youtube-storyboard-thumbnails-workaround.md) | Dev-only workaround for missing keyframe images |
 
 For a fast handoff, read `README.md` → `docs/architecture.md` →
 `docs/setup.md` → `remote-server/README_INDEXING_SEARCH.md`.

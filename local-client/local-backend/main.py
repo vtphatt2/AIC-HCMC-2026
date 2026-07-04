@@ -78,7 +78,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if SAMPLE_KEYFRAMES_DIR.is_dir():
+FRAME_IMAGE_SOURCE = os.getenv("FRAME_IMAGE_SOURCE", "local").strip().lower()
+
+if FRAME_IMAGE_SOURCE == "youtube_storyboard":
+    # WORKAROUND — see docs/youtube-storyboard-thumbnails-workaround.md.
+    # Approximates the frame at each timestamp using YouTube's own scrubber
+    # storyboard sprites, for when real dataset keyframes aren't present
+    # locally. Not pixel-accurate; do not rely on this in production.
+    from app.services.youtube_thumbnail import StoryboardUnavailable, get_thumbnail_jpeg
+
+    @app.get("/static/frames/{video_id}/{frame_file}")
+    async def storyboard_frame(video_id: str, frame_file: str):
+        if _data_provider is None:
+            raise HTTPException(503, "Backend not ready")
+
+        frame_stem = Path(frame_file).stem
+        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
+        if lookup is None:
+            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
+        frame, video = lookup
+        youtube_id = video.get("youtube_id")
+        if not youtube_id:
+            raise HTTPException(404, f"No youtube_id for video {video_id}")
+
+        try:
+            jpeg_bytes = get_thumbnail_jpeg(youtube_id, int(frame["timestamp_ms"]))
+        except StoryboardUnavailable as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+elif SAMPLE_KEYFRAMES_DIR.is_dir():
     app.mount(
         "/static/frames",
         StaticFiles(directory=str(SAMPLE_KEYFRAMES_DIR)),

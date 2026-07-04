@@ -8,7 +8,19 @@ google-cloud-translate==3.26.0
 pydantic==2.10.6
 marshmallow==3.21.3
 numpy>=2.0.0
-open_clip_torch>=2.24.0
-torch>=2.1.0
 tqdm>=4.66.0
 sentence-transformers>=2.2.0
+
+# PECore text encoder — "onnx" backend (PECORE_BACKEND=onnx). CPU-only, no
+# multi-GB model download. See app/services/simple_tokenizer.py and
+# docs/PE-Core-bigG-14-448-Text-Encoder.README.md.
+# Note: sentence-transformers above already pulls in torch for transcript
+# chunk embeddings, so this only saves the PE-Core-bigG weight download,
+# not torch itself, on this server.
+onnxruntime>=1.17.0
+ftfy>=6.1.0
+regex>=2023.0.0
+
+# For the full "torch" backend (PECORE_BACKEND=torch, GPU-capable, downloads
+# the full PE-Core weights), install requirements-torch.txt as well:
+#   pip install -r requirements.txt -r requirements-torch.txt

@@ -462,6 +462,10 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `AIC_SAMPLE_ROOT` | auto-detected | Optional dataset path for `SAMPLE` mode |
 | `REMOTE_SERVER_URL` | _(empty)_ | Required when `ENV_MODE=LOCAL` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) — see [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
+| `FRAME_IMAGE_SOURCE` | `local` | `local` or `youtube_storyboard` workaround — see [youtube-storyboard-thumbnails-workaround.md](youtube-storyboard-thumbnails-workaround.md) |
+
+See [running.md](running.md) for the full scenario matrix and exact commands.
 
 ### `remote-server/.env`
 
@@ -478,6 +482,7 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus`/`hnsw`, `flat`, `scann`, or `cagra` |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) |
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
 | `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
 | `WARMUP_TEXT_ENCODER` | `false` | Load and warm PE-Core during startup |
