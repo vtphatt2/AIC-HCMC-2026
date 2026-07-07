@@ -17,13 +17,15 @@ or run the complete PE-Core retrieval pipeline directly on the server.
 | [docs/setup.md](docs/setup.md) | Step-by-step setup for local dev and GPU server |
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
+| [docs/search_by_transcript.md](docs/search_by_transcript.md) | **Transcript search & Two-Stage Late Fusion pipeline** |
+| [docs/test_two_stage_fusion_guide.md](docs/test_two_stage_fusion_guide.md) | Test matrix, log verification, troubleshooting |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
 | [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | PE-Core ingestion, HNSW/CAGRA, translation, validation, and performance |
 | [docs/PE-Core-bigG-14-448-Text-Encoder.README.md](docs/PE-Core-bigG-14-448-Text-Encoder.README.md) | Lightweight ONNX text encoder (no torch) |
 | [docs/youtube-storyboard-thumbnails-workaround.md](docs/youtube-storyboard-thumbnails-workaround.md) | Dev-only workaround for missing keyframe images |
 
 For a fast handoff, read `README.md` → `docs/architecture.md` →
-`docs/setup.md` → `remote-server/README_INDEXING_SEARCH.md`.
+`docs/setup.md` → `docs/search_by_transcript.md` → `remote-server/README_INDEXING_SEARCH.md`.
 
 ---
 
@@ -45,8 +47,10 @@ AIC-HCMC-2026/
 │       │   └── translation.py        # Optional VI/mixed → English translation
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/
-│           ├── base_strategy.py      # Abstract base — guardrails live here
-│           └── stable_fusion.py      # Current production strategy
+│           ├── base_strategy.py              # Abstract base — guardrails live here
+│           ├── stable_fusion.py              # Production baseline strategy
+│           ├── transcript_fusion_strategy.py # RRF fusion (visual + transcript + OCR)
+│           └── two_stage_fusion_strategy.py  # Two-stage late fusion pipeline (newest)
 │
 └── local-client/
     ├── frontend/                # Next.js UI (Pages Router, Tailwind, TS strict=false)
@@ -109,6 +113,45 @@ PostgreSQL for metadata and text retrieval.
 
 ---
 
+## Available Strategies
+
+The system includes multiple retrieval strategies, each implementing a different fusion approach:
+
+| Strategy | Description | When to use |
+|----------|-------------|-------------|
+| **Stable Fusion v1** | Baseline weighted fusion of visual, OCR, and transcript scores. Genre-aware weight tuning. | General-purpose, production baseline |
+| **Transcript Fusion v1** | RRF (Reciprocal Rank Fusion) of visual + transcript chunk vector search + OCR. | When transcript relevance is important |
+| **Two-Stage Fusion v1** | Two-stage late fusion: Stage 1 uses transcript search to identify candidate videos, Stage 2 runs PE-Core visual search filtered to those videos. Dynamic α weighting based on signal quality and genre. | Best for queries with both semantic and text components |
+
+### Two-Stage Late Fusion Pipeline (Newest)
+
+The **Two-Stage Fusion v1** strategy implements an efficient retrieval pipeline:
+
+```
+User Query: Semantic="cách nấu phở bò", Text="phở bò"
+  │
+  ├─► Stage 1 (Coarse): Transcript vector search (E5, 384-dim)
+  │     → Top 20 chunks → Extract candidate video_ids
+  │
+  ├─► Build Milvus expr: 'video_id in ["L03_V001", "L03_V002"]'
+  │
+  ├─► Stage 2 (Fine): PE-Core visual search (1280-dim) WITH filter
+  │     → Only searches frames in candidate videos
+  │
+  └─► Fusion: Score = α · transcript + (1-α) · visual
+        Dynamic α based on genre and signal quality
+```
+
+**Benefits:**
+- **Efficient:** Stage 2 searches only ~5-10 videos instead of entire dataset
+- **Accurate:** Combines "what is said" (transcript) with "what is shown" (visual)
+- **Adaptive:** Dynamic α adjusts based on which signal is more reliable
+- **Safe fallbacks:** If Stage 1 fails → visual-only; if Stage 2 fails → transcript-only
+
+See [docs/search_by_transcript.md](docs/search_by_transcript.md) for full details on the evolution and implementation.
+
+---
+
 ## Strategy Development Quickstart
 
 1. Copy `local-client/local-backend/app/strategies/_example_strategy.py`
@@ -126,8 +169,10 @@ See [docs/strategy_guide.md](docs/strategy_guide.md) for full details.
 | Layer | Technology |
 |---|---|
 | Visual embeddings | `timm/PE-Core-bigG-14-448` on CPU, CUDA, or Apple MPS |
+| Transcript embeddings | `intfloat/multilingual-e5-small` (384-dim, Vietnamese + English) |
 | Visual search | Milvus HNSW by default; optional cuVS CAGRA on NVIDIA GPU |
-| Text DB | PostgreSQL 15 — full-text OCR + interval transcripts |
+| Transcript search | Milvus HNSW on `transcript_chunks` collection (384-dim vectors) |
+| Text DB | PostgreSQL 15 — full-text OCR + interval transcripts + chunk metadata |
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
 | Video player | YouTube IFrame API |

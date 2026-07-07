@@ -239,6 +239,175 @@ class DataProvider:
             "video_genre":        video_genre or "All",
         }
 
+    async def get_raw_data_two_stage(
+        self,
+        query_groups: list[dict],
+        limit: int = 1000,
+        video_genre: str = "All",
+        stage1_top_k: int = 20,
+    ) -> dict:
+        """
+        Two-stage late fusion retrieval pipeline.
+
+        Stage 1 (Coarse): Transcript vector search → candidate video_ids + time windows
+        Stage 2 (Fine): PE-Core visual search filtered to candidate videos only
+
+        Returns raw_data dict with additional keys:
+          - "stage1_chunks": Stage 1 transcript chunk results
+          - "stage1_video_ids": set of candidate video_ids from Stage 1
+          - "stage2_frames": Stage 2 frame results (filtered to candidate videos)
+        """
+        vector_algorithm = _requested_vector_algorithm(query_groups)
+        frames: list[dict] = []
+        ocr: list[dict] = []
+        transcripts: list[dict] = []
+        transcript_chunks: list[dict] = []
+        stage1_chunks: list[dict] = []
+        stage1_video_ids: set[str] = set()
+        stage2_frames: list[dict] = []
+        all_video_ids: set[str] = set()
+
+        combined_text_query = " ".join(
+            g.get("text_query", "").strip() for g in query_groups
+        ).strip()
+        combined_semantic_query = " ".join(
+            g.get("semantic_query", "").strip() for g in query_groups
+        ).strip()
+
+        genre_expr: str | None = None
+        if video_genre and video_genre != "All":
+            genre_video_ids = await postgres_client.fetch_video_ids_by_genre(video_genre)
+            if genre_video_ids:
+                quoted = ", ".join(f'"{vid}"' for vid in genre_video_ids)
+                genre_expr = f"video_id in [{quoted}]"
+                logger.info("Genre filter: %s → %d videos", video_genre, len(genre_video_ids))
+
+        # ── Stage 1: Transcript chunk search → candidate videos ──
+        if self._transcript_search is not None and combined_text_query:
+            try:
+                chunks, candidate_vids = await self._transcript_search.search_for_candidates(
+                    combined_text_query,
+                    top_k=stage1_top_k,
+                )
+                stage1_chunks = chunks
+                stage1_video_ids = candidate_vids
+                logger.info(
+                    "Stage 1: transcript search returned %d chunks, %d candidate videos",
+                    len(chunks), len(candidate_vids),
+                )
+            except Exception as exc:
+                logger.exception("Stage 1 transcript search failed: %s", exc)
+
+        # ── Build Milvus expr for Stage 2 ──
+        stage2_expr_parts: list[str] = []
+        if stage1_video_ids:
+            quoted_vids = ", ".join(f'"{vid}"' for vid in stage1_video_ids)
+            stage2_expr_parts.append(f"video_id in [{quoted_vids}]")
+        if genre_expr:
+            stage2_expr_parts.append(genre_expr)
+
+        stage2_expr = " and ".join(stage2_expr_parts) if stage2_expr_parts else None
+
+        # ── Stage 2: PE-Core visual search filtered to candidate videos ──
+        for group_index, group in enumerate(query_groups):
+            semantic_query = group.get("semantic_query", "").strip()
+
+            if semantic_query:
+                query_vector = await self._encode_text(semantic_query)
+                search_limit = max(int(limit), 1)
+                timer_start = time.monotonic()
+
+                if vector_algorithm in {"hnsw", "flat", "scann"}:
+                    hits = milvus_client.vector_search(
+                        self._get_collection(vector_algorithm),
+                        query_vector.tolist(),
+                        top_k=search_limit,
+                        algorithm=vector_algorithm,
+                        expr=stage2_expr,
+                    )
+                else:
+                    hits = self._get_cagra().search(query_vector, top_k=search_limit)
+                    if stage1_video_ids:
+                        hits = [h for h in hits if h["video_id"] in stage1_video_ids]
+
+                logger.info(
+                    "[TIMER] stage2_vector_search %.3f ms backend=%s group=%s top_k=%s hits=%s expr=%s",
+                    (time.monotonic() - timer_start) * 1000,
+                    vector_algorithm,
+                    group_index,
+                    search_limit,
+                    len(hits),
+                    stage2_expr is not None,
+                )
+                for hit in hits:
+                    hit["_query_group_index"] = group_index
+                    hit["_stage"] = 2
+                stage2_frames.extend(hits)
+                frames.extend(hits)
+                all_video_ids.update(h["video_id"] for h in hits)
+
+        # ── Also fetch global visual results for fallback ──
+        if not stage2_frames and combined_semantic_query:
+            logger.info("Stage 2 returned 0 results, falling back to global visual search")
+            for group_index, group in enumerate(query_groups):
+                semantic_query = group.get("semantic_query", "").strip()
+                if semantic_query:
+                    query_vector = await self._encode_text(semantic_query)
+                    search_limit = max(int(limit), 1)
+                    if vector_algorithm in {"hnsw", "flat", "scann"}:
+                        hits = milvus_client.vector_search(
+                            self._get_collection(vector_algorithm),
+                            query_vector.tolist(),
+                            top_k=search_limit,
+                            algorithm=vector_algorithm,
+                            expr=genre_expr,
+                        )
+                    else:
+                        hits = self._get_cagra().search(query_vector, top_k=search_limit)
+                    for hit in hits:
+                        hit["_query_group_index"] = group_index
+                        hit["_stage"] = "fallback"
+                    frames.extend(hits)
+                    all_video_ids.update(h["video_id"] for h in hits)
+
+        # ── Fetch transcript chunk metadata ──
+        if stage1_chunks:
+            chunk_ids = [int(h["chunk_id"]) for h in stage1_chunks]
+            metadata_rows = await postgres_client.fetch_transcript_chunks_by_ids(chunk_ids)
+            metadata_by_id = {row["chunk_id"]: row for row in metadata_rows}
+            for chunk in stage1_chunks:
+                meta = metadata_by_id.get(chunk["chunk_id"], {})
+                chunk["text"] = meta.get("raw_text", "")
+            transcript_chunks = stage1_chunks
+            all_video_ids.update(h["video_id"] for h in stage1_chunks)
+
+        # ── Fetch text query results (OCR + transcript text) ──
+        text_query = " ".join(g.get("text_query", "").strip() for g in query_groups).strip()
+        if text_query:
+            ocr_hits = await postgres_client.search_ocr_text(text_query, limit=limit)
+            ocr.extend(ocr_hits)
+            all_video_ids.update(h["video_id"] for h in ocr_hits)
+
+            transcript_hits = await postgres_client.search_transcript_text(text_query, limit=limit)
+            transcripts.extend(transcript_hits)
+            all_video_ids.update(h["video_id"] for h in transcript_hits)
+
+        # ── Fetch video metadata ──
+        video_rows = await postgres_client.fetch_video_metadata(list(all_video_ids))
+        videos = {v["video_id"]: dict(v) for v in video_rows}
+
+        return {
+            "frames":             _dedupe_frames(frames),
+            "ocr":                _dedupe_by_key(ocr, "frame_id"),
+            "transcripts":        transcripts,
+            "transcript_chunks":  transcript_chunks,
+            "videos":             videos,
+            "video_genre":        video_genre or "All",
+            "stage1_chunks":      stage1_chunks,
+            "stage1_video_ids":   stage1_video_ids,
+            "stage2_frames":      stage2_frames,
+        }
+
     def _frames_for_transcript_chunks(self, chunks: list[dict], limit: int) -> list[dict]:
         frames = []
         if not chunks:
@@ -246,7 +415,7 @@ class DataProvider:
         per_chunk_limit = max(1, min(20, limit // max(1, len(chunks))))
         for chunk in chunks:
             chunk_frames = milvus_client.query_frames_in_time_range(
-                self._collection,
+                self._metadata_collection(),
                 chunk["video_id"],
                 int(chunk["start_time_ms"]),
                 int(chunk["end_time_ms"]),

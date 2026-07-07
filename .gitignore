@@ -240,7 +240,7 @@ static/frames/
 **/PECore-features/
 .skills/
 .claude/
-*patch
+*.patch
 
 # weights
 *.onnx

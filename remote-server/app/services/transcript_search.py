@@ -249,6 +249,38 @@ class TranscriptSearchService:
             logger.warning("Filesystem frame fallback failed for video_id=%s", video_id)
             return {}
 
+    async def search_for_candidates(
+        self,
+        query: str,
+        top_k: int = 20,
+        topic_filter: str | None = None,
+    ) -> tuple[list[dict], set[str]]:
+        timer_start = time.monotonic()
+        self._ensure_loaded()
+        self._ensure_collection()
+
+        query_vector = self.encode_query(query)
+
+        chunk_hits = milvus_client.search_transcript_chunks(
+            self._collection,
+            query_vector.tolist(),
+            top_k=top_k,
+            topic_filter=topic_filter,
+        )
+        logger.info(
+            "[TIMER] transcript_candidate_search %.3f ms topic=%s top_k=%s hits=%s",
+            (time.monotonic() - timer_start) * 1000,
+            topic_filter or "All",
+            top_k,
+            len(chunk_hits),
+        )
+
+        if not chunk_hits:
+            return [], set()
+
+        candidate_video_ids = {h["video_id"] for h in chunk_hits}
+        return chunk_hits, candidate_video_ids
+
     def warmup(self, query: str = "warmup query", passes: int = 5) -> None:
         load_start = time.monotonic()
         was_loaded = self._loaded
