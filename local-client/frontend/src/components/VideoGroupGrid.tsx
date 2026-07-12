@@ -48,12 +48,12 @@ function buildVideoGroups(results: SearchResult[]): Map<string, DisplayFrame[]> 
 
 function frameHighlightClass(rankInVideo: number): string {
   if (rankInVideo === 1) {
-    return "ring-2 ring-emerald-400 ring-offset-2 ring-offset-white dark:ring-offset-slate-950";
+    return "ring-2 ring-orange-600 ring-offset-2 ring-offset-cream dark:ring-offset-stone-900";
   }
   if (rankInVideo >= 2 && rankInVideo <= 5) {
-    return "ring-2 ring-cyan-400/90 ring-offset-1 ring-offset-white dark:ring-offset-slate-950";
+    return "ring-2 ring-teal-600/80 ring-offset-1 ring-offset-cream dark:ring-offset-stone-900";
   }
-  return "ring-1 ring-slate-300 dark:ring-slate-700";
+  return "ring-1 ring-stone-300 dark:ring-stone-700";
 }
 
 function frameBadge(rankInVideo: number): string | null {
@@ -138,25 +138,25 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
   return (
     <div
       ref={elementRef}
-      className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-800/50 min-h-[174px]"
+      className="border-2 border-stone-800 dark:border-stone-600 rounded overflow-hidden bg-cream dark:bg-stone-800/50 min-h-[174px]"
     >
       {/* Video header */}
-      <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3">
+      <div className="px-4 py-2 bg-cream-card dark:bg-stone-800 border-b-2 border-stone-800 dark:border-stone-600 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-sm text-slate-900 dark:text-white font-semibold">
+          <span className="font-mono text-sm text-stone-900 dark:text-white font-semibold">
             {videoId}
           </span>
-          <span className="text-xs text-slate-500 dark:text-slate-400">
+          <span className="text-xs text-stone-500 dark:text-stone-400">
             {frames.length} matched frame{frames.length !== 1 ? "s" : ""}
           </span>
         </div>
         <div className="flex items-center gap-3">
           {bestFrame && (
-            <span className="hidden sm:inline text-xs text-slate-500 dark:text-slate-400 font-mono">
+            <span className="hidden sm:inline text-xs text-stone-500 dark:text-stone-400 font-mono">
               best frame {bestFrame.result.frame_number}
             </span>
           )}
-          <span className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+          <span className="text-xs text-teal-700 dark:text-teal-400 font-semibold">
             best: {(bestScore * 100).toFixed(1)}%
           </span>
         </div>
@@ -169,7 +169,7 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
             <button
               type="button"
               onClick={jumpToBest}
-              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border border-emerald-400/60 bg-white/90 dark:bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-200 shadow-lg shadow-black/10 dark:shadow-black/30 backdrop-blur hover:border-emerald-300 hover:bg-emerald-500 hover:text-white transition"
+              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border-2 border-orange-700/70 bg-cream-card/90 dark:bg-stone-950/90 px-3 py-1.5 text-xs font-semibold text-orange-800 dark:text-orange-200 shadow-lg shadow-black/10 dark:shadow-black/30 backdrop-blur hover:border-orange-700 hover:bg-orange-700 hover:text-white transition"
               title="Jump to the best frame in this video"
             >
               {bestDirection === "left" ? "← Best" : "Best →"}
@@ -189,11 +189,11 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
                   ref={(node) => {
                     if (df.rankInVideo === 1) bestFrameRef.current = node;
                   }}
-                  className={`relative shrink-0 w-44 rounded-lg overflow-hidden ${frameHighlightClass(df.rankInVideo)}`}
+                  className={`relative shrink-0 w-44 rounded overflow-hidden ${frameHighlightClass(df.rankInVideo)}`}
                 >
                   {badge && (
                     <span
-                      className={`pointer-events-none absolute right-1 top-1 z-10 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow ${df.rankInVideo === 1 ? "bg-emerald-500" : "bg-cyan-500"
+                      className={`font-retro pointer-events-none absolute right-1 top-1 z-10 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow ${df.rankInVideo === 1 ? "bg-orange-700" : "bg-teal-700"
                         }`}
                     >
                       {badge}
@@ -212,7 +212,7 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
           </div>
         </div>
       ) : (
-        <div className="h-28 flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs font-mono select-none">
+        <div className="h-28 flex items-center justify-center text-stone-400 dark:text-stone-500 text-xs font-mono select-none">
           Loading frames…
         </div>
       )}
@@ -244,17 +244,17 @@ export default function VideoGroupGrid({
   return (
     <div className="space-y-4">
       {/* Stats bar */}
-      <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-slate-400">
+      <div className="flex items-center gap-4 text-sm text-stone-500 dark:text-stone-400 font-mono">
         <span>
-          <span className="text-slate-900 dark:text-white font-semibold">{total}</span> results
+          <span className="text-stone-900 dark:text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
         <span>
-          <span className="text-slate-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
+          <span className="text-stone-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
         </span>
         <span>·</span>
         <span>
-          <span className="text-slate-900 dark:text-white font-semibold">{sortedVideoIds.length}</span> videos
+          <span className="text-stone-900 dark:text-white font-semibold">{sortedVideoIds.length}</span> videos
         </span>
       </div>
 
@@ -273,7 +273,7 @@ export default function VideoGroupGrid({
       })}
 
       {results.length === 0 && (
-        <p className="text-slate-500 text-center py-16">
+        <p className="text-stone-500 text-center py-16">
           No results. Try a different query.
         </p>
       )}

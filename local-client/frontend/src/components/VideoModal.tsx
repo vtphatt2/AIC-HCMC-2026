@@ -132,13 +132,13 @@ export default function VideoModal({ result, onClose }: Props) {
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute -top-8 right-0 text-slate-300 hover:text-white text-sm transition"
+          className="font-retro absolute -top-8 right-0 text-stone-300 hover:text-orange-400 text-xs uppercase tracking-wide transition"
         >
-          Close (Esc)
+          ✕ Close (Esc)
         </button>
 
         {/* 16:9 aspect ratio wrapper */}
-        <div className="relative w-full bg-black" style={{ paddingTop: "56.25%" }}>
+        <div className="relative w-full bg-black border-2 border-stone-700" style={{ paddingTop: "56.25%" }}>
           {!playerMounted && (
             <div className="absolute inset-0">
               {frameImageUrl && (
@@ -167,7 +167,7 @@ export default function VideoModal({ result, onClose }: Props) {
         </div>
 
         {/* Live info bar — updates as the video plays */}
-        <div className="mt-2 flex gap-4 text-sm text-slate-400 font-mono">
+        <div className="mt-2 flex gap-4 text-sm text-stone-400 font-mono">
           <span>{result.video_id}</span>
           <span>·</span>
           <span>

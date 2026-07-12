@@ -23,7 +23,7 @@ const TOPIC_COLORS: Record<string, string> = {
   "Kinh tế":     "bg-amber-700 text-amber-200",
   "Sức khỏe":    "bg-emerald-700 text-emerald-200",
   "Giải trí":    "bg-pink-700 text-pink-200",
-  "Thời sự":     "bg-slate-600 text-slate-200",
+  "Thời sự":     "bg-stone-600 text-stone-200",
   "Văn hóa":     "bg-indigo-700 text-indigo-200",
   "Đời sống":    "bg-teal-700 text-teal-200",
   "Môi trường":  "bg-green-700 text-green-200",
@@ -52,13 +52,13 @@ function formatTimestampCompact(ms: number): string {
 }
 
 function confidenceColor(score: number): string {
-  if (score >= 0.8) return "text-emerald-400";
-  if (score >= 0.6) return "text-yellow-400";
-  return "text-red-400";
+  if (score >= 0.8) return "text-teal-700 dark:text-teal-400";
+  if (score >= 0.6) return "text-amber-700 dark:text-amber-400";
+  return "text-rose-700 dark:text-rose-400";
 }
 
 function topicColor(topic: string): string {
-  return TOPIC_COLORS[topic] ?? "bg-slate-700 text-slate-300";
+  return TOPIC_COLORS[topic] ?? "bg-stone-700 text-stone-300";
 }
 
 export default function TranscriptChunkCard({ result, rank, onClick, onFrameClick }: Props) {
@@ -87,10 +87,10 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
   }
 
   return (
-    <div className="group bg-white dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden hover:border-emerald-500 transition-all flex flex-col h-full shadow-md shadow-black/5 dark:shadow-black/25">
+    <div className="group bg-cream-card dark:bg-stone-800/50 border-2 border-stone-800 dark:border-stone-600 rounded overflow-hidden hover:border-teal-700 dark:hover:border-teal-500 transition-all flex flex-col h-full shadow-md shadow-black/5 dark:shadow-black/25">
       {/* Header bar */}
-      <div className="px-3 py-2 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700/60 flex items-center gap-2 flex-wrap text-xs select-none">
-        <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-900/80 dark:bg-black/40 text-white font-mono">
+      <div className="px-3 py-2 bg-cream dark:bg-stone-800/80 border-b-2 border-stone-800 dark:border-stone-600 flex items-center gap-2 flex-wrap text-xs select-none">
+        <span className="font-retro text-[11px] font-bold px-2 py-0.5 rounded-full bg-stone-900/80 dark:bg-black/40 text-white">
           #{rank}
         </span>
         <span
@@ -98,11 +98,11 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
         >
           {result.topic}
         </span>
-        <span className="text-[10px] text-slate-500 font-mono">
+        <span className="text-[10px] text-stone-500 font-mono">
           {result.video_id}
         </span>
         <div className="flex-1" />
-        <span className="text-xs text-slate-700 dark:text-slate-300 font-mono bg-slate-200 dark:bg-slate-700/60 px-2 py-0.5 rounded">
+        <span className="text-xs text-stone-700 dark:text-stone-300 font-mono bg-stone-200 dark:bg-stone-700/60 px-2 py-0.5 rounded">
           {formatTimestamp(result.start_time_ms)} – {formatTimestamp(result.end_time_ms)}
         </span>
         <span className={`text-xs font-semibold ${confidenceColor(result.score)}`}>
@@ -113,7 +113,7 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
       {result.frame_image_url && (
         <button
           onClick={handleFrameClick}
-          className="relative w-full aspect-video bg-slate-200 dark:bg-slate-700 overflow-hidden text-left border-b border-slate-200 dark:border-slate-700/60 group/btn shrink-0"
+          className="relative w-full aspect-video bg-stone-200 dark:bg-stone-700 overflow-hidden text-left border-b-2 border-stone-800 dark:border-stone-600 group/btn shrink-0"
         >
           <img
             src={imageUrl}
@@ -125,7 +125,7 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
           />
           {/* Timestamp badge */}
           {result.nearest_timestamp_ms !== null && (
-            <span className="absolute bottom-1.5 left-1.5 bg-black/85 text-white text-[10px] px-1.5 py-0.5 rounded font-mono leading-tight shadow border border-slate-800/65">
+            <span className="absolute bottom-1.5 left-1.5 bg-stone-900/85 text-white text-[10px] px-1.5 py-0.5 rounded font-mono leading-tight shadow border border-stone-950/65">
               {formatTimestampCompact(result.nearest_timestamp_ms)} (Match)
             </span>
           )}
@@ -141,13 +141,13 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
       {/* Spoken Text Content */}
       <button
         onClick={() => onClick(result)}
-        className="w-full text-left p-3.5 flex-1 flex flex-col justify-between gap-3 hover:bg-slate-100 dark:hover:bg-slate-800/35 transition"
+        className="w-full text-left p-3.5 flex-1 flex flex-col justify-between gap-3 hover:bg-stone-100 dark:hover:bg-stone-800/35 transition"
       >
-        <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed font-sans font-normal line-clamp-4">
+        <p className="text-sm text-stone-700 dark:text-stone-200 leading-relaxed font-sans font-normal line-clamp-4">
           {result.text}
         </p>
-        <div className="flex items-center gap-1 text-[11px] text-slate-500 font-mono select-none">
-          <svg className="w-3.5 h-3.5 text-slate-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <div className="flex items-center gap-1 text-[11px] text-stone-500 font-mono select-none">
+          <svg className="w-3.5 h-3.5 text-stone-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
             <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>

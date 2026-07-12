@@ -17,9 +17,9 @@ function formatTimestamp(ms: number): string {
 }
 
 function confidenceColor(score: number): string {
-  if (score >= 0.8) return "text-emerald-400";
-  if (score >= 0.6) return "text-yellow-400";
-  return "text-red-400";
+  if (score >= 0.8) return "text-teal-700 dark:text-teal-400";
+  if (score >= 0.6) return "text-amber-700 dark:text-amber-400";
+  return "text-rose-700 dark:text-rose-400";
 }
 
 export default function ResultCard({ result, rank, onClick, hideBadge, compact }: Props) {
@@ -30,10 +30,10 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
   return (
     <button
       onClick={() => onClick(result)}
-      className="group bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden hover:border-blue-500 hover:shadow-lg hover:shadow-blue-900/10 dark:hover:shadow-blue-900/30 transition-all text-left w-full"
+      className="group bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-600 rounded overflow-hidden hover:border-orange-700 dark:hover:border-orange-500 transition-all text-left w-full"
     >
       {/* Frame image */}
-      <div className="relative aspect-video bg-slate-200 dark:bg-slate-700 overflow-hidden">
+      <div className="relative aspect-video bg-stone-200 dark:bg-stone-700 overflow-hidden">
         <img
           src={imageUrl}
           alt={`Frame ${result.frame_number} of ${result.video_id}`}
@@ -44,12 +44,12 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
         />
         {/* Rank badge */}
         {!hideBadge && (
-          <span className="absolute top-1 left-1 bg-black/70 text-white text-xs px-1.5 py-0.5 rounded">
+          <span className="font-retro absolute top-1 left-1 bg-stone-900/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">
             #{rank}
           </span>
         )}
         {/* Play overlay on hover */}
-        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+        <div className="absolute inset-0 bg-stone-900/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
           <svg className="w-10 h-10 text-white" fill="currentColor" viewBox="0 0 24 24">
             <path d="M8 5v14l11-7z" />
           </svg>
@@ -59,10 +59,10 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
       {/* Metadata */}
       <div className={compact ? "p-1.5 space-y-0" : "p-2 space-y-0.5"}>
         {!compact && (
-          <p className="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">{result.video_id}</p>
+          <p className="text-xs text-stone-500 dark:text-stone-400 truncate font-mono">{result.video_id}</p>
         )}
         <div className="flex items-center justify-between">
-          <span className={`${compact ? "text-xs" : "text-sm"} text-slate-900 dark:text-white font-medium`}>
+          <span className={`${compact ? "text-xs" : "text-sm"} text-stone-900 dark:text-white font-medium font-mono`}>
             {formatTimestamp(result.timestamp_ms)}
           </span>
           {result.confidence >= 0 && (
@@ -71,7 +71,7 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
             </span>
           )}
         </div>
-        <p className="text-xs text-slate-500">frame {result.frame_number}</p>
+        <p className="text-xs text-stone-500">frame {result.frame_number}</p>
       </div>
     </button>
   );

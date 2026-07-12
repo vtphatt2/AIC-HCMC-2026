@@ -12,13 +12,13 @@ export default function ResultGrid({ results, total, executionTimeMs, onCardClic
   return (
     <div className="space-y-4">
       {/* Stats bar */}
-      <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-slate-400">
+      <div className="flex items-center gap-4 text-sm text-stone-500 dark:text-stone-400 font-mono">
         <span>
-          <span className="text-slate-900 dark:text-white font-semibold">{total}</span> results
+          <span className="text-stone-900 dark:text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
         <span title="Total time including translation and search">
-          <span className="text-slate-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
+          <span className="text-stone-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
         </span>
       </div>
 
@@ -35,7 +35,7 @@ export default function ResultGrid({ results, total, executionTimeMs, onCardClic
       </div>
 
       {results.length === 0 && (
-        <p className="text-slate-500 text-center py-16">No results. Try a different query.</p>
+        <p className="text-stone-500 text-center py-16">No results. Try a different query.</p>
       )}
     </div>
   );

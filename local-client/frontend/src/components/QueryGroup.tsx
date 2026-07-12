@@ -14,16 +14,16 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
   }
 
   return (
-    <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-4 space-y-3">
+    <div className="bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded p-4 space-y-3">
       {/* Header row */}
       <div className="flex items-center justify-between">
-        <span className="text-sm font-semibold text-slate-500 dark:text-slate-400">
+        <span className="font-retro text-xs font-bold uppercase tracking-wide text-stone-500 dark:text-stone-400">
           {isFirst ? "Search" : `Temporal Step ${index}`}
         </span>
         {!isFirst && (
           <button
             onClick={onRemove}
-            className="text-xs text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 transition"
+            className="text-xs text-rose-700 dark:text-rose-400 hover:text-rose-500 dark:hover:text-rose-300 transition"
           >
             Remove
           </button>
@@ -32,7 +32,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
 
       {/* Temporal offset — only for non-first groups */}
       {!isFirst && (
-        <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+        <div className="flex items-center gap-2 text-sm text-stone-600 dark:text-stone-400">
           <span>Occurs</span>
           <input
             type="number"
@@ -42,7 +42,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
             onChange={(e) =>
               update({ temporalOffsetMs: Math.max(0, parseInt(e.target.value) || 0) * 1000 })
             }
-            className="w-20 bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-slate-900 dark:text-white text-center"
+            className="w-20 bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-2 py-1 text-stone-900 dark:text-white text-center"
           />
           <span>seconds after the previous step</span>
         </div>
@@ -59,7 +59,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
               semanticQuery: e.target.value,
               translatedQuery: "",
             })}
-            className="w-full bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-600"
           />
         </div>
         {/* Translation toggle */}
@@ -69,10 +69,10 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
             translateSemantic: !group.translateSemantic,
             translatedQuery: "",
           })}
-          className={`px-3 py-2 rounded-lg text-sm font-medium border transition ${
+          className={`font-retro px-3 py-2 rounded text-xs font-bold border-2 transition ${
             group.translateSemantic
-              ? "bg-blue-600 border-blue-500 text-white"
-              : "bg-slate-100 dark:bg-slate-700 border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+              ? "bg-orange-700 border-orange-800 text-white"
+              : "bg-cream-card dark:bg-stone-700 border-stone-700 dark:border-stone-500 text-stone-500 dark:text-stone-400 hover:text-orange-700 dark:hover:text-orange-400"
           }`}
         >
           VI→EN
@@ -80,9 +80,9 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
       </div>
 
       {group.translateSemantic && group.translatedQuery && (
-        <div className="border-l-2 border-blue-500 pl-3">
-          <p className="text-xs text-slate-500">English query</p>
-          <p className="text-sm text-blue-700 dark:text-blue-200 break-words">{group.translatedQuery}</p>
+        <div className="border-l-4 border-orange-700 pl-3">
+          <p className="text-xs text-stone-500">English query</p>
+          <p className="text-sm text-orange-800 dark:text-orange-300 break-words">{group.translatedQuery}</p>
         </div>
       )}
 
@@ -92,7 +92,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
         placeholder="Text search (OCR / transcript keywords)…"
         value={group.textQuery}
         onChange={(e) => update({ textQuery: e.target.value })}
-        className="w-full bg-slate-100 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+        className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-teal-600"
       />
     </div>
   );

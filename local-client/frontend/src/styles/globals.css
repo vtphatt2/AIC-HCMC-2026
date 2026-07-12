@@ -3,13 +3,23 @@
 @tailwind utilities;
 
 html, body {
-  background-color: #f8fafc; /* slate-50 (light default) */
-  color: #0f172a;            /* slate-900 */
+  background-color: #f2ead9; /* warm parchment */
+  color: #292118;             /* espresso ink */
 }
 
 html.dark, html.dark body {
-  background-color: #0f172a; /* slate-900 */
-  color: #e2e8f0;            /* slate-200 */
+  background-color: #211a14; /* espresso */
+  color: #ece1cd;             /* parchment */
+}
+
+/* Subtle paper grain — kept faint so it stays "functional", not noisy. */
+body {
+  background-image: radial-gradient(rgba(41, 33, 24, 0.045) 1px, transparent 1px);
+  background-size: 3px 3px;
+}
+html.dark body {
+  background-image: radial-gradient(rgba(236, 225, 205, 0.035) 1px, transparent 1px);
+  background-size: 3px 3px;
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -19,9 +29,15 @@ html.dark, html.dark body {
   background: transparent;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #475569;
+  background: #a68a64; /* warm tan */
   border-radius: 3px;
 }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
+  background: #8a6f4c;
+}
+html.dark .scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #5c4d3a;
+}
+html.dark .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #79654a;
 }
