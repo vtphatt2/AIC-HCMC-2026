@@ -48,12 +48,12 @@ function buildVideoGroups(results: SearchResult[]): Map<string, DisplayFrame[]> 
 
 function frameHighlightClass(rankInVideo: number): string {
   if (rankInVideo === 1) {
-    return "ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-950";
+    return "ring-2 ring-emerald-400 ring-offset-2 ring-offset-white dark:ring-offset-slate-950";
   }
   if (rankInVideo >= 2 && rankInVideo <= 5) {
-    return "ring-2 ring-cyan-400/90 ring-offset-1 ring-offset-slate-950";
+    return "ring-2 ring-cyan-400/90 ring-offset-1 ring-offset-white dark:ring-offset-slate-950";
   }
-  return "ring-1 ring-slate-700";
+  return "ring-1 ring-slate-300 dark:ring-slate-700";
 }
 
 function frameBadge(rankInVideo: number): string | null {
@@ -138,25 +138,25 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
   return (
     <div
       ref={elementRef}
-      className="border border-slate-700 rounded-xl overflow-hidden bg-slate-800/50 min-h-[174px]"
+      className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden bg-slate-50 dark:bg-slate-800/50 min-h-[174px]"
     >
       {/* Video header */}
-      <div className="px-4 py-2 bg-slate-800 border-b border-slate-700 flex flex-wrap items-center justify-between gap-3">
+      <div className="px-4 py-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <span className="font-mono text-sm text-white font-semibold">
+          <span className="font-mono text-sm text-slate-900 dark:text-white font-semibold">
             {videoId}
           </span>
-          <span className="text-xs text-slate-400">
+          <span className="text-xs text-slate-500 dark:text-slate-400">
             {frames.length} matched frame{frames.length !== 1 ? "s" : ""}
           </span>
         </div>
         <div className="flex items-center gap-3">
           {bestFrame && (
-            <span className="hidden sm:inline text-xs text-slate-400 font-mono">
+            <span className="hidden sm:inline text-xs text-slate-500 dark:text-slate-400 font-mono">
               best frame {bestFrame.result.frame_number}
             </span>
           )}
-          <span className="text-xs text-emerald-400 font-semibold">
+          <span className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
             best: {(bestScore * 100).toFixed(1)}%
           </span>
         </div>
@@ -169,7 +169,7 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
             <button
               type="button"
               onClick={jumpToBest}
-              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border border-emerald-300/60 bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-emerald-200 shadow-lg shadow-black/30 backdrop-blur hover:border-emerald-300 hover:bg-emerald-500 hover:text-white transition"
+              className="absolute right-3 top-1/2 z-20 -translate-y-1/2 rounded-full border border-emerald-400/60 bg-white/90 dark:bg-slate-950/90 px-3 py-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-200 shadow-lg shadow-black/10 dark:shadow-black/30 backdrop-blur hover:border-emerald-300 hover:bg-emerald-500 hover:text-white transition"
               title="Jump to the best frame in this video"
             >
               {bestDirection === "left" ? "← Best" : "Best →"}
@@ -212,7 +212,7 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
           </div>
         </div>
       ) : (
-        <div className="h-28 flex items-center justify-center text-slate-500 text-xs font-mono select-none">
+        <div className="h-28 flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs font-mono select-none">
           Loading frames…
         </div>
       )}
@@ -244,17 +244,17 @@ export default function VideoGroupGrid({
   return (
     <div className="space-y-4">
       {/* Stats bar */}
-      <div className="flex items-center gap-4 text-sm text-slate-400">
+      <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-slate-400">
         <span>
-          <span className="text-white font-semibold">{total}</span> results
+          <span className="text-slate-900 dark:text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
         <span>
-          <span className="text-white font-semibold">{executionTimeMs}</span> ms
+          <span className="text-slate-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
         </span>
         <span>·</span>
         <span>
-          <span className="text-white font-semibold">{sortedVideoIds.length}</span> videos
+          <span className="text-slate-900 dark:text-white font-semibold">{sortedVideoIds.length}</span> videos
         </span>
       </div>
 

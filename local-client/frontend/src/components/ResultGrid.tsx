@@ -12,18 +12,18 @@ export default function ResultGrid({ results, total, executionTimeMs, onCardClic
   return (
     <div className="space-y-4">
       {/* Stats bar */}
-      <div className="flex items-center gap-4 text-sm text-slate-400">
+      <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-slate-400">
         <span>
-          <span className="text-white font-semibold">{total}</span> results
+          <span className="text-slate-900 dark:text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
         <span title="Total time including translation and search">
-          <span className="text-white font-semibold">{executionTimeMs}</span> ms
+          <span className="text-slate-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
         </span>
       </div>
 
-      {/* Grid — 2 cols on mobile, 4 on md, 6 on xl */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-3">
+      {/* Grid — sized for a half-width results pane, not the full viewport */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         {results.map((r, i) => (
           <ResultCard
             key={r.frame_id}

@@ -132,7 +132,7 @@ export default function VideoModal({ result, onClose }: Props) {
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute -top-8 right-0 text-slate-400 hover:text-white text-sm transition"
+          className="absolute -top-8 right-0 text-slate-300 hover:text-white text-sm transition"
         >
           Close (Esc)
         </button>

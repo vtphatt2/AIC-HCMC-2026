@@ -30,10 +30,10 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
   return (
     <button
       onClick={() => onClick(result)}
-      className="group bg-slate-800 border border-slate-700 rounded-xl overflow-hidden hover:border-blue-500 hover:shadow-lg hover:shadow-blue-900/30 transition-all text-left w-full"
+      className="group bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden hover:border-blue-500 hover:shadow-lg hover:shadow-blue-900/10 dark:hover:shadow-blue-900/30 transition-all text-left w-full"
     >
       {/* Frame image */}
-      <div className="relative aspect-video bg-slate-700 overflow-hidden">
+      <div className="relative aspect-video bg-slate-200 dark:bg-slate-700 overflow-hidden">
         <img
           src={imageUrl}
           alt={`Frame ${result.frame_number} of ${result.video_id}`}
@@ -59,10 +59,10 @@ export default function ResultCard({ result, rank, onClick, hideBadge, compact }
       {/* Metadata */}
       <div className={compact ? "p-1.5 space-y-0" : "p-2 space-y-0.5"}>
         {!compact && (
-          <p className="text-xs text-slate-400 truncate font-mono">{result.video_id}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">{result.video_id}</p>
         )}
         <div className="flex items-center justify-between">
-          <span className={`${compact ? "text-xs" : "text-sm"} text-white font-medium`}>
+          <span className={`${compact ? "text-xs" : "text-sm"} text-slate-900 dark:text-white font-medium`}>
             {formatTimestamp(result.timestamp_ms)}
           </span>
           {result.confidence >= 0 && (
