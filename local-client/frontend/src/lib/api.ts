@@ -4,6 +4,7 @@ import type {
   SearchResponse,
   TranslationResponse,
   TranscriptChunkSearchResponse,
+  TranscriptResponse,
   VectorSearchAlgorithmResponse,
 } from "@/types";
 
@@ -101,5 +102,14 @@ export async function searchTranscriptChunks(
     throw new Error(errorData.detail || "Transcript chunk search failed");
   }
 
+  return res.json();
+}
+
+export async function fetchTranscript(videoId: string): Promise<TranscriptResponse> {
+  const res = await fetch(apiUrl(`/api/transcript/${videoId}`));
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to fetch transcript");
+  }
   return res.json();
 }

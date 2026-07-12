@@ -19,10 +19,12 @@ import {
   searchTranscriptChunks,
 } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
-import ResultGrid from "@/components/ResultGrid";
+import CommandPanel, { type CommandPanelHandle } from "@/components/CommandPanel";
+import ResultGrid, { type ResultGridHandle } from "@/components/ResultGrid";
 import VideoGroupGrid from "@/components/VideoGroupGrid";
 import TranscriptChunkCard from "@/components/TranscriptChunkCard";
 import VideoModal from "@/components/VideoModal";
+import HelpModal from "@/components/HelpModal";
 
 const DEFAULT_GROUP: QueryGroup = {
   semanticQuery: "",
@@ -40,6 +42,7 @@ const ALL_GENRES = [
 ];
 
 const THEME_STORAGE_KEY = "aic2026-theme";
+const SHOW_TRANSCRIPT_KEY = "aic2026-show-transcript";
 const SIDEBAR_WIDTH_KEY = "aic2026-sidebar-width";
 const SIDEBAR_DEFAULT_WIDTH = 520;
 const SIDEBAR_MIN_WIDTH = 300;
@@ -70,6 +73,7 @@ export default function Home() {
     { ...DEFAULT_GROUP, temporalOffsetMs: 0 },
   ]);
   const [topKInput, setTopKInput] = useState("100");
+  const [panelMode, setPanelMode] = useState<"manual" | "chat">("manual");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
@@ -80,6 +84,8 @@ export default function Home() {
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [viewMode, setViewMode] = useState<"score" | "video">("score");
   const [videoGenre, setVideoGenre] = useState("All");
   const [vectorAlgorithms, setVectorAlgorithms] = useState<VectorSearchAlgorithm[]>([]);
@@ -97,6 +103,12 @@ export default function Home() {
   const [transcriptViewMode, setTranscriptViewMode] = useState<"score" | "video">("score");
 
   const mainRef = useRef<HTMLDivElement>(null);
+  const commandPanelRef = useRef<CommandPanelHandle>(null);
+  const resultGridRef = useRef<ResultGridHandle>(null);
+
+  function openResult(r: SearchResult) {
+    setActiveResult(r);
+  }
 
   // ── Theme: load saved preference, reflect onto <html class="dark"> ────────
   useEffect(() => {
@@ -108,6 +120,16 @@ export default function Home() {
     const prefersLight = window.matchMedia?.("(prefers-color-scheme: light)").matches;
     setTheme(prefersLight ? "light" : "dark");
   }, []);
+
+  // ── Video modal transcript panel: load saved on/off preference ────────────
+  useEffect(() => {
+    setShowTranscript(window.localStorage.getItem(SHOW_TRANSCRIPT_KEY) === "1");
+  }, []);
+
+  function setShowTranscriptPersisted(next: boolean) {
+    setShowTranscript(next);
+    window.localStorage.setItem(SHOW_TRANSCRIPT_KEY, next ? "1" : "0");
+  }
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -332,16 +354,6 @@ export default function Home() {
     setActiveResult(searchResult);
   }
 
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter") {
-      if (searchMode === "transcripts") {
-        handleTranscriptSearch();
-      } else {
-        handleSearch();
-      }
-    }
-  }
-
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);
   const currentVectorAlgorithm = vectorAlgorithms.find((item) => item.id === selectedVectorAlgorithm);
 
@@ -361,6 +373,7 @@ export default function Home() {
         timestamp_ms: timestampMs,
         confidence: chunk.score,
         frame_image_url: chunk.frame_image_url,
+        frame_preview_url: chunk.frame_preview_url,
         fps: 25,
       };
     });
@@ -368,10 +381,7 @@ export default function Home() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
-    <div
-      className="h-screen flex flex-col bg-cream dark:bg-stone-900 text-stone-900 dark:text-stone-100 overflow-hidden"
-      onKeyDown={handleKeyDown}
-    >
+    <div className="h-screen flex flex-col bg-cream dark:bg-stone-900 text-stone-900 dark:text-stone-100 overflow-hidden">
       <Head>
         <link rel="preconnect" href="https://www.youtube.com" />
         <link rel="preconnect" href="https://www.google.com" />
@@ -423,17 +433,26 @@ export default function Home() {
                   </div>
                 </div>
 
-                <button
-                  onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-                  className="shrink-0 w-7 h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
-                  title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
-                >
-                  <span className="text-xs">{theme === "dark" ? "☀" : "☾"}</span>
-                </button>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setShowHelp(true)}
+                    className="w-7 h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
+                    title="How to use (help)"
+                  >
+                    <span className="text-xs font-bold">?</span>
+                  </button>
+                  <button
+                    onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+                    className="w-7 h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
+                    title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+                  >
+                    <span className="text-xs">{theme === "dark" ? "☀" : "☾"}</span>
+                  </button>
+                </div>
               </header>
 
-              {/* Frames / Transcripts mode toggle */}
-              <div className="px-4 py-2 border-b-2 border-stone-800 dark:border-stone-600 shrink-0">
+              {/* Frames / Transcripts mode toggle + Manual / Chat toggle */}
+              <div className="px-4 py-2 border-b-2 border-stone-800 dark:border-stone-600 shrink-0 flex items-center justify-between gap-2 flex-wrap">
                 <div className="flex rounded border-2 border-stone-800 dark:border-stone-500 overflow-hidden w-fit">
                   <button
                     onClick={() => { setSearchMode("frames"); setError(null); }}
@@ -456,9 +475,68 @@ export default function Home() {
                     Transcripts
                   </button>
                 </div>
+
+                <div className="flex rounded border-2 border-stone-800 dark:border-stone-500 overflow-hidden w-fit">
+                  <button
+                    onClick={() => setPanelMode("manual")}
+                    title="Manual form"
+                    className={`font-retro px-2.5 py-1 text-xs font-bold transition ${
+                      panelMode === "manual"
+                        ? "bg-stone-800 dark:bg-stone-100 text-white dark:text-stone-900"
+                        : "bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
+                    }`}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    onClick={() => setPanelMode("chat")}
+                    title="Chat / command mode"
+                    className={`font-retro px-2.5 py-1 text-xs font-bold border-l-2 border-stone-800 dark:border-stone-500 transition ${
+                      panelMode === "chat"
+                        ? "bg-stone-800 dark:bg-stone-100 text-white dark:text-stone-900"
+                        : "bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white"
+                    }`}
+                  >
+                    &gt;_
+                  </button>
+                </div>
               </div>
 
               {/* Scrollable search panel body */}
+              {panelMode === "chat" ? (
+                <div className="flex-1 min-h-0">
+                <CommandPanel
+                  ref={commandPanelRef}
+                  searchMode={searchMode}
+                  defaultGroup={DEFAULT_GROUP}
+                  strategies={strategies}
+                  selectedStrategy={selectedStrategy}
+                  setSelectedStrategy={setSelectedStrategy}
+                  queryGroups={queryGroups}
+                  setQueryGroups={setQueryGroups}
+                  topKInput={topKInput}
+                  setTopKInput={setTopKInput}
+                  videoGenre={videoGenre}
+                  setVideoGenre={setVideoGenre}
+                  transcriptQuery={transcriptQuery}
+                  setTranscriptQuery={setTranscriptQuery}
+                  transcriptTopK={transcriptTopK}
+                  setTranscriptTopK={setTranscriptTopK}
+                  transcriptGenre={transcriptGenre}
+                  setTranscriptGenre={setTranscriptGenre}
+                  allGenres={ALL_GENRES}
+                  viewMode={viewMode}
+                  setViewMode={setViewMode}
+                  transcriptViewMode={transcriptViewMode}
+                  setTranscriptViewMode={setTranscriptViewMode}
+                  onSearch={() => (searchMode === "frames" ? handleSearch() : handleTranscriptSearch())}
+                  onSetMode={(m) => { setSearchMode(m); setError(null); }}
+                  onEscapeToResults={() => resultGridRef.current?.focus()}
+                  showTranscript={showTranscript}
+                  setShowTranscript={setShowTranscriptPersisted}
+                />
+                </div>
+              ) : (
               <div className="flex-1 overflow-y-auto">
                 {/* Frames search panel */}
                 {searchMode === "frames" && (
@@ -532,6 +610,7 @@ export default function Home() {
                           isFirst={i === 0}
                           onChange={(updated) => updateGroup(i, updated)}
                           onRemove={() => removeGroup(i)}
+                          onSubmit={handleSearch}
                         />
                       ))}
                     </div>
@@ -548,6 +627,7 @@ export default function Home() {
                             value={topKInput}
                             onChange={(e) => setTopKInput(e.target.value)}
                             onBlur={() => setTopKInput(String(normalizeTopK(topKInput)))}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleSearch(); } }}
                             className={`${RETRO_INPUT} w-20 text-center`}
                           />
                         </div>
@@ -726,6 +806,7 @@ export default function Home() {
                       placeholder="Search transcript chunks (e.g. cách nấu phở, kẹt xe, AI chip)…"
                       value={transcriptQuery}
                       onChange={(e) => setTranscriptQuery(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleTranscriptSearch(); } }}
                       className={`${RETRO_INPUT} w-full focus:ring-teal-600 placeholder-stone-400 dark:placeholder-stone-500`}
                     />
 
@@ -739,6 +820,7 @@ export default function Home() {
                           value={transcriptTopK}
                           onChange={(e) => setTranscriptTopK(e.target.value)}
                           onBlur={() => setTranscriptTopK(String(normalizeTopK(transcriptTopK)))}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleTranscriptSearch(); } }}
                           className={`${RETRO_INPUT} w-20 text-center focus:ring-teal-600`}
                         />
                       </div>
@@ -792,6 +874,7 @@ export default function Home() {
                   </div>
                 )}
               </div>
+              )}
             </>
           )}
         </aside>
@@ -817,10 +900,14 @@ export default function Home() {
             {/* Frame search results */}
             {searchMode === "frames" && response && viewMode === "score" && (
               <ResultGrid
+                ref={resultGridRef}
                 results={response.results}
                 total={response.total}
                 executionTimeMs={totalTimeMs}
-                onCardClick={(r) => setActiveResult(r)}
+                onCardClick={openResult}
+                scrollContainerRef={mainRef}
+                onFocusQuery={() => commandPanelRef.current?.focus()}
+                active={!activeResult}
               />
             )}
             {searchMode === "frames" && response && viewMode === "video" && (
@@ -828,7 +915,8 @@ export default function Home() {
                 results={response.results}
                 total={response.total}
                 executionTimeMs={totalTimeMs}
-                onCardClick={(r) => setActiveResult(r)}
+                onCardClick={openResult}
+                showTranscript={showTranscript}
               />
             )}
 
@@ -871,7 +959,8 @@ export default function Home() {
                 results={transcriptFrameResults}
                 total={transcriptResponse.total}
                 executionTimeMs={transcriptTimeMs}
-                onCardClick={(r) => setActiveResult(r)}
+                onCardClick={openResult}
+                showTranscript={showTranscript}
               />
             )}
           </div>
@@ -897,8 +986,13 @@ export default function Home() {
         <VideoModal
           result={activeResult}
           onClose={() => setActiveResult(null)}
+          showTranscript={showTranscript}
+          onToggleTranscript={() => setShowTranscriptPersisted(!showTranscript)}
         />
       )}
+
+      {/* ── Help / usage guide modal ── */}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </div>
   );
 }

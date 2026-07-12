@@ -6,11 +6,22 @@ interface Props {
   isFirst: boolean;
   onChange: (updated: QueryGroupType) => void;
   onRemove: () => void;
+  onSubmit?: () => void;
 }
 
-export default function QueryGroup({ group, index, isFirst, onChange, onRemove }: Props) {
+export default function QueryGroup({ group, index, isFirst, onChange, onRemove, onSubmit }: Props) {
   function update(patch: Partial<QueryGroupType>) {
     onChange({ ...group, ...patch });
+  }
+
+  // Enter in any of this step's inputs runs the search. Previously this
+  // relied on the app root's onKeyDown catching the bubbled event, which
+  // also fired search from unrelated places (results grid, video modal).
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onSubmit?.();
+    }
   }
 
   return (
@@ -42,6 +53,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
             onChange={(e) =>
               update({ temporalOffsetMs: Math.max(0, parseInt(e.target.value) || 0) * 1000 })
             }
+            onKeyDown={handleKeyDown}
             className="w-20 bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-2 py-1 text-stone-900 dark:text-white text-center"
           />
           <span>seconds after the previous step</span>
@@ -59,6 +71,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
               semanticQuery: e.target.value,
               translatedQuery: "",
             })}
+            onKeyDown={handleKeyDown}
             className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-600"
           />
         </div>
@@ -92,6 +105,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove }
         placeholder="Text search (OCR / transcript keywords)…"
         value={group.textQuery}
         onChange={(e) => update({ textQuery: e.target.value })}
+        onKeyDown={handleKeyDown}
         className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-teal-600"
       />
     </div>

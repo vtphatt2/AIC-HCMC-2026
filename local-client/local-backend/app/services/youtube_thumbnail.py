@@ -101,6 +101,19 @@ def _get_storyboard_index(youtube_id: str) -> _StoryboardIndex:
     return _StoryboardIndex(youtube_id, best)
 
 
+def prefetch_storyboard_index(youtube_id: str) -> None:
+    """Warms the per-video storyboard-index cache ahead of the first preview
+    request — called from the search endpoint alongside the precise-frame
+    prefetch, so the (also yt-dlp-backed, ~2-3s) storyboard lookup mostly
+    finishes before the frontend requests a placeholder thumbnail. Best
+    effort: swallows failures."""
+    try:
+        with _index_lock:
+            _get_storyboard_index(youtube_id)
+    except StoryboardUnavailable:
+        logger.debug("Storyboard prefetch failed for youtube_id=%s", youtube_id, exc_info=True)
+
+
 def _fetch_fragment_bytes(url: str) -> bytes:
     import hashlib
 

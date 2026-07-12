@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SearchResult } from "@/types";
+import type { SearchResult, TranscriptSegment } from "@/types";
+import { fetchTranscript } from "@/lib/api";
 import ResultCard from "./ResultCard";
 
 interface Props {
@@ -7,7 +8,13 @@ interface Props {
   total: number;
   executionTimeMs: number;
   onCardClick: (result: SearchResult) => void;
+  showTranscript: boolean;
 }
+
+// ~15s each side of the best frame (≈30s total) — wide enough for context,
+// narrow enough to stay readable and avoid pulling in unrelated content
+// from outlier frames far from the actual match.
+const BEST_FRAME_TRANSCRIPT_RADIUS_MS = 15000;
 
 interface DisplayFrame {
   result: SearchResult;
@@ -68,17 +75,66 @@ interface VideoGroupSectionProps {
   videoId: string;
   frames: DisplayFrame[];
   onCardClick: (result: SearchResult) => void;
+  showTranscript: boolean;
 }
 
-function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionProps) {
+function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: VideoGroupSectionProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const bestFrameRef = useRef<HTMLDivElement | null>(null);
   const bestDirectionRef = useRef<BestDirection>("visible");
+  const hasCenteredRef = useRef(false);
+  const centeredForFrameIdRef = useRef<string | null>(null);
   const [bestDirection, setBestDirection] = useState<BestDirection>("visible");
   const [isVisible, setIsVisible] = useState(false);
+  const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[] | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const bestScore = Math.max(...frames.map((f) => f.result.confidence));
   const bestFrame = frames.find((f) => f.rankInVideo === 1);
+
+  // Fetch this video's full transcript once (cheap after the first call);
+  // rangeSegments below narrows it down to just a window around the best frame.
+  useEffect(() => {
+    if (!showTranscript || !isVisible) return;
+    let cancelled = false;
+    setTranscriptSegments(null);
+    setTranscriptError(null);
+    fetchTranscript(videoId)
+      .then((res) => { if (!cancelled) setTranscriptSegments(res.segments); })
+      .catch((err) => { if (!cancelled) setTranscriptError(err.message || "No transcript available"); });
+    return () => { cancelled = true; };
+  }, [showTranscript, isVisible, videoId]);
+
+  // Only a window around the best frame, not the full earliest-to-latest
+  // span of every retrieved frame — a stray frame near the start/end that's
+  // far from the best match is likely noise, and pulling in the transcript
+  // all the way out to it made the excerpt too long/unfocused to read.
+  const rangeSegments = useMemo(() => {
+    if (!transcriptSegments || !bestFrame) return [];
+    const centerMs = bestFrame.result.timestamp_ms;
+    const minMs = centerMs - BEST_FRAME_TRANSCRIPT_RADIUS_MS;
+    const maxMs = centerMs + BEST_FRAME_TRANSCRIPT_RADIUS_MS;
+    return transcriptSegments.filter((s) => s.end_ms >= minMs && s.start_ms <= maxMs);
+  }, [transcriptSegments, bestFrame]);
+
+  function segmentHighlightRank(seg: TranscriptSegment): number | null {
+    let best: number | null = null;
+    for (const f of frames) {
+      if (f.rankInVideo < 1 || f.rankInVideo > 3) continue;
+      const t = f.result.timestamp_ms;
+      if (t >= seg.start_ms && t < seg.end_ms && (best === null || f.rankInVideo < best)) {
+        best = f.rankInVideo;
+      }
+    }
+    return best;
+  }
+
+  // A fresh search can reuse this component instance (same videoId key) with
+  // a different best frame — re-center for it instead of leaving the guard
+  // permanently tripped from the first-ever search.
+  if (bestFrame && centeredForFrameIdRef.current !== bestFrame.result.frame_id) {
+    hasCenteredRef.current = false;
+  }
 
   // Lazy render observer to drop off-screen DOM weight and network load
   useEffect(() => {
@@ -117,17 +173,34 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
     }
   }
 
+  // Computes scrollLeft directly instead of using scrollIntoView, which is a
+  // no-op when the target is already within the visible area (e.g. short
+  // strips from a single search) — we want it centered, not just visible.
+  function centerBest(smooth: boolean) {
+    const strip = stripRef.current;
+    const best = bestFrameRef.current;
+    if (!strip || !best) return;
+    const target = best.offsetLeft - (strip.clientWidth - best.clientWidth) / 2;
+    strip.scrollTo({ left: Math.max(0, target), behavior: smooth ? "smooth" : "auto" });
+  }
+
   function jumpToBest() {
-    bestFrameRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "nearest",
-      inline: "center",
-    });
+    centerBest(true);
   }
 
   useEffect(() => {
     if (!isVisible) return;
-    const handle = setTimeout(updateBestDirection, 0);
+    const handle = setTimeout(() => {
+      // Center the best-match frame on first layout instead of leaving the
+      // strip scrolled to its start — the user shouldn't have to notice the
+      // "jump to best" affordance to find the top result.
+      if (!hasCenteredRef.current) {
+        hasCenteredRef.current = true;
+        centeredForFrameIdRef.current = bestFrame?.result.frame_id ?? null;
+        centerBest(false);
+      }
+      updateBestDirection();
+    }, 0);
     window.addEventListener("resize", updateBestDirection);
     return () => {
       clearTimeout(handle);
@@ -216,6 +289,37 @@ function VideoGroupSection({ videoId, frames, onCardClick }: VideoGroupSectionPr
           Loading frames…
         </div>
       )}
+
+      {/* Transcript for just this box's frame range — shown in full, no
+          inner scroll (wraps naturally); top-1/2/3 frame moments highlighted. */}
+      {showTranscript && isVisible && (
+        <div className="px-4 py-2.5 border-t-2 border-stone-800 dark:border-stone-600 text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+          {transcriptError && <span className="italic text-stone-500">{transcriptError}</span>}
+          {!transcriptError && transcriptSegments === null && (
+            <span className="italic text-stone-500">Loading transcript…</span>
+          )}
+          {!transcriptError && transcriptSegments !== null && rangeSegments.length === 0 && (
+            <span className="italic text-stone-500">No transcript for this range.</span>
+          )}
+          {rangeSegments.map((seg, i) => {
+            const rank = segmentHighlightRank(seg);
+            return (
+              <span
+                key={i}
+                className={
+                  rank === 1
+                    ? "bg-orange-700/25 text-orange-800 dark:text-orange-300 font-medium rounded px-0.5"
+                    : rank === 2 || rank === 3
+                      ? "bg-teal-700/20 text-teal-800 dark:text-teal-300 font-medium rounded px-0.5"
+                      : ""
+                }
+              >
+                {seg.text}{" "}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -225,6 +329,7 @@ export default function VideoGroupGrid({
   total,
   executionTimeMs,
   onCardClick,
+  showTranscript,
 }: Props) {
   const videoGroups = useMemo(() => buildVideoGroups(results), [results]);
   const sortedVideoIds = useMemo(
@@ -268,6 +373,7 @@ export default function VideoGroupGrid({
             videoId={videoId}
             frames={frames}
             onCardClick={onCardClick}
+            showTranscript={showTranscript}
           />
         );
       })}

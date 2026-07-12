@@ -38,7 +38,11 @@
       "Bash(taskkill //F //IM python.exe)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'OK - {d[\\\\\"env_mode\\\\\"]} mode'\\)\")",
       "Bash(PYTHONIOENCODING=utf-8 python test_final.py)",
-      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Visual search: {d[\\\\\"total\\\\\"]} results, {d[\\\\\"execution_time_ms\\\\\"]}ms'\\)\")"
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(f'Visual search: {d[\\\\\"total\\\\\"]} results, {d[\\\\\"execution_time_ms\\\\\"]}ms'\\)\")",
+      "Bash(nohup ./.venv/Scripts/python.exe -m uvicorn main:app --port 8000)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(taskkill //PID 29040 //F)",
+      "Bash(taskkill //PID 19952 //F)"
     ],
     "additionalDirectories": [
       "d:\\Coding\\side-project\\AIC-2026\\AIC-HCMC-2026"

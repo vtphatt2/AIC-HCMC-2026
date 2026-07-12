@@ -108,16 +108,35 @@ class duy_temporal_search(BaseStrategy):
                 if entry is None:
                     continue
                 last_frame = entry["path"][-1]
-                results.append({
+                confidence = round(entry["score"] / num_levels, 4)
+                result = {
                     "video_id":        video_id,
                     "youtube_id":      youtube_id,
                     "frame_id":        last_frame["frame_id"],
                     "frame_number":    last_frame["frame_number"],
                     "timestamp_ms":    last_frame["timestamp_ms"],
-                    "confidence":      round(entry["score"] / num_levels, 4),
+                    "confidence":      confidence,
                     "frame_image_url": last_frame["image_url"],
                     "fps":             fps,
-                })
+                }
+                if num_levels > 1:
+                    # Surface every frame in the matched chain (not just the
+                    # last one) so the frontend can render the full temporal
+                    # match as one cluster instead of a single loose frame.
+                    result["steps"] = [
+                        {
+                            "video_id":        video_id,
+                            "youtube_id":      youtube_id,
+                            "frame_id":        step_frame["frame_id"],
+                            "frame_number":    step_frame["frame_number"],
+                            "timestamp_ms":    step_frame["timestamp_ms"],
+                            "confidence":      confidence,
+                            "frame_image_url": step_frame["image_url"],
+                            "fps":             fps,
+                        }
+                        for step_frame in entry["path"]
+                    ]
+                results.append(result)
 
         results.sort(key=lambda x: x["confidence"], reverse=True)
         return results

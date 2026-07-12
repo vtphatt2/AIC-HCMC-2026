@@ -108,6 +108,67 @@ if FRAME_IMAGE_SOURCE == "youtube_storyboard":
 
         return Response(content=jpeg_bytes, media_type="image/jpeg")
 
+elif FRAME_IMAGE_SOURCE == "youtube_precise":
+    # Sharper + timestamp-accurate than the storyboard crop above: resolves
+    # the real video stream via yt-dlp and seeks into it with ffmpeg. Slower
+    # per frame on a cache miss (network + seek + decode), so this runs in a
+    # worker thread per request instead of blocking the event loop — a
+    # results grid's images load concurrently rather than one at a time.
+    # See docs/youtube-storyboard-thumbnails-workaround.md.
+    import asyncio
+    from app.services.youtube_precise_frame import PreciseFrameUnavailable, get_precise_frame_jpeg
+    from app.services.youtube_thumbnail import StoryboardUnavailable, get_thumbnail_jpeg
+
+    @app.get("/static/frames/{video_id}/{frame_file}")
+    async def precise_frame(video_id: str, frame_file: str):
+        if _data_provider is None:
+            raise HTTPException(503, "Backend not ready")
+
+        frame_stem = Path(frame_file).stem
+        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
+        if lookup is None:
+            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
+        frame, video = lookup
+        youtube_id = video.get("youtube_id")
+        if not youtube_id:
+            raise HTTPException(404, f"No youtube_id for video {video_id}")
+
+        try:
+            jpeg_bytes = await asyncio.to_thread(
+                get_precise_frame_jpeg, youtube_id, int(frame["timestamp_ms"])
+            )
+        except PreciseFrameUnavailable as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+    # Fast, blurry placeholder counterpart to the route above — same
+    # storyboard-crop workaround as FRAME_IMAGE_SOURCE=youtube_storyboard,
+    # always available here so the frontend can show *something* instantly
+    # while the precise frame extracts in the background, then swap to it.
+    @app.get("/static/frames-preview/{video_id}/{frame_file}")
+    async def precise_frame_preview(video_id: str, frame_file: str):
+        if _data_provider is None:
+            raise HTTPException(503, "Backend not ready")
+
+        frame_stem = Path(frame_file).stem
+        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
+        if lookup is None:
+            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
+        frame, video = lookup
+        youtube_id = video.get("youtube_id")
+        if not youtube_id:
+            raise HTTPException(404, f"No youtube_id for video {video_id}")
+
+        try:
+            jpeg_bytes = await asyncio.to_thread(
+                get_thumbnail_jpeg, youtube_id, int(frame["timestamp_ms"])
+            )
+        except StoryboardUnavailable as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+        return Response(content=jpeg_bytes, media_type="image/jpeg")
+
 elif SAMPLE_KEYFRAMES_DIR.is_dir():
     app.mount(
         "/static/frames",
@@ -128,6 +189,43 @@ elif os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
             content=resp.content,
             media_type=resp.headers.get("content-type", "image/jpeg"),
         )
+
+
+def _annotate_and_prefetch_precise_frames(results: list[dict]) -> None:
+    """No-op unless FRAME_IMAGE_SOURCE=youtube_precise. Otherwise:
+    (1) tags each result (and each temporal-cluster step) with a fast
+        frame_preview_url the frontend can show immediately while the
+        precise frame is still extracting, and
+    (2) kicks off background resolution of every distinct video's stream
+        URL right now, so the (slow, ~1-4s) yt-dlp lookup mostly finishes
+        before the frontend ever requests a thumbnail image, instead of
+        happening lazily on the first image request.
+    Best-effort: failures here must never break the search response itself.
+    """
+    if FRAME_IMAGE_SOURCE != "youtube_precise":
+        return
+
+    import asyncio
+    from app.services.youtube_precise_frame import prefetch_stream_url
+    from app.services.youtube_thumbnail import prefetch_storyboard_index
+
+    youtube_ids: set[str] = set()
+
+    def tag(row: dict) -> None:
+        image_url = row.get("frame_image_url") or ""
+        if image_url.startswith("/static/frames/"):
+            row["frame_preview_url"] = image_url.replace("/static/frames/", "/static/frames-preview/", 1)
+        if row.get("youtube_id"):
+            youtube_ids.add(row["youtube_id"])
+        for step in row.get("steps") or []:
+            tag(step)
+
+    for row in results:
+        tag(row)
+
+    for youtube_id in youtube_ids:
+        asyncio.create_task(asyncio.to_thread(prefetch_stream_url, youtube_id))
+        asyncio.create_task(asyncio.to_thread(prefetch_storyboard_index, youtube_id))
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -179,6 +277,25 @@ async def static_debug(path: str = "L01_V001/000022.jpg"):
         "exists": target.exists(),
         "is_file": target.is_file(),
         "size": target.stat().st_size if target.exists() else None,
+    }
+
+
+@app.get("/api/transcript/{video_id}")
+async def get_transcript(video_id: str):
+    """Full transcript for one video (SAMPLE mode only) — fetched once per
+    video by VideoModal; the frontend looks up the active segment locally
+    against the already-polled playback time instead of round-tripping on
+    every tick. Search-driven transcript results are a separate, not-yet-
+    built feature (see app/services/transcript_index.py)."""
+    from app.services.transcript_index import load_or_build_transcript
+
+    transcript = load_or_build_transcript(video_id)
+    if transcript is None:
+        raise HTTPException(404, f"No transcript found for video_id={video_id}")
+
+    return {
+        "video_id": transcript.video_id,
+        "segments": [s.to_dict() for s in transcript.segments],
     }
 
 
@@ -286,6 +403,7 @@ async def search(req: SearchRequest):
         raise HTTPException(500, f"Strategy error: {exc}")
 
     results = results[:top_k]
+    _annotate_and_prefetch_precise_frames(results)
 
     return {
         "results":           results,
@@ -313,8 +431,11 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
     except Exception as exc:
         raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
+    results = results[:top_k]
+    _annotate_and_prefetch_precise_frames(results)
+
     return {
-        "results":           results[:top_k],
+        "results":           results,
         "total":             min(len(results), top_k),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }
