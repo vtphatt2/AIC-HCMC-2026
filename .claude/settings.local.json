@@ -47,5 +47,8 @@
     "additionalDirectories": [
       "d:\\Coding\\side-project\\AIC-2026\\AIC-HCMC-2026"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "rpg-tools"
+  ]
 }

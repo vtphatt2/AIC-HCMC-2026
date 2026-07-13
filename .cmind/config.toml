@@ -1,0 +1,6 @@
+# CoderMind workspace configuration
+# Managed by `cmind init` / `cmind update`.  Safe to commit.
+# See: https://github.com/microsoft/RPG-ZeroRepo (CoderMind/docs/configuration.md)
+
+[cmind]
+ai_cli_cmd = "claude"
