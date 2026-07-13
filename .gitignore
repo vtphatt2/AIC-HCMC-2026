@@ -261,3 +261,6 @@ data/*
 .vscode/tasks.json
 .mcp.json
 .claude/commands/
+.ponytail/
+.opencode/plugins/ponytail-repo/
+/.ponytail/

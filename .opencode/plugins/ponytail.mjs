@@ -1,0 +1,1 @@
+/home/nguyen-nam/Giselle_/multimodal-videos-retrieval/AIC-HCMC-2026/.opencode/plugins/ponytail-repo/ponytail.mjs
