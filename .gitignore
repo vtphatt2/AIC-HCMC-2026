@@ -249,4 +249,6 @@ static/frames/
 data/*
 
 # youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
-/cache/
+/cache/.ponytail/
+.opencode/plugins/ponytail-repo/
+/.ponytail/
