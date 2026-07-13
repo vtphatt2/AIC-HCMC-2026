@@ -250,3 +250,14 @@ data/*
 
 # youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
 /cache/
+
+# CoderMind ignores (managed by `cmind init/update`)
+.cmind/*
+!.cmind/config.toml
+.rpgkit/
+.venv_dev/
+.cmind_dev_env/
+.vscode/mcp.json
+.vscode/tasks.json
+.mcp.json
+.claude/commands/
