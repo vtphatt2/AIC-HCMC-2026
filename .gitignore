@@ -249,12 +249,8 @@ static/frames/
 data/*
 
 # youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
-<<<<<<< HEAD
-/cache/.ponytail/
-.opencode/plugins/ponytail-repo/
-/.ponytail/
-=======
 /cache/
+.opencode/plugins/ponytail-repo/
 
 # CoderMind ignores (managed by `cmind init/update`)
 .cmind/*
@@ -266,4 +262,4 @@ data/*
 .vscode/tasks.json
 .mcp.json
 .claude/commands/
->>>>>>> 478bbd4 (added cmind graph)
+.ponytail/
