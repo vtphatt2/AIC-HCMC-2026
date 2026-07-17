@@ -48,7 +48,10 @@ class TranscriptSearchService:
                 )
 
             self._model = SentenceTransformer(MODEL_ID, device=MODEL_DEVICE)
-            actual_dim = self._model.get_sentence_embedding_dimension()
+            if MODEL_DEVICE == "cuda":
+                # # MODIFIED: Cast E5 model to FP16 half-precision on CUDA | VRAM Optimization | User Request
+                self._model.half()
+            actual_dim = self._model.get_embedding_dimension()
             if actual_dim != EXPECTED_DIM:
                 raise RuntimeError(
                     f"Model {MODEL_ID} has dim {actual_dim}, expected {EXPECTED_DIM}"
@@ -249,7 +252,7 @@ class TranscriptSearchService:
             logger.warning("Filesystem frame fallback failed for video_id=%s", video_id)
             return {}
 
-    def warmup(self, query: str = "warmup query", passes: int = 5) -> None:
+    def warmup(self, query: str = "warmup query", passes: int = 2) -> None:
         load_start = time.monotonic()
         was_loaded = self._loaded
         self._ensure_loaded()
