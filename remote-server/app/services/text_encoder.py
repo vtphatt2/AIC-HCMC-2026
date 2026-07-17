@@ -75,7 +75,8 @@ class PECoreTextEncoder:
     startup do not require model weights to already be cached.
     """
 
-    WARMUP_PASSES = 10
+    # # MODIFIED: Reduce warmup passes from 10 to 2 to speed up lifespan startup | Boot Optimization | User Request
+    WARMUP_PASSES = 2
 
     def __init__(self, config: TextEncoderConfig | None = None):
         self.config = config or TextEncoderConfig()
