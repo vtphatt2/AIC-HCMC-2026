@@ -67,6 +67,12 @@ def parse_args() -> argparse.Namespace:
         help="Only ingest Milvus vectors; do not upsert video metadata to PostgreSQL.",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--features-subdir",
+        type=str,
+        default="PECore-features",
+        help="Subdirectory name under sample-root containing .npy vector files (default: PECore-features).",
+    )
     return parser.parse_args()
 
 
@@ -100,10 +106,10 @@ def load_metadata(metadata_dir: Path) -> dict[str, dict[str, Any]]:
     return metadata
 
 
-def iter_video_records(sample_root: Path) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], int]]:
+def iter_video_records(sample_root: Path, features_subdir: str = "PECore-features") -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], int]]:
     metadata_dir = require_dir(sample_subdir(sample_root, "metadata"), "metadata directory")
     keyframes_dir = require_dir(sample_subdir(sample_root, "keyframes"), "keyframes directory")
-    features_dir = require_dir(sample_subdir(sample_root, "PECore-features"), "PECore features directory")
+    features_dir = require_dir(sample_subdir(sample_root, features_subdir), f"features directory ({features_subdir})")
     metadata = load_metadata(metadata_dir)
 
     for feature_video_dir in sorted(path for path in features_dir.iterdir() if path.is_dir()):
@@ -240,7 +246,7 @@ async def main() -> None:
     videos: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
     missing_images_total = 0
-    for video, video_records, missing_images in iter_video_records(sample_root):
+    for video, video_records, missing_images in iter_video_records(sample_root, args.features_subdir):
         videos.append(video)
         records.extend(video_records)
         missing_images_total += missing_images

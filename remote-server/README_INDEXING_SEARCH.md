@@ -52,6 +52,7 @@ python scripts/ingest_embeddings_to_milvus.py --sample-root "D:\path\to\AIC2026_
 
 Minimum required folders for Search by Text:
 - `PECore-features/PECore-features` or `PECore-features`: precomputed PE-Core image embeddings (`.npy`)
+- Alternatively `embeddings/embeddings` or `embeddings`: use `--features-subdir embeddings` for a different embedding source
 - `keyframes/keyframes` or `keyframes`: frame images served through `/static/frames/...`
 - `metadata/metadata` or `metadata`: video metadata used for FPS, timestamps, and YouTube IDs
 
@@ -73,21 +74,73 @@ Use `--recreate` only when you want to drop and rebuild `video_frames`.
 Use `--vector-index all` to create all three runtime-selectable Milvus collections:
 HNSW in `video_frames`, FLAT in `video_frames_flat`, and SCANN in `video_frames_scann`.
 
-## 4. Ingest embeddings
+## 4. Install dependencies
+
+```bash
+cd remote-server
+
+# Create virtual env if not exists
+python3 -m venv .venv
+source .venv/bin/activate   # Linux/Mac
+# .venv\Scripts\activate    # Windows
+
+# Base dependencies (PECore ONNX backend, Milvus, PostgreSQL)
+pip install -r requirements.txt
+
+# Optional: full OpenCLIP torch backend (GPU-capable)
+pip install -r requirements-torch.txt
+
+# Optional: CAGRA GPU search (CUDA 13 NVIDIA GPU only)
+pip install --extra-index-url https://pypi.nvidia.com -r requirements-cagra.txt
+
+# Optional: YouTube thumbnail workaround
+pip install -r requirements-youtube-thumbnail.txt
+```
+
+## 5. Ingest embeddings
 
 ```bash
 cd remote-server
 python scripts/ingest_embeddings_to_milvus.py
 ```
 
-* **Default Path:** Served directly from `AIC2026_sample/keyframes`. To configure a custom path, set `FRAME_STATIC_DIR=/path/to/custom/keyframes` in `.env`.
-* **Staging Option:** Use the `--copy-keyframes` flag to duplicate images under `remote-server/static/frames` if static caching is required.
+Flags:
 
-For runtime algorithm selection (HNSW/FLAT/ScaNN), ingest all three Milvus collections:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sample-root` | auto-detect | Path to `AIC2026_sample` |
+| `--features-subdir` | `PECore-features` | Subfolder containing `.npy` vectors (e.g. `embeddings`) |
+| `--batch-size` | 256 | Vectors per Milvus insert batch |
+| `--vector-index` | `hnsw` | `hnsw`, `flat`, `scann`, or `all` |
+| `--recreate-milvus` | false | Drop collection before inserting |
+| `--copy-keyframes` | false | Copy jpgs into `remote-server/static/frames` |
+| `--skip-postgres` | false | Skip PostgreSQL video metadata upsert |
+| `--dry-run` | false | Scan only, no writes |
+
+Examples:
 
 ```bash
-python scripts/ingest_embeddings_to_milvus.py --vector-index all --recreate-milvus
+# Standard ingest with HNSW
+python scripts/ingest_embeddings_to_milvus.py
+
+# Use embeddings/ folder instead of PECore-features/
+python scripts/ingest_embeddings_to_milvus.py --features-subdir embeddings
+
+# Full re-ingest: recreate + all indexes + copy keyframes
+python scripts/ingest_embeddings_to_milvus.py \
+  --features-subdir embeddings \
+  --recreate-milvus \
+  --copy-keyframes \
+  --vector-index all
+
+# Dry-run first to verify data without writing
+python scripts/ingest_embeddings_to_milvus.py \
+  --features-subdir embeddings \
+  --dry-run
 ```
+
+* **Default Path:** Served directly from `AIC2026_sample/keyframes`. To configure a custom path, set `FRAME_STATIC_DIR=/path/to/custom/keyframes` in `.env`.
+* **Staging Option:** Use the `--copy-keyframes` flag to duplicate images under `remote-server/static/frames` if static caching is required.
 
 Defaults:
 - sample root: first existing `AIC2026_sample` inside or beside the repository
@@ -98,7 +151,7 @@ Defaults:
 - metric/index: `COSINE` + HNSW (`M=16`, `efConstruction=256`), FLAT exact search, or ScaNN (`nlist=127`, `with_raw_data=True`)
 - search params: HNSW `ef=512`, ScaNN `nprobe=32`, `reorder_k=5x top_k` for raw reordering.
 
-## 5. Run backend
+## 6. Run backend
 
 ```bash
 cd remote-server
@@ -202,7 +255,7 @@ cd local-client/local-backend
 uvicorn main:app --reload --port 8001
 ```
 
-## 6. Test search
+## 7. Test search
 
 Remote server:
 
@@ -214,7 +267,7 @@ curl -X POST http://localhost:8000/api/search \
 
 Local sample mode can also test against `AIC2026_sample` without Milvus by setting `ENV_MODE=SAMPLE` in `local-client/local-backend/.env` and using the same `strategy_id`.
 
-## 7. Validation And Evaluation
+## 8. Validation And Evaluation
 
 ### Smoke test backend search
 
