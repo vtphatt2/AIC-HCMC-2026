@@ -20,6 +20,7 @@ sentence-transformers==5.6.0
 onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10
+setuptools==81.0.0
 
 # For the full "torch" backend (PECORE_BACKEND=torch, GPU-capable, downloads
 # the full PE-Core weights), install requirements-torch.txt as well:
