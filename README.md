@@ -15,6 +15,7 @@ or run the complete PE-Core retrieval pipeline directly on the server.
 |---|---|
 | [docs/running.md](docs/running.md) | **Start here** — scenario picker + exact commands |
 | [docs/setup.md](docs/setup.md) | Step-by-step setup for local dev and GPU server |
+| [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local launch (Windows/Mac/Linux/WSL), backend/GPU selection |
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |

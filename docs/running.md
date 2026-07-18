@@ -52,6 +52,7 @@ See [setup.md → Environment Variable Reference](setup.md#environment-variable-
 
 | Topic | Doc |
 |---|---|
+| One-command launch scripts (Windows/Mac/Linux/WSL, backend/GPU choice) | [launch_scripts.md](launch_scripts.md) |
 | System design, ENV_MODE switching, data flow | [architecture.md](architecture.md) |
 | Writing a new strategy | [strategy_guide.md](strategy_guide.md) |
 | Milvus/Postgres schema | [db_schema.md](db_schema.md) |

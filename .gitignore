@@ -275,3 +275,4 @@ data/*
 .mcp.json
 .claude/commands/
 .ponytail/
+local-client/local-backend/models/
