@@ -1,10 +1,16 @@
 # Launch scripts
 
 `scripts/start-local.ps1` (Windows) and `scripts/start-local.sh` (Mac, Linux,
-WSL) start the local backend and frontend in the background, with logs under
-`runtime-logs/`. They're a shortcut for local dev only — see
-[running.md](running.md) / [setup.md](setup.md) for what each `ENV_MODE` and
-`.env` value means.
+WSL) start the local backend and frontend, each in its own terminal window,
+so you can watch their output live. They're a shortcut for local dev only —
+see [running.md](running.md) / [setup.md](setup.md) for what each `ENV_MODE`
+and `.env` value means.
+
+- Windows: opens two `cmd` windows (titled "Backend (...)" / "Frontend").
+- Mac: opens two Terminal.app windows.
+- Linux/WSL: opens two `gnome-terminal` or `xterm` windows, whichever is
+  installed (tried in that order). If neither is available, falls back to a
+  background process logging to `runtime-logs/`.
 
 Both scripts skip a service that's already listening on its port, and take
 the same `--backend` choice, which sets `PECORE_BACKEND` / `PECORE_DEVICE`
@@ -43,8 +49,9 @@ venv .venv && .venv/bin/pip install -r requirements.txt`, see
 
 ## Stopping
 
-Both scripts start detached background processes; there's no stop
-subcommand. Kill by port:
+Close the terminal window (or Ctrl+C inside it, then close). If a service
+fell back to running in the background (no terminal emulator found), kill it
+by port instead:
 
 - Windows: `Get-NetTCPConnection -LocalPort 8002,3002 | Select-Object -Expand OwningProcess | Stop-Process`
 - Mac/Linux/WSL: `lsof -ti:8002,3002 | xargs kill`

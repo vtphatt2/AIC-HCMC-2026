@@ -13,8 +13,6 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $root "local-client\local-backend"
 $frontendDir = Join-Path $root "local-client\frontend"
-$logDir = Join-Path $root "runtime-logs"
-New-Item -ItemType Directory -Force $logDir | Out-Null
 
 function Test-Port([int]$Port) {
     return $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
@@ -28,17 +26,28 @@ $backendEnvByChoice = @{
 $backendEnvPrefix = (($backendEnvByChoice[$Backend]).GetEnumerator() |
     ForEach-Object { "set $($_.Key)=$($_.Value)&&" }) -join " "
 
+# /k (not /c) keeps the console window open after the command exits, so you
+# can see uvicorn/npm output live and read any crash output instead of the
+# window vanishing.
 if (-not (Test-Port $BackendPort)) {
     $origins = "http://localhost:$FrontendPort,http://127.0.0.1:$FrontendPort"
-    $backendCommand = "$backendEnvPrefix set CORS_ORIGINS=$origins&& `"$(Join-Path $backendDir '.venv\Scripts\python.exe')`" -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
-    Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/c", $backendCommand -WorkingDirectory $backendDir -RedirectStandardOutput (Join-Path $logDir "backend.log") -RedirectStandardError (Join-Path $logDir "backend.err.log") -WindowStyle Hidden | Out-Null
-} else { Write-Host "Backend already listening on $BackendPort" }
+    $backendCommand = "title Backend ($Backend) && $backendEnvPrefix set CORS_ORIGINS=$origins&& `"$(Join-Path $backendDir '.venv\Scripts\python.exe')`" -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
+    Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $backendCommand -WorkingDirectory $backendDir | Out-Null
+    $backendNote = "opened in its own terminal window"
+} else {
+    Write-Host "Backend already listening on $BackendPort"
+    $backendNote = "already running"
+}
 
 $apiUrl = "http://127.0.0.1:$BackendPort"
 if (-not (Test-Port $FrontendPort)) {
-    $frontendCommand = "set NEXT_PUBLIC_API_URL=$apiUrl&& npm.cmd run dev -- -p $FrontendPort"
-    Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/c", $frontendCommand -WorkingDirectory $frontendDir -RedirectStandardOutput (Join-Path $logDir "frontend.log") -RedirectStandardError (Join-Path $logDir "frontend.err.log") -WindowStyle Hidden | Out-Null
-} else { Write-Host "Frontend already listening on $FrontendPort" }
+    $frontendCommand = "title Frontend && set NEXT_PUBLIC_API_URL=$apiUrl&& npm.cmd run dev -- -p $FrontendPort"
+    Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $frontendCommand -WorkingDirectory $frontendDir | Out-Null
+    $frontendNote = "opened in its own terminal window"
+} else {
+    Write-Host "Frontend already listening on $FrontendPort"
+    $frontendNote = "already running"
+}
 
-Write-Host "Backend:  $apiUrl (-Backend $Backend)"
-Write-Host "Frontend: http://127.0.0.1:$FrontendPort"
+Write-Host "Backend:  $apiUrl (-Backend $Backend) - $backendNote"
+Write-Host "Frontend: http://127.0.0.1:$FrontendPort - $frontendNote"
