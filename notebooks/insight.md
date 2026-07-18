@@ -4,6 +4,8 @@ embedding 1280 chiều của PE-Core đang mắc phải hiện tượng anisotro
 
 Để khắc phục, hệ thống tự động phạt các frame hub bằng công thức `α_hub = sigmoid((Nₖ/μ_hub − 1) × 5)`. Tại ngưỡng P75, α_hub đạt 0.531 — đủ để hạ một bậc hạng mà không triệt tiêu hoàn toàn recall. Trên tập mô phỏng 1000 frame, cơ chế này quét sạch 250 frame hub khỏi vị trí Top-1 retrieval, nhường chỗ cho 293 frame "orphan" (nhóm 25% thấp nhất theo Nₖ) — vốn chứa ngữ nghĩa phong phú nhưng bị anisotropy đè bẹp. Hệ thống cũng tự động cảnh báo khi Gini vượt 0.45 trên batch mới, đề xuất re-embed hoặc augment dữ liệu.
 
+> Duyle Note: Cái idea hub frame này cũng hay, kết hợp với cái dưới ta sẽ loại bỏ bớt frame gầm nhau và có sim score cao ở trong hub. hay gì đó -> cái này là tối ưu đươc keyframe nếu làm đúng
+
 ---
 
 ## 2. Temporal NMS Optimization — Mở Rộng Cửa Sổ Recall, Tiết Kiệm GPU
@@ -12,6 +14,7 @@ Phân tích phát hiện TransNetV2 đang lãng phí khoảng 16% slot trong top
 
 Giải pháp là lọc NMS ngay trên CPU bằng cổng AND: `(H(t,t-1) > 0.95) ∧ (SSIM(t,t-1) > 0.95)`, với chi phí dưới 1ms/frame và không tốn tài nguyên GPU. Tại điểm elbow τ* = 0.95 (xác định bằng second-derivative inflection), hệ thống giải phóng khoảng 12% slot (18 frame trong top-150) mà không bỏ sót frame nào mang thông tin độc lạ. Các slot được giải phóng này sau đó được tái phân bổ cho những mốc thời gian khác — action scene, B-roll — nơi mỗi frame mang thông tin semantic riêng biệt.
 
+> State rõ lại cách xét cặp frame để loại bỏ.
 ---
 
 ## 3. Spatial & Negation Context Routing — Hiểu Câu Hỏi Vị Trí và Phủ Định
@@ -20,13 +23,14 @@ Notebook 03 và 06 chứng minh rằng bi-encoder multilingual-e5-small (384 chi
 
 Hệ thống giải quyết bằng cách phân lớp query tự động thành ba nhóm — L1 (Entities), L2 (Actions), L3 (Spatial/Negation) — dựa trên regex nhận diện các token đặc thù tiếng Việt như "không", "chưa", "chẳng", "bên trái", "phía sau", "trước khi", "sau khi". Mỗi nhóm được áp một trọng số penalty khi fusion: L1 giữ nguyên (×1.00) vì bi-encoder đáng tin; L2 giảm nhẹ (×0.85) và tăng trọng số OCR/transcript; L3 giảm mạnh (×0.65) và ưu tiên cross-encoder rerank. Riêng với L3, ngưỡng chặn reranker cũng được hạ từ 0.50 xuống 0.30, mở rộng cửa cho cross-encoder có cơ hội xét duyệt những trường hợp mà bi-encoder đã underestimate score.
 
+> Cái này chả hiểu gì - có vẻ là chưa đủ data để rút ra insight : D
 ---
 
 ## 4. Cross-Shot Semantic Spillover 
 
-Notebook 05 chỉ ra rằng khoảng 86% khoảng audio bị TransNetV2 cắt ngang bởi shot boundary: lời thuyết minh thuộc về shot A lại "tràn" sang các frame của shot B, gây ô nhiễm semantic nếu cơ chế fusion không có bước phân rã phù hợp.
+Notebook 05 chỉ ra rằng khoảng 86% khoảng audio bị TransNetV2 cắt ngang bởi shot boundary: lời thuyết minh thuộc về shot A lại "tràn" sang các frame của shot B, gây ô nhiễm semantic nếu cơ chế fusion không có bước phân rã phù hợp. -> cái này là do thằng cài đặt bị ngu, có cài class quản lý transcript ở https://github.com/vtphatt2/AIC-HCMC-2026/blob/main/local-client/local-backend/app/services/transcript_index.py; đọc code please
 
-Hệ thống xử lý bằng cách "bơm" điểm lời thuyết minh sang các frame lân cận theo hàm suy giảm mũ: `weight = exp(−λ × gap_seconds)`, với λ = 0.357 được calibrate từ tối ưu hóa MSE. Half-life của trọng số là 1.95 giây — sau khoảng thời gian này kể từ khi xuyên shot boundary, trọng số lời thuyết minh còn lại 50%. Hệ thống cắt tuyệt đối ở mốc 8.4 giây (bằng 3/λ): từ đây trở đi weight dưới 5%, được coi như không còn spillover, tránh việc "kéo" ngữ nghĩa của shot cũ sang shot mới.
+Hệ thống xử lý bằng cách "bơm" điểm lời thuyết minh sang các frame lân cận theo hàm suy giảm mũ: `weight = exp(−λ × gap_seconds)`, với λ = 0.357 được calibrate từ tối ưu hóa MSE. Half-life của trọng số là 1.95 giây — sau khoảng thời gian này kể từ khi xuyên shot boundary, trọng số lời thuyết minh còn lại 50%. Hệ thống cắt tuyệt đối ở mốc 8.4 giây (bằng 3/λ): từ đây trở đi weight dưới 5%, được coi như không còn spillover, tránh việc "kéo" ngữ nghĩa của shot cũ sang shot mới. -> cái này là late fusion nên coi lại sau.
 
 ---
 
@@ -36,9 +40,10 @@ phát hiện tỷ lệ conflict 10% trong mẫu retrieval, phần lớn đến t
 
 Hệ thống tự động phát hiện video câm bằng quy tắc `transcript_token_count == 0`. Khi phát hiện, cổng transcript được đóng lại (W_trans → 0) và toàn bộ 0.25 trọng số được dồn sang OCR (W_ocr từ 0.25 tăng lên 0.45), trong khi W_visual giữ nguyên ở mức 0.50 để bảo toàn cân bằng giữa các modality. Cơ chế này chạy song song với modality conflict gating (Notebook 03+06): nếu phát hiện "Visual-Only Illusion" (Visual > 0.5, OCR < 0.2), hệ thống giảm 80% trọng số text và để visual độc lập chi phối với hệ số consensus boost 1.15×.
 
+> Cái này chưa thấy cài đâu
 ---
 
-## Phần 2: Bộ Câu Hỏi Hóa Giải Bẫy Dữ Liệu
+## Phần 2: Bộ Câu Hỏi Hóa Giải Bẫy Dữ Liệu - Không đáng tin nên bỏ qua phần này, đọc vui thôi
 
 | # | Câu hỏi| Đáp án từ bộ EDA | Notebook nguồn |
 |---|------------------|------------------|-----------------|
