@@ -112,13 +112,9 @@ PostgreSQL for metadata and text retrieval.
 
 ## Strategy Development Quickstart
 
-1. Copy `local-client/local-backend/app/strategies/_example_strategy.py`
-2. Rename to `yourname_idea_v1.py`
-3. Fill in `name`, `description`, `author`
-4. Implement `fusion_and_temporal()`
-5. Restart the backend — your strategy appears in the dropdown
-
-See [docs/strategy_guide.md](docs/strategy_guide.md) for full details.
+Copy `local-client/local-backend/app/strategies/_example_strategy.py`,
+implement `fusion_and_temporal()`, restart the backend — it appears in the
+dropdown automatically. Full guide: [docs/strategy_guide.md](docs/strategy_guide.md).
 
 ---
 

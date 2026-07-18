@@ -42,20 +42,9 @@ $env:PYTHONIOENCODING='utf-8'
 python scripts/index_transcripts.py --sample-root ../AIC2026_sample --dry-run
 ```
 
-Output mẫu:
-```
-DRY RUN — first 10 chunks:
-  [    1] L01_V001 | Thời sự    |     8.0s →    51.0s | Kính chào và cảm ơn...
-  [    2] L01_V001 | Công nghệ  |    30.0s →    70.0s | hơn 300 nhạc công...
-  [    3] L01_V001 | Kinh tế    |    47.0s →    88.0s | giữ nhịp tăng trưởng...
-
-Video Genres (dominant topic per video):
-  L01_V001: Thời sự
-  L03_V001: Ẩm thực
-  L03_V002: Ẩm thực
-
-Would index 531 chunks and tag 9 video genres.
-```
+In script này in ra danh sách chunk mẫu (video, topic dự đoán, khoảng thời
+gian, đoạn text) kèm dominant topic mỗi video, và tổng số chunk/video sẽ index
+— không ghi gì vào DB.
 
 ### 2.2 Index thực tế
 
@@ -67,20 +56,8 @@ python scripts/index_transcripts.py --sample-root ../AIC2026_sample
 python scripts/index_transcripts.py --sample-root ../AIC2026_sample --clear-existing
 ```
 
-Output:
-```
-Indexing Milvus vectors: 100%|██████████| 531/531
-PostgreSQL: upserted 531 chunk metadata rows
-Milvus: indexed 531 chunk vectors
-PostgreSQL: updated genre for 9 videos
-
-Topic distribution:
-  Thời sự      127  ██████████████████████████████████████████████████
-  Sức khỏe      99  ██████████████████████████████████████
-  Đời sống      90  ███████████████████████████████████
-  Kinh tế       53  ████████████████████████
-  ...
-```
+Script in tiến độ, số chunk/video đã upsert vào PostgreSQL + index vào Milvus,
+và phân bố topic sau khi xong.
 
 ---
 
@@ -96,13 +73,8 @@ cd local-client/frontend
 npm run dev
 ```
 
-Server log sẽ hiện:
-```
-Transcript chunk search service ready
-Discovering strategies...
-  ✓ transcript_fusion_strategy  (Transcript Fusion v1  by Team AIC 2026)
-Server ready — 4 strategy/strategies loaded.
-```
+Server log sẽ hiện `Transcript chunk search service ready` và liệt kê
+`transcript_fusion_strategy` trong danh sách strategy đã discover.
 
 ---
 
@@ -145,15 +117,9 @@ Content-Type: application/json
 ### Ví dụ curl
 
 ```bash
-# Auto-predict topic
 curl -X POST http://localhost:8000/api/search/transcript \
   -H "Content-Type: application/json" \
-  -d '{"query":"cách nấu phở bò","top_k":5}'
-
-# Ép topic thủ công
-curl -X POST http://localhost:8000/api/search/transcript \
-  -H "Content-Type: application/json" \
-  -d '{"query":"nguyên liệu","top_k":5,"topic_filter":"Kinh tế"}'
+  -d '{"query":"cách nấu phở bò","top_k":5}'   # thêm "topic_filter":"Kinh tế" để ép topic thủ công
 ```
 
 ---

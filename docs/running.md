@@ -58,4 +58,7 @@ See [setup.md → Environment Variable Reference](setup.md#environment-variable-
 | Milvus/Postgres schema | [db_schema.md](db_schema.md) |
 | PE-Core ingestion, CAGRA, translation, validation (remote-server) | [../remote-server/README_INDEXING_SEARCH.md](../remote-server/README_INDEXING_SEARCH.md) |
 | Transcript search | [search_by_transcript.md](search_by_transcript.md) |
-| Repo layout | [folder_tree.md](folder_tree.md) |
+| Repo layout | [../README.md#repository-layout](../README.md#repository-layout) |
+| PE-Core ONNX text encoder specs | [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
+| Keyframe sampling rule | [keyframe_selection.md](keyframe_selection.md) |
+| Vector search backend benchmark (HNSW vs CAGRA vs ScaNN) | [vector_search_benchmark_report.md](vector_search_benchmark_report.md) |

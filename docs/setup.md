@@ -81,53 +81,23 @@ details.
 
 ### Teammate Frontend-Only Access
 
-If one machine hosts `remote-server`, teammates do not need the dataset,
-Milvus, PostgreSQL, CAGRA, or Google credentials on their laptops. They can run
-only the frontend and point it to the host backend.
+Teammates don't need the dataset, Milvus, PostgreSQL, CAGRA, or Google
+credentials on their laptops — just the frontend, pointed at the host.
 
-On the host machine:
+Host machine: run `remote-server` as above, and make sure `CORS_ORIGINS` in
+its `.env` includes the frontend origin (`http://localhost:3000,http://127.0.0.1:3000`).
 
-```bash
-cd remote-server
-uvicorn main:app --host 0.0.0.0 --port 8000
-```
-
-Find the host machine's LAN IP, then make sure `CORS_ORIGINS` in
-`remote-server/.env` allows the frontend origin, for example:
-
-```env
-CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
-```
-
-On the teammate machine:
+Teammate machine:
 
 ```bash
-cd local-client/frontend
-npm install
-cp .env.local.example .env.local
+cd local-client/frontend && npm install && cp .env.local.example .env.local
 ```
 
-Set:
+Set `NEXT_PUBLIC_API_URL=http://<host-lan-ip>:8000` in `.env.local`, then
+`npm run dev`. Verify with `curl http://<host-ip>:8000/api/health`.
 
-```env
-NEXT_PUBLIC_API_URL=http://<host-ip>:8000
-```
-
-Then run:
-
-```bash
-npm run dev
-```
-
-Check the connection from the teammate machine:
-
-```bash
-curl http://<host-ip>:8000/api/health
-```
-
-Both machines should be on the same network. For different networks, use a
-tunnel such as Ngrok, Tailscale, VPN, or Cloudflare Tunnel and set
-`NEXT_PUBLIC_API_URL` to the tunnel URL.
+Both machines need the same network, or a tunnel (Ngrok, Tailscale, VPN,
+Cloudflare Tunnel) with `NEXT_PUBLIC_API_URL` set to the tunnel URL.
 
 ---
 
@@ -411,17 +381,9 @@ curl -X POST http://localhost:8000/api/warmup_text_encoder
 
 ## Adding a New Strategy
 
-```bash
-# 1. Copy the template
-cp local-client/local-backend/app/strategies/_example_strategy.py \
-   local-client/local-backend/app/strategies/yourname_v1.py
-
-# 2. Edit the file — set name, description, author, implement fusion_and_temporal()
-
-# 3. Restart the backend (Ctrl+C then uvicorn again, or save any .py file if --reload is on)
-```
-
-Your strategy now appears in the frontend dropdown. See [strategy_guide.md](strategy_guide.md) for full documentation.
+Copy `local-client/local-backend/app/strategies/_example_strategy.py`, edit
+it, restart the backend — see [strategy_guide.md](strategy_guide.md) for the
+full walkthrough.
 
 ---
 
