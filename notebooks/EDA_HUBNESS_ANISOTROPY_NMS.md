@@ -1,9 +1,4 @@
-# Báo Cáo Khoa Học — Multimodal Video Retrieval EDA
-
-> **Tài liệu tổng hợp kết quả phân tích từ 9 notebook EDA trên dataset AIC2026_sample.**
-> **Mục tiêu:** Cung cấp định nghĩa rõ ràng, công thức toán học, và kết luận khoa học cho mỗi hiện tượng được phát hiện.
-
----
+# Multimodal Video Retrieval EDA
 
 ## 1. Hubness & Anisotropy (CV Layer)
 
@@ -25,7 +20,7 @@ trong đó $N_k$ = số lần frame xuất hiện trong Top-K NN, $\mu$ = trung 
 - **P75 threshold = 10** (Top-25% frames là hub)
 - **α_hub = 0.531** tại P75
 
-**Kết luận khoa học:** Anisotropy trầm trọng trong PE-Core 1280d → cần suppression để tránh "frame quốc dân" chiếm Top-K retrieval.
+**Kết luận:** Anisotropy trầm trọng trong PE-Core 1280d → cần suppression để tránh "frame quốc dân" chiếm Top-K retrieval.
 
 ---
 
@@ -47,7 +42,7 @@ $$L_{penalty} = \begin{cases} 1.00 & \text{if level} = L1 \\ 0.85 & \text{if lev
 - L3 mean cosine: **0.253**
 - **Sụt giảm tuyệt đối L1→L3: 66%**
 
-**Kết luận khoa học:** Bi-encoder không phù hợp cho compositional queries → cần penalty tier + cross-encoder rerank.
+**Kết luận:** Bi-encoder không phù hợp cho compositional queries → cần penalty tier + cross-encoder rerank.
 
 ---
 
@@ -63,7 +58,7 @@ $$\beta_{gap} = \frac{d_{cross}(V, T)}{\frac{1}{2}(d_{intra}(V) + d_{intra}(T))}
 - Domain gap lớn nhất: Kinh tế, Ẩm thực, Đời sống
 - Domain gap nhỏ nhất: Văn hóa, Pháp luật, Giáo dục
 
-**Kết luận khoa học:** Cần shared latent space projection (64d) trước khi tính cross-modal cosine.
+**Kết luận:** Cần shared latent space projection (64d) trước khi tính cross-modal cosine.
 
 ---
 
@@ -79,7 +74,7 @@ $$w(gap) = e^{-\lambda \times gap_{seconds}}$$
 - **Half-life = 1.95 giây** (sau 2s, weight còn 50%)
 - **Effective cutoff = 8.4 giây** (3/λ, weight < 5%)
 
-**Kết luận khoa học:** Exponential decay ngăn spillover quá xa → tránh ô nhiễm semantic giữa các shot.
+**Kết luận:** Exponential decay ngăn spillover quá xa → tránh ô nhiễm semantic giữa các shot.
 
 ---
 
@@ -102,7 +97,7 @@ SI cao = True Positive và Hard Negative phân tách rõ hơn.
 - **SI raw = 1.441** → **SI sigmoid = 1.537** (gain +6.7%)
 - Cutoff 0.5 → P(relevant) > 0.5
 
-**Kết luận khoa học:** Sigmoid calibration là tối ưu nhất trong 3 phương pháp (Min-Max, Z-score, Sigmoid).
+**Kết luận:** Sigmoid calibration là tối ưu nhất trong 3 phương pháp (Min-Max, Z-score, Sigmoid).
 
 ---
 
@@ -120,7 +115,7 @@ SI cao = True Positive và Hard Negative phân tách rõ hơn.
 - Speech-Only Spillover: ~4%
 - Mute video rate: **40%** (CCTV, B-roll)
 
-**Kết luận khoa học:** Dynamic gating bảo vệ single-modality hits khỏi bị fixed fusion đè bẹp.
+**Kết luận:** Dynamic gating bảo vệ single-modality hits khỏi bị fixed fusion đè bẹp.
 
 ---
 
@@ -136,7 +131,7 @@ $$\text{Frame}_t \text{ drop nếu: } H_{sim}(t, t-1) > 0.95 \text{ AND } SSIM(t
 - Real L01_V001: measured on real keyframes
 - Elbow τ* = 0.95 (second-derivative inflection)
 
-**Kết luận khoa học:** Dual-heuristic (color + structure) robust hơn single-heuristic.
+**Kết luận:** Dual-heuristic (color + structure) robust hơn single-heuristic.
 
 ---
 
@@ -152,7 +147,7 @@ $$score_{window} = cosine\left(E(C_i + C_{i+1}), E(\text{true phrase})\right)$$
 - 2-chunk window match rate: ~50%
 - **Rescue rate: +15%** (+5ms latency per query)
 
-**Kết luận khoa học:** Sliding window concatenation phục hồi context bị cắt, bùng nổ recall với chi phí tối thiểu.
+**Kết luận:** Sliding window concatenation phục hồi context bị cắt, bùng nổ recall với chi phí tối thiểu.
 
 ---
 

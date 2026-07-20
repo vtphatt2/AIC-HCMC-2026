@@ -1,6 +1,3 @@
-# Bao Cao Sandbox Nang Cao - Baseline vs NextGen
-
-> **Ngay sinh:** Tu dong tu notebook 10_advanced_heuristics_sandbox_eda.ipynb
 > **Muc tieu:** Do luong su chenh lech giua Baseline (Fixed Rules) va NextGen (Adaptive Heuristics) tren 4 sandbox experiments.
 
 ## 1. Muc tieu thuc nghiem

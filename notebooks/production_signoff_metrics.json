@@ -42,20 +42,20 @@
     "recall_at_150": 1.0,
     "mrr": 0.24838732854343962,
     "slot_preservation_pct": 100.0,
-    "latency_ms": 0.4146099090576172
+    "latency_ms": 0.6537437438964844
   },
   "nextgen_kpis": {
     "recall_at_50": 0.3527083333333333,
     "recall_at_150": 1.0,
     "mrr": 0.2873149941853108,
     "slot_preservation_pct": 79.94666666666667,
-    "latency_ms": 4.472494125366211
+    "latency_ms": 6.515741348266602
   },
   "kpi_gains": {
     "recall_50_gain": 0.03487499999999999,
     "recall_150_gain": 0.0,
     "mrr_gain": 0.038927665641871195,
-    "latency_overhead_ms": 4.057884216308594
+    "latency_overhead_ms": 5.861997604370117
   },
   "production_readiness": {
     "all_modules_tested": true,
