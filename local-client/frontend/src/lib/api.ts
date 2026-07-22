@@ -58,8 +58,10 @@ export async function runSearch(
   const payload: Record<string, unknown> = {
     strategy_id: strategyId,
     query_groups: queryGroups.map(g => ({
-      semantic_query: g.translateSemantic ? g.translatedQuery : g.semanticQuery,
-      text_query: g.textQuery,
+      query: [g.translateSemantic ? g.translatedQuery : g.semanticQuery, g.textQuery]
+        .map(value => value.trim())
+        .filter(Boolean)
+        .join(" "),
       temporal_offset_ms: g.temporalOffsetMs
     })),
     top_k: topK,

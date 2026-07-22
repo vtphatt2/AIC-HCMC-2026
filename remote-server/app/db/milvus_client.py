@@ -9,6 +9,7 @@ from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connec
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "video_frames")
+SUBTITLED_COLLECTION_NAME = os.getenv("MILVUS_SUBTITLED_COLLECTION", "video_frames_subtitled")
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "1280"))  # PE-Core-bigG-14-448 produces 1280-dim
 METRIC_TYPE = "COSINE"
 DEFAULT_ALGORITHM = {
@@ -49,8 +50,8 @@ def connect() -> None:
     logger.info("Connected to Milvus collection=%s dim=%s", COLLECTION_NAME, VECTOR_DIM)
 
 
-def get_collection() -> Collection:
-    col = Collection(collection_name_for_algorithm())
+def get_collection(channel: str = "raw.semantic") -> Collection:
+    col = Collection(collection_name_for_algorithm(channel=channel))
     col.load()
     return col
 
@@ -61,13 +62,29 @@ def get_collection_for_name(collection_name: str) -> Collection:
     return col
 
 
-def collection_name_for_algorithm(algorithm: str | None = None) -> str:
-    return index_config(algorithm)["collection"]
-
-
-def index_config(algorithm: str | None = None) -> dict[str, Any]:
+def collection_name_for_algorithm(
+    algorithm: str | None = None,
+    channel: str = "raw.semantic",
+) -> str:
     algorithm = normalize_algorithm(algorithm or DEFAULT_ALGORITHM)
-    return VECTOR_INDEXES[algorithm]
+    if channel == "raw.semantic":
+        return VECTOR_INDEXES[algorithm]["collection"]
+    if channel != "subtitled.semantic":
+        raise ValueError(f"Unknown visual channel '{channel}'")
+    env_name = f"MILVUS_SUBTITLED_COLLECTION_{algorithm.upper()}"
+    suffix = "" if algorithm == "hnsw" else f"_{algorithm}"
+    return os.getenv(env_name) or f"{SUBTITLED_COLLECTION_NAME}{suffix}"
+
+
+def index_config(
+    algorithm: str | None = None,
+    channel: str = "raw.semantic",
+) -> dict[str, Any]:
+    algorithm = normalize_algorithm(algorithm or DEFAULT_ALGORITHM)
+    return {
+        **VECTOR_INDEXES[algorithm],
+        "collection": collection_name_for_algorithm(algorithm, channel),
+    }
 
 
 def normalize_algorithm(algorithm: str) -> str:
@@ -86,13 +103,16 @@ def available_milvus_algorithms() -> dict[str, bool]:
     }
 
 
-def has_collection_for_algorithm(algorithm: str) -> bool:
-    return utility.has_collection(collection_name_for_algorithm(algorithm))
+def has_collection_for_algorithm(algorithm: str, channel: str = "raw.semantic") -> bool:
+    return utility.has_collection(collection_name_for_algorithm(algorithm, channel))
 
 
-def create_collection_if_missing(algorithm: str | None = None) -> Collection:
+def create_collection_if_missing(
+    algorithm: str | None = None,
+    channel: str = "raw.semantic",
+) -> Collection:
     """Create the configured Milvus collection/index if it does not exist."""
-    config = index_config(algorithm)
+    config = index_config(algorithm, channel)
     collection_name = config["collection"]
     if utility.has_collection(collection_name):
         logger.info("Milvus collection already exists: %s", collection_name)
@@ -137,8 +157,11 @@ def create_collection_if_missing(algorithm: str | None = None) -> Collection:
     return col
 
 
-def drop_collection_if_exists(algorithm: str | None = None) -> bool:
-    collection_name = collection_name_for_algorithm(algorithm)
+def drop_collection_if_exists(
+    algorithm: str | None = None,
+    channel: str = "raw.semantic",
+) -> bool:
+    collection_name = collection_name_for_algorithm(algorithm, channel)
     if not utility.has_collection(collection_name):
         return False
     utility.drop_collection(collection_name)

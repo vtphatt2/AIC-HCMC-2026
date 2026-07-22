@@ -10,15 +10,16 @@ schema and the `/api/search` request/response contract, see
 
 ## 1. Dataset layout
 
-Extract `AIC2026_sample` at the repo root (or beside it — scripts auto-detect
-both):
+The scripts auto-detect the repo's `data/` directory (and still accept the old
+`AIC2026_sample/` layout):
 
 ```text
 AIC-HCMC-2026/
-  AIC2026_sample/
-    keyframes/keyframes/L01_V001/...        # frame images
-    metadata/metadata/L01_V001.json         # fps, timestamps, youtube_id
-    PECore-features/PECore-features/L01_V001/...  # precomputed .npy embeddings
+  data/
+    keyframes/L01_V001/...                         # frame images
+    metadata/L01_V001.json                         # fps, youtube_id
+    PECore-features/raw_keyframe_embeddings/L01_V001/...
+    PECore-features/subtitled_keyframe_embeddings/L01_V001/...
 ```
 
 Flat layout (`keyframes/`, `metadata/`, `PECore-features/` containing video
@@ -60,6 +61,7 @@ python scripts/ingest_embeddings_to_milvus.py
 |---|---|---|
 | `--sample-root` | auto-detect | Path to `AIC2026_sample` |
 | `--features-subdir` | `PECore-features` | Embedding subfolder (e.g. `embeddings`) |
+| `--channel` | `raw.semantic` | `raw.semantic` or `subtitled.semantic` |
 | `--batch-size` | 256 | Vectors per Milvus insert batch |
 | `--vector-index` | `hnsw` | `hnsw`, `flat`, `scann`, or `all` (build all three for runtime switching) |
 | `--recreate-milvus` | false | Drop collection before inserting |
@@ -70,7 +72,9 @@ python scripts/ingest_embeddings_to_milvus.py
 ```bash
 # Full re-ingest: recreate + all three indexes + copy keyframes to static/
 python scripts/ingest_embeddings_to_milvus.py \
-  --recreate-milvus --copy-keyframes --vector-index all
+  --channel raw.semantic --recreate-milvus --copy-keyframes --vector-index all
+python scripts/ingest_embeddings_to_milvus.py \
+  --channel subtitled.semantic --recreate-milvus --vector-index all
 ```
 
 Safe to rerun after correcting metadata — it upserts rather than duplicating.

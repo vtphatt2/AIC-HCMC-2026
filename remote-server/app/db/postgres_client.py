@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS transcript_chunks_metadata (
 CREATE INDEX IF NOT EXISTS idx_chunks_video    ON transcript_chunks_metadata(video_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_topic    ON transcript_chunks_metadata(topic);
 CREATE INDEX IF NOT EXISTS idx_chunks_interval ON transcript_chunks_metadata(video_id, start_time_ms, end_time_ms);
+CREATE INDEX IF NOT EXISTS idx_chunks_fts      ON transcript_chunks_metadata
+USING GIN(to_tsvector('simple', raw_text));
 """
 
 
@@ -187,6 +189,31 @@ async def fetch_transcript_chunks_by_ids(chunk_ids: list[int]) -> list[dict]:
         chunk_ids,
     )
     return [dict(r) for r in rows]
+
+
+async def search_transcript_chunks_text(
+    query: str,
+    limit: int = 100,
+    video_genre: str = "All",
+) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT c.chunk_id, c.video_id, c.topic, c.start_time_ms, c.end_time_ms,
+               c.raw_text AS text,
+               ts_rank(to_tsvector('simple', c.raw_text), plainto_tsquery('simple', $1)) AS score
+        FROM transcript_chunks_metadata c
+        LEFT JOIN videos v ON v.video_id = c.video_id
+        WHERE to_tsvector('simple', c.raw_text) @@ plainto_tsquery('simple', $1)
+          AND ($3 = 'All' OR $3 = '' OR v.genre = $3)
+        ORDER BY score DESC
+        LIMIT $2
+        """,
+        query,
+        limit,
+        video_genre,
+    )
+    return [dict(row) for row in rows]
 
 
 async def clear_transcript_chunks_for_video(video_id: str) -> int:

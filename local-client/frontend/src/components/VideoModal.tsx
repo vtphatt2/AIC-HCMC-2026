@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, TranscriptSegment } from "@/types";
 import { apiUrl, fetchTranscript } from "@/lib/api";
 
@@ -36,12 +36,31 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
 
   // Live playback position — updated by the polling interval below
   const [currentTimeSec, setCurrentTimeSec] = useState(startSeconds);
-  // True once playback has actually started (by Enter, see below) — not
+  // True once playback has actually started (by click or keyboard) — not
   // once the player is merely ready. Until then the frame image stays the
   // visible layer: opening the modal shows the frame, paused, on purpose.
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const wantsPlayRef = useRef(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
+
+  const togglePlayback = useCallback(() => {
+    const player = playerRef.current;
+    if (!player || typeof player.playVideo !== "function") {
+      wantsPlayRef.current = true;
+      return;
+    }
+    const YT = window.YT;
+    const state = typeof player.getPlayerState === "function" ? player.getPlayerState() : -1;
+    const neverStarted = !YT || state === YT.PlayerState.UNSTARTED || state === YT.PlayerState.CUED;
+    if (neverStarted) {
+      if (typeof player.seekTo === "function") player.seekTo(startSeconds, true);
+      player.playVideo();
+    } else if (state === YT.PlayerState.PLAYING) {
+      player.pauseVideo();
+    } else {
+      player.playVideo();
+    }
+  }, [startSeconds]);
 
   // Transcript panel state — fetched once per video, no search involved
   // (see app/services/transcript_index.py): just "what's being said now."
@@ -71,31 +90,16 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
         return;
       }
 
-      const player = playerRef.current;
-      const ready = player && typeof player.playVideo === "function";
-
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        if (!ready) {
-          wantsPlayRef.current = true; // player not ready yet — play as soon as it is
-          return;
-        }
-        const YT = window.YT;
-        const state = typeof player.getPlayerState === "function" ? player.getPlayerState() : -1;
-        const neverStarted = !YT || state === YT.PlayerState.UNSTARTED || state === YT.PlayerState.CUED;
-        if (neverStarted) {
-          if (typeof player.seekTo === "function") player.seekTo(startSeconds, true);
-          player.playVideo();
-        } else if (state === YT.PlayerState.PLAYING) {
-          player.pauseVideo();
-        } else {
-          player.playVideo();
-        }
+        togglePlayback();
         return;
       }
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
+        const player = playerRef.current;
+        const ready = player && typeof player.playVideo === "function";
         if (!ready || typeof player.seekTo !== "function") return;
         const now = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : startSeconds;
         const delta = e.key === "ArrowLeft" ? -SEEK_STEP_SECONDS : SEEK_STEP_SECONDS;
@@ -104,7 +108,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose, startSeconds]);
+  }, [onClose, startSeconds, togglePlayback]);
 
   // Fetch the full transcript once per video (not per frame) — only when
   // the panel is actually shown, and only once (result.video_id is stable
@@ -152,7 +156,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
         videoId: youtubeId,
         playerVars: {
           // No autoplay — opens paused on the frame image on purpose; only
-          // Enter (or the state-change fallback below) starts playback.
+          // The Play button or keyboard starts playback.
           // No `start` either — it only accepts whole seconds (rounds off
           // the exact frame); the real position comes from seekTo() below,
           // which takes fractional seconds.
@@ -283,8 +287,19 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
                   />
                 )}
                 {youtubeId && (
+                  <button
+                    type="button"
+                    onClick={togglePlayback}
+                    aria-label="Play video from selected frame"
+                    title="Play video"
+                    className="absolute inset-0 z-20 m-auto h-16 w-16 rounded-full border-2 border-white/80 bg-black/65 text-3xl text-white transition hover:scale-105 hover:bg-orange-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-orange-400"
+                  >
+                    <span aria-hidden="true" className="ml-1">▶</span>
+                  </button>
+                )}
+                {youtubeId && (
                   <div className="font-retro absolute bottom-2 right-2 bg-stone-900/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">
-                    ▸ Enter play · ←/→ seek · Esc close
+                    ▸ Click/Enter play · ←/→ seek · Esc close
                   </div>
                 )}
               </div>

@@ -132,7 +132,7 @@ export default function HelpModal({ onClose }: Props) {
           </Section>
 
           <Section title="Video player">
-            <Row k="Enter / Space">Play / pause (first press starts at the exact frame).</Row>
+            <Row k="Click Play / Enter / Space">Play / pause (first action starts at the exact frame).</Row>
             <Row k="← / →">Seek backward / forward 5 seconds.</Row>
             <Row k="Esc">Close the player.</Row>
             <Row k="Transcript">

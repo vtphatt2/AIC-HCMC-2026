@@ -20,6 +20,12 @@ DEFAULT_VECTOR_SEARCH_ALGORITHM = {
 VALID_VECTOR_SEARCH_ALGORITHMS = {"hnsw", "flat", "cagra", "scann"}
 TRANSCRIPT_CHUNK_SEARCH_ENABLED = os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}
 logger = logging.getLogger(__name__)
+CHANNELS = {
+    "raw.semantic",
+    "subtitled.semantic",
+    "transcript.lexical",
+    "transcript.semantic",
+}
 
 
 class DataProvider:
@@ -95,23 +101,146 @@ class DataProvider:
                 self._cagra = CagraClient()
         return self._cagra
 
-    def _get_collection(self, algorithm: str):
+    def _get_collection(self, algorithm: str, channel: str = "raw.semantic"):
         algorithm = milvus_client.normalize_algorithm(algorithm)
-        if algorithm not in self._collections:
-            collection_name = milvus_client.collection_name_for_algorithm(algorithm)
-            if not milvus_client.has_collection_for_algorithm(algorithm):
+        cache_key = (channel, algorithm)
+        if cache_key not in self._collections:
+            collection_name = milvus_client.collection_name_for_algorithm(algorithm, channel)
+            if not milvus_client.has_collection_for_algorithm(algorithm, channel):
                 raise ValueError(
-                    f"{algorithm.upper()} collection '{collection_name}' is not available. "
-                    "Build it with scripts/ingest_embeddings_to_milvus.py --vector-index all."
+                    f"{channel} collection '{collection_name}' is not available. "
+                    f"Build it with --channel {channel} --vector-index {algorithm}."
                 )
-            self._collections[algorithm] = milvus_client.get_collection_for_name(collection_name)
-        return self._collections[algorithm]
+            self._collections[cache_key] = milvus_client.get_collection_for_name(collection_name)
+        return self._collections[cache_key]
 
     def _metadata_collection(self):
         algorithm = DEFAULT_VECTOR_SEARCH_ALGORITHM
         if algorithm == "cagra":
             algorithm = "hnsw"
         return self._get_collection(algorithm)
+
+    async def retrieve(
+        self,
+        channel: str,
+        query: str,
+        *,
+        top_k: int = 100,
+        video_genre: str = "All",
+        vector_search_algorithm: str | None = None,
+    ) -> list[dict]:
+        if channel not in CHANNELS:
+            raise ValueError(f"Unknown channel '{channel}'. Available: {sorted(CHANNELS)}")
+        query = str(query).strip()
+        if not query:
+            return []
+        top_k = min(max(int(top_k), 1), 1000)
+
+        if channel in {"raw.semantic", "subtitled.semantic"}:
+            vector = await self._encode_text(query)
+            algorithm = (
+                str(vector_search_algorithm).strip().lower()
+                if vector_search_algorithm
+                else DEFAULT_VECTOR_SEARCH_ALGORITHM
+            )
+            if algorithm != "cagra":
+                algorithm = milvus_client.normalize_algorithm(algorithm)
+            genre_expr = await self._genre_expr(video_genre)
+            if algorithm == "cagra":
+                if channel != "raw.semantic":
+                    raise ValueError("CAGRA is only indexed for raw.semantic")
+                hits = self._get_cagra().search(vector, top_k=top_k)
+            else:
+                hits = milvus_client.vector_search(
+                    self._get_collection(algorithm, channel),
+                    vector.tolist(),
+                    top_k=top_k,
+                    algorithm=algorithm,
+                    expr=genre_expr,
+                )
+            await self._hydrate_frames(hits)
+            return [
+                {**hit, "channel": channel, "item_id": hit["frame_id"], "rank": rank}
+                for rank, hit in enumerate(hits, start=1)
+            ]
+
+        if channel == "transcript.lexical":
+            hits = await postgres_client.search_transcript_chunks_text(query, top_k, video_genre)
+            return [
+                {**hit, "channel": channel, "rank": rank}
+                for rank, hit in enumerate(hits, start=1)
+            ]
+
+        if self._transcript_search is None:
+            raise RuntimeError("transcript.semantic is not configured")
+        hits = await self._transcript_search.search_chunks(query, top_k=top_k)
+        if video_genre and video_genre != "All":
+            allowed = set(await postgres_client.fetch_video_ids_by_genre(video_genre))
+            hits = [hit for hit in hits if hit["video_id"] in allowed]
+        return hits
+
+    async def keyframes(
+        self,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        limit: int = 20,
+    ) -> list[dict]:
+        if int(start_ms) > int(end_ms):
+            raise ValueError("start_ms must be <= end_ms")
+        hits = milvus_client.query_frames_in_time_range(
+            self._metadata_collection(),
+            video_id,
+            int(start_ms),
+            int(end_ms),
+            limit=min(max(int(limit), 1), 1000),
+        )
+        await self._hydrate_frames(hits)
+        return hits
+
+    def results(self, hits: list[dict]) -> list[dict]:
+        output = []
+        seen = set()
+        for hit in hits:
+            frame_id = hit.get("frame_id")
+            if not frame_id:
+                raise ValueError("Final result hit must contain frame_id; call keyframes() for transcript chunks")
+            if frame_id in seen:
+                continue
+            seen.add(frame_id)
+            confidence = float(hit.get("confidence", hit.get("score", 0.0)))
+            row = {
+                **hit,
+                "video_id": str(hit.get("video_id", "")),
+                "youtube_id": str(hit.get("youtube_id", "")),
+                "frame_id": str(frame_id),
+                "frame_number": int(hit.get("frame_number", 0)),
+                "timestamp_ms": int(hit.get("timestamp_ms", 0)),
+                "confidence": max(0.0, min(1.0, confidence)),
+                "frame_image_url": str(hit.get("frame_image_url", hit.get("image_url", ""))),
+                "fps": float(hit.get("fps", 25.0)),
+            }
+            output.append(_strip_private(row))
+        return output
+
+    async def _genre_expr(self, video_genre: str) -> str | None:
+        if not video_genre or video_genre == "All":
+            return None
+        video_ids = await postgres_client.fetch_video_ids_by_genre(video_genre)
+        if not video_ids:
+            return 'video_id == "__none__"'
+        quoted = ", ".join(f'"{video_id}"' for video_id in video_ids)
+        return f"video_id in [{quoted}]"
+
+    @staticmethod
+    async def _hydrate_frames(hits: list[dict]) -> None:
+        rows = await postgres_client.fetch_video_metadata(list({hit["video_id"] for hit in hits}))
+        videos = {row["video_id"]: row for row in rows}
+        for hit in hits:
+            video = videos.get(hit["video_id"], {})
+            hit["youtube_id"] = str(video.get("youtube_id", ""))
+            hit["fps"] = float(video.get("fps", 25.0))
 
     async def get_raw_data(self, query_groups: list[dict], limit: int = 1000, video_genre: str = "All") -> dict:
         """
@@ -312,3 +441,11 @@ def _dedupe_frames(rows: list[dict]) -> list[dict]:
         seen.add(identity)
         deduped.append(row)
     return deduped
+
+
+def _strip_private(value):
+    if isinstance(value, dict):
+        return {key: _strip_private(item) for key, item in value.items() if not key.startswith("_")}
+    if isinstance(value, list):
+        return [_strip_private(item) for item in value]
+    return value

@@ -1,101 +1,109 @@
 from abc import ABC, abstractmethod
 import asyncio
 
-# Hard limits applied to every strategy — cannot be overridden per-strategy.
-FETCH_CAP = 1000          # Max records pulled from the data provider per query
-MULTI_STEP_FETCH_MIN = 300
-EXECUTION_TIMEOUT_SEC = 2.0  # Max seconds allowed for fusion_and_temporal()
+
+FETCH_CAP = 1000
+EXECUTION_TIMEOUT_SEC = 30.0
+
+
+class SearchContext:
+    """Request-scoped API exposed to strategies."""
+
+    def __init__(
+        self,
+        query_groups: list[dict],
+        top_k: int,
+        video_genre: str,
+        data_provider,
+        parser=None,
+        vector_search_algorithm: str | None = None,
+    ):
+        self.query_groups = query_groups
+        self.top_k = top_k
+        self.video_genre = video_genre
+        self._data_provider = data_provider
+        self._parser = parser
+        self._vector_search_algorithm = vector_search_algorithm
+
+    async def retrieve(self, channel: str, query: str, *, top_k: int | None = None):
+        kwargs = {
+            "top_k": self.top_k if top_k is None else top_k,
+            "video_genre": self.video_genre,
+        }
+        if self._vector_search_algorithm:
+            kwargs["vector_search_algorithm"] = self._vector_search_algorithm
+        return await self._data_provider.retrieve(channel, query, **kwargs)
+
+    async def parse_json(self, *, system_prompt: str, user_input: str, response_model):
+        if self._parser is None:
+            raise RuntimeError("Query parser is not configured")
+        return await self._parser.parse_json(
+            system_prompt=system_prompt,
+            user_input=user_input,
+            response_model=response_model,
+        )
+
+    async def keyframes(
+        self,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        limit: int = 20,
+    ):
+        return await self._data_provider.keyframes(
+            video_id,
+            start_ms,
+            end_ms,
+            limit=limit,
+        )
+
+    def results(self, hits: list[dict]) -> list[dict]:
+        return self._data_provider.results(hits)
 
 
 class BaseStrategy(ABC):
-    """
-    Base class for all retrieval strategies.
+    name = ""
+    description = ""
+    author = ""
+    version = "2.0"
 
-    To create a new strategy:
-      1. Create a new .py file inside strategies/ (e.g. yourname_idea_v1.py)
-      2. Subclass BaseStrategy
-      3. Fill in name, description, author, and version
-      4. Implement fusion_and_temporal()
-      5. Restart the backend — it will appear in the strategy dropdown automatically
-
-    Guardrails (applied automatically by search()):
-      - Fetch cap: at most FETCH_CAP records are pulled from the data provider
-      - Execution timeout: fusion_and_temporal() is cancelled after EXECUTION_TIMEOUT_SEC seconds
-        Note: the timeout cancels the HTTP response; a background thread may finish later.
-
-    This file is kept identical to remote-server/app/strategies/base_strategy.py
-    so strategies can be copied to the server without modification.
-    """
-
-    # --- Required metadata — subclasses MUST override all four ---
-    name: str = ""
-    description: str = ""
-    author: str = ""
-    version: str = "1.0"
-
-    def __init__(self, data_provider):
+    def __init__(self, data_provider, parser=None):
         self.data_provider = data_provider
-        missing = [f for f in ("name", "description", "author") if not getattr(self, f)]
+        self.parser = parser
+        missing = [field for field in ("name", "description", "author") if not getattr(self, field)]
         if missing:
             raise ValueError(
                 f"{self.__class__.__name__} must define class attributes: {', '.join(missing)}"
             )
 
-    async def search(self, query_groups: list[dict], limit: int = 100, video_genre: str = "All") -> list[dict]:
-        """Full pipeline: pre-process → fetch → execute (with timeout) → post-filter."""
-        processed = self.pre_process(query_groups)
-        fetch_limit = min(max(int(limit), 1), FETCH_CAP)
-        if len(processed) > 1:
-            fetch_limit = max(fetch_limit, MULTI_STEP_FETCH_MIN)
-        raw_data = await self.data_provider.get_raw_data(
-            processed, limit=fetch_limit, video_genre=video_genre
+    async def search(
+        self,
+        query_groups: list[dict],
+        limit: int = 100,
+        video_genre: str = "All",
+        vector_search_algorithm: str | None = None,
+    ) -> list[dict]:
+        top_k = min(max(int(limit), 1), FETCH_CAP)
+        context = SearchContext(
+            query_groups=query_groups,
+            top_k=top_k,
+            video_genre=video_genre,
+            data_provider=self.data_provider,
+            parser=self.parser,
+            vector_search_algorithm=vector_search_algorithm,
         )
-
         try:
-            results = await asyncio.wait_for(
-                asyncio.to_thread(self.fusion_and_temporal, raw_data, processed),
-                timeout=EXECUTION_TIMEOUT_SEC,
-            )
-        except asyncio.TimeoutError:
+            results = await asyncio.wait_for(self.run(context), timeout=EXECUTION_TIMEOUT_SEC)
+        except asyncio.TimeoutError as exc:
             raise TimeoutError(
-                f"[{self.name}] fusion_and_temporal() exceeded {EXECUTION_TIMEOUT_SEC}s. "
-                "Check for infinite loops or very expensive operations."
-            )
-
-        return self.post_filter(results)
-
-    def pre_process(self, query_groups: list[dict]) -> list[dict]:
-        """Optional: transform/validate query groups before data is fetched. Default is pass-through."""
-        return query_groups
+                f"[{self.name}] run() exceeded {EXECUTION_TIMEOUT_SEC}s"
+            ) from exc
+        if not isinstance(results, list):
+            raise TypeError(f"[{self.name}] run() must return a list")
+        return results[:top_k]
 
     @abstractmethod
-    def fusion_and_temporal(self, raw_data: dict, query_groups: list[dict]) -> list[dict]:
-        """
-        Core algorithm. Merge multi-modal data and apply temporal logic.
-        Runs synchronously in a worker thread (safe to use plain Python, no async).
-
-        Args:
-            raw_data: dict with keys:
-                "frames"      — list of frame dicts (frame_id, video_id, frame_number, timestamp_ms, image_url)
-                "ocr"         — list of OCR dicts   (frame_id, video_id, frame_number, timestamp_ms, ocr_text)
-                "transcripts" — list of transcript dicts (video_id, start_time_ms, end_time_ms, text)
-                "videos"      — dict keyed by video_id  (fps, duration_ms, title, youtube_id, ...)
-            query_groups: list of query group dicts after pre_process()
-                Each group has: semantic_query (str), text_query (str), temporal_offset_ms (int)
-
-        Returns:
-            list of result dicts, each with:
-                video_id        (str)
-                youtube_id      (str, YouTube video ID for playback)
-                frame_id        (str)
-                frame_number    (int)
-                timestamp_ms    (int)
-                confidence      (float, 0.0–1.0)
-                frame_image_url (str)
-                fps             (float)
-        """
+    async def run(self, context: SearchContext) -> list[dict]:
+        """Execute this strategy using only the request-scoped context API."""
         ...
-
-    def post_filter(self, results: list[dict]) -> list[dict]:
-        """Optional: re-rank or remove results after fusion. Default is pass-through."""
-        return results

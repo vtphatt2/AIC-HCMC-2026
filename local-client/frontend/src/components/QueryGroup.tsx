@@ -65,7 +65,7 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove, 
         <div className="flex-1 relative">
           <input
             type="text"
-            placeholder="Semantic search (visual scene description)…"
+            placeholder="Describe what you want to find…"
             value={group.semanticQuery}
             onChange={(e) => update({
               semanticQuery: e.target.value,
@@ -99,15 +99,6 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove, 
         </div>
       )}
 
-      {/* OCR / Transcript text search box */}
-      <input
-        type="text"
-        placeholder="Text search (OCR / transcript keywords)…"
-        value={group.textQuery}
-        onChange={(e) => update({ textQuery: e.target.value })}
-        onKeyDown={handleKeyDown}
-        className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-teal-600"
-      />
     </div>
   );
 }
