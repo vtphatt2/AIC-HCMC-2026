@@ -1,0 +1,1 @@
+Đây là phần giới thiệu phần thưởng cho một cuộc thi được thiết kế với nền xanh, chữ trắng phủ lên video giới thiệu cuộc thi. Tổng có 18 giải thưởng chính cho cuộc thi. Hỏi tổng giá trị của các giải thưởng chính là bao nhiêu?
