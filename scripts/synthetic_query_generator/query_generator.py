@@ -1,9 +1,48 @@
 import json
+import re
 import time
 import logging
 from . import config
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json(content: str) -> dict | None:
+    """Extract JSON from content that may contain thinking prefix text."""
+    if not content:
+        raise ValueError("Empty response from model")
+
+    # Try direct parse first
+    stripped = content.strip()
+    if stripped.startswith("{"):
+        return json.loads(stripped)
+
+    # Look for JSON in <json>...</json> or ```json...``` blocks
+    for pattern in [r"<json>\s*([\s\S]*?)\s*</json>", r"```json\s*([\s\S]*?)\s*```"]:
+        m = re.search(pattern, content)
+        if m:
+            return json.loads(m.group(1))
+
+    # Fallback: find first { and try to parse from there
+    idx = content.find("{")
+    if idx >= 0:
+        return json.loads(content[idx:])
+
+    raise ValueError(f"No JSON found in response. First 200 chars: {content[:200]}")
+
+
+def _try_create(client, model: str, messages: list) -> dict | None:
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.7,
+            max_tokens=3000,
+        )
+        content = response.choices[0].message.content
+        return _extract_json(content)
+    except Exception as e:
+        raise e
 
 
 def _load_fewshot_examples() -> str:
@@ -25,32 +64,31 @@ def _load_fewshot_examples() -> str:
     return "\n\n---\n\n".join(f"Ví dụ {i+1}:\n{e}" for i, e in enumerate(selected))
 
 
-SYSTEM_PROMPT = """Bạn là một chuyên gia dữ liệu đa phương thức (Multi-modal Data Specialist) cho một cuộc thi truy xuất video (Video Retrieval Challenge).
+SYSTEM_PROMPT = """Bạn là chuyên gia sinh query tìm kiếm video bằng tiếng Việt.
 
-NHIỆM VỤ: Dựa vào ảnh keyframe và transcript của một scene video, bạn tạo ra các câu query tìm kiếm mà người dùng có thể nhập vào hệ thống.
+NHIỆM VỤ: Dựa vào ảnh keyframe và transcript của một scene, tạo 3-4 câu query.
 
-YÊU CẦU:
-1. Viết query bằng tiếng Việt, tự nhiên như người dùng thật.
-2. Sinh từ 3-4 query đa dạng, mỗi query thuộc một loại:
-   - "visual": Mô tả hành động, màu sắc, đối tượng, bối cảnh hiển thị trong ảnh.
-   - "transcript": Tóm tắt/trích ý nội dung lời nói trong transcript (nếu có).
-   - "temporal": Mô tả chuỗi sự kiện diễn ra trong scene.
-   - "natural": Câu hỏi tự nhiên như người dùng chỉ nhớ thoáng qua.
-3. Query phải ngắn gọn (1-3 câu), cụ thể, dễ hiểu.
-4. Trả về JSON với cấu trúc chính xác như trong ví dụ.
+LUẬT:
+1. Query tiếng Việt, tự nhiên, ngắn gọn (1-2 câu).
+2. Mỗi query thuộc một loại:
+   - "visual": mô tả hành động, đối tượng, màu sắc, bối cảnh trong ảnh.
+   - "transcript": tóm tắt/trích ý lời nói (bỏ qua nếu transcript trống).
+   - "temporal": mô tả chuỗi sự kiện theo thời gian.
+   - "natural": câu hỏi tự nhiên như người dùng chỉ nhớ lờ mờ.
+3. Kết thúc câu trả lời bằng JSON trong cặp thẻ <json></json>.
+4. Viết <json> ở dòng riêng, KHÔNG có text nào khác sau </json>.
 
-Định dạng JSON bắt buộc:
+Định dạng bắt buộc:
+<json>
 {
   "generated_queries": [
-    {"type": "visual", "query": "..."},
+    {"type": "visual", "query": "mô tả..."},
     {"type": "transcript", "query": "..."},
     {"type": "temporal", "query": "..."},
     {"type": "natural", "query": "..."}
   ]
 }
-
-Nếu transcript trống thì bỏ qua loại "transcript".
-Chỉ trả về JSON, không thêm bất kỳ văn bản nào khác."""
+</json>"""
 
 
 def _build_user_message(context: dict, fewshot: str) -> str:
@@ -75,29 +113,55 @@ def generate_queries(context: dict, client) -> list[dict]:
 
     content = [{"type": "text", "text": _build_user_message(context, fewshot)}]
     for img_b64 in context.get("images_base64", []):
+        if len(img_b64) > config.MAX_IMAGE_SIZE_BYTES * 2:
+            logger.warning(
+                f"Base64 image {len(img_b64)} bytes exceeds limit, skipping. "
+                f"scene={context['scene_start_frame']}"
+            )
+            continue
         content.append({
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}
         })
 
-    for attempt in range(config.MAX_RETRIES):
-        try:
-            response = client.chat.completions.create(
-                model=config.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": content},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0.7,
-                max_tokens=1000,
-            )
-            result = json.loads(response.choices[0].message.content)
-            return result.get("generated_queries", [])
-        except Exception as e:
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < config.MAX_RETRIES - 1:
-                time.sleep(config.BACKOFF_SEC * (attempt + 1))
+    if len(content) == 1:
+        logger.warning(f"No images for scene {context['scene_start_frame']}, text-only prompt")
+        content[0]["text"] += "\n\n(Lưu ý: không có ảnh keyframe nào khả dụng, hãy dựa vào transcript và thời gian để sinh query.)"
 
-    logger.error(f"All {config.MAX_RETRIES} attempts failed for {context['video_id']} scene {context['scene_start_frame']}")
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": content},
+    ]
+
+    models_to_try = [config.OPENAI_MODEL] + [
+        m for m in config.MODEL_FALLBACKS if m != config.OPENAI_MODEL
+    ]
+
+    for model in models_to_try:
+        for attempt in range(config.MAX_RETRIES):
+            try:
+                result = _try_create(client, model, messages)
+                if model != config.OPENAI_MODEL:
+                    logger.info(f"Model fallback: {config.OPENAI_MODEL} → {model} (worked)")
+                return result.get("generated_queries", [])
+            except Exception as e:
+                err = str(e)
+                if "API key" in err or "INVALID_ARGUMENT" in err or "auth" in err.lower():
+                    logger.error(f"Invalid API key — check GEMINI_API_KEY in .env. Got: {err[:120]}")
+                    return []
+                if "429" in err or "quota" in err.lower():
+                    wait = config.BACKOFF_SEC * (2 ** attempt)
+                    logger.warning(f"Rate limited (429). Waiting {wait:.0f}s...")
+                    time.sleep(wait)
+                    continue
+                if "404" in err or "not found" in err.lower():
+                    logger.warning(f"Model '{model}' not found (404), trying next...")
+                    break
+                logger.warning(f"Attempt {attempt + 1} with {model} failed: {err[:120]}")
+                if attempt < config.MAX_RETRIES - 1:
+                    time.sleep(config.BACKOFF_SEC * (attempt + 1))
+        else:
+            continue
+
+    logger.error(f"All models exhausted for {context['video_id']} scene {context['scene_start_frame']}")
     return []

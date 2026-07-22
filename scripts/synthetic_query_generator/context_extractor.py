@@ -1,10 +1,13 @@
 import json
 import base64
+import logging
 from io import BytesIO
 from pathlib import Path
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from . import config
+
+logger = logging.getLogger(__name__)
 
 
 def _load_scenes(video_id: str) -> list[tuple[int, int]]:
@@ -71,11 +74,26 @@ def _extract_transcript_for_scene(
 
 
 def _image_to_base64(image_path: Path) -> str:
-    """Load image and encode as base64 data URI (JPEG)."""
-    img = Image.open(image_path)
-    buf = BytesIO()
-    img.convert("RGB").save(buf, format="JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode()
+    """Load image, compress if over limit, encode as base64. Returns '' on failure."""
+    try:
+        if not image_path.exists():
+            logger.warning(f"Image not found: {image_path}")
+            return ""
+        img = Image.open(image_path)
+        buf = BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=config.IMAGE_QUALITY)
+        size = buf.tell()
+        if size > config.MAX_IMAGE_SIZE_BYTES:
+            logger.warning(
+                f"Image too large ({size} bytes), compressing further: {image_path.name}"
+            )
+            buf = BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=50)
+        encoded = base64.b64encode(buf.getvalue()).decode()
+        return encoded
+    except (UnidentifiedImageError, OSError) as e:
+        logger.warning(f"Corrupt/unreadable image skipped: {image_path} — {e}")
+        return ""
 
 
 def extract_scene_contexts(video_id: str) -> list[dict]:
@@ -105,8 +123,13 @@ def extract_scene_contexts(video_id: str) -> list[dict]:
         images_b64 = []
         for kf in reps:
             img_path = image_dir / f"{kf:06d}.jpg"
-            if img_path.exists():
-                images_b64.append(_image_to_base64(img_path))
+            b64 = _image_to_base64(img_path)
+            if b64:
+                images_b64.append(b64)
+
+        if not images_b64:
+            logger.warning(f"Scene {scene_start}-{scene_end}: no valid images, skipping")
+            continue
 
         contexts.append({
             "video_id": video_id,

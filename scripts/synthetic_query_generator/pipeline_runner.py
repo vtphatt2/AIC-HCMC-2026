@@ -32,10 +32,15 @@ def run(video_ids: list[str] = None, dry_run: bool = False, limit_scenes: int = 
         client = None
     else:
         if not config.OPENAI_API_KEY:
-            logger.error("OPENAI_API_KEY not set. Export it or set in environment.")
+            logger.error(
+                "OPENAI_API_KEY not set.\n"
+                "  Get a FREE key at https://aistudio.google.com/\n"
+                "  Then copy .env.example → .env and fill in your key:\n"
+                "    cp .env.example .env"
+            )
             sys.exit(1)
         from openai import OpenAI
-        client = OpenAI(api_key=config.OPENAI_API_KEY)
+        client = OpenAI(api_key=config.OPENAI_API_KEY, base_url=config.OPENAI_BASE_URL)
     all_results = {}
 
     for video_id in video_ids:
