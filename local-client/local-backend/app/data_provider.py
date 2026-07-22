@@ -1,6 +1,8 @@
+import asyncio
 import os
 import json
 import logging
+import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -17,13 +19,27 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SAMPLE_ROOT = next(
     (
         path
-        for path in (REPO_ROOT / "AIC2026_sample", REPO_ROOT.parent / "AIC2026_sample")
+        for path in (
+            REPO_ROOT / "data",
+            REPO_ROOT / "AIC2026_sample",
+            REPO_ROOT.parent / "AIC2026_sample",
+        )
         if path.is_dir()
     ),
     REPO_ROOT / "AIC2026_sample",
 )
 SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", DEFAULT_SAMPLE_ROOT))
 logger = logging.getLogger(__name__)
+CHANNELS = {
+    "raw.semantic",
+    "subtitled.semantic",
+    "transcript.lexical",
+    "transcript.semantic",
+}
+VISUAL_FEATURE_DIRS = {
+    "raw.semantic": "raw_keyframe_embeddings",
+    "subtitled.semantic": "subtitled_keyframe_embeddings",
+}
 
 
 def sample_subdir(name: str) -> Path:
@@ -45,10 +61,12 @@ class DataProvider:
 
     def __init__(self):
         self.mode = ENV_MODE
-        self._feature_matrix = None
-        self._feature_frame_ids = []
+        self._feature_indexes = {}
+        self._feature_paths_by_channel = {}
         self._frames_by_id = {}
+        self._videos_by_id = {}
         self._text_encoder = None
+        self._transcript_chunks = None
 
         if self.mode == "LOCAL":
             if not REMOTE_SERVER_URL:
@@ -60,6 +78,8 @@ class DataProvider:
 
         elif self.mode == "MOCK":
             self._videos, self._frames, self._ocr, self._transcripts = self._load_mock()
+            self._frames_by_id = {frame["frame_id"]: frame for frame in self._frames}
+            self._videos_by_id = {video["video_id"]: video for video in self._videos}
             print(
                 f"DataProvider: MOCK mode — "
                 f"{len(self._videos)} videos, {len(self._frames)} frames loaded"
@@ -83,16 +103,130 @@ class DataProvider:
 
     # ── Public interface ───────────────────────────────────────────────────────
 
-    async def get_raw_data(self, query_groups: list[dict], limit: int = 1000, video_genre: str = "All") -> dict:
-        """
-        Returns a unified dict consumed by strategy.fusion_and_temporal():
-          frames, ocr, transcripts, transcript_chunks (lists), videos (dict keyed by video_id)
-        """
+    async def warmup_text_encoder(self, query: str = "warmup query", passes: int = 1) -> dict:
+        if self.mode == "LOCAL":
+            async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=120.0) as client:
+                response = await client.post(
+                    "/api/warmup_text_encoder",
+                    params={"passes": passes},
+                )
+                response.raise_for_status()
+                return response.json()
         if self.mode == "MOCK":
-            return self._local_raw_data(limit, video_genre)
-        if self.mode == "SAMPLE":
-            return self._sample_raw_data(query_groups, limit, video_genre)
-        return await self._fetch_from_remote(query_groups, limit, video_genre)
+            return {"status": "skipped", "reason": "MOCK mode has no text encoder"}
+        if self._text_encoder is None:
+            from app.services.text_encoder import PECoreTextEncoder
+
+            self._text_encoder = PECoreTextEncoder()
+        return await asyncio.to_thread(self._text_encoder.warmup, query, passes)
+
+    async def retrieve(
+        self,
+        channel: str,
+        query: str,
+        *,
+        top_k: int = 100,
+        video_genre: str = "All",
+        vector_search_algorithm: str | None = None,
+    ) -> list[dict]:
+        if channel not in CHANNELS:
+            raise ValueError(f"Unknown channel '{channel}'. Available: {sorted(CHANNELS)}")
+        query = str(query).strip()
+        if not query:
+            return []
+        top_k = min(max(int(top_k), 1), 1000)
+
+        if self.mode == "LOCAL":
+            payload = {
+                "channel": channel,
+                "query": query,
+                "top_k": top_k,
+                "video_genre": video_genre,
+            }
+            if vector_search_algorithm:
+                payload["vector_search_algorithm"] = vector_search_algorithm
+            async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=15.0) as client:
+                response = await client.post(
+                    "/api/retrieve",
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json().get("hits", [])
+
+        if channel in VISUAL_FEATURE_DIRS:
+            if self.mode == "MOCK":
+                hits = [dict(frame) for frame in self._frames[:top_k]]
+            else:
+                hits = self.linear_search_by_vector(
+                    self._encode_sample_text(query),
+                    top_k=top_k,
+                    channel=channel,
+                )
+            return self._rank_hits(channel, hits)
+        if channel == "transcript.lexical":
+            return self._search_local_transcripts(query, top_k)
+        raise RuntimeError(
+            "transcript.semantic is available through the remote SERVER; "
+            f"it is not indexed in {self.mode} mode"
+        )
+
+    async def keyframes(
+        self,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        limit: int = 20,
+    ) -> list[dict]:
+        if int(start_ms) > int(end_ms):
+            raise ValueError("start_ms must be <= end_ms")
+        limit = min(max(int(limit), 1), 1000)
+        if self.mode == "LOCAL":
+            async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=15.0) as client:
+                response = await client.post(
+                    "/api/keyframes",
+                    json={
+                        "video_id": video_id,
+                        "start_ms": int(start_ms),
+                        "end_ms": int(end_ms),
+                        "limit": limit,
+                    },
+                )
+                response.raise_for_status()
+                return response.json().get("hits", [])
+        return [
+            dict(frame)
+            for frame in self._frames
+            if frame.get("video_id") == video_id
+            and int(start_ms) <= int(frame.get("timestamp_ms", -1)) <= int(end_ms)
+        ][:limit]
+
+    def results(self, hits: list[dict]) -> list[dict]:
+        output = []
+        seen = set()
+        for hit in hits:
+            frame_id = hit.get("frame_id")
+            if not frame_id:
+                raise ValueError("Final result hit must contain frame_id; call keyframes() for transcript chunks")
+            if frame_id in seen:
+                continue
+            seen.add(frame_id)
+            frame = {**self._frames_by_id.get(frame_id, {}), **hit}
+            video = self._videos_by_id.get(frame.get("video_id"), {})
+            confidence = float(frame.get("confidence", frame.get("score", 0.0)))
+            row = {
+                **frame,
+                "video_id": frame.get("video_id", ""),
+                "youtube_id": frame.get("youtube_id", video.get("youtube_id", "")),
+                "frame_id": frame_id,
+                "frame_number": int(frame.get("frame_number", 0)),
+                "timestamp_ms": int(frame.get("timestamp_ms", 0)),
+                "confidence": max(0.0, min(1.0, confidence)),
+                "frame_image_url": frame.get("frame_image_url", frame.get("image_url", "")),
+                "fps": float(frame.get("fps", video.get("fps", 25.0))),
+            }
+            output.append(_strip_private(row))
+        return output
 
     async def search_transcript_chunks(self, query: str, limit: int = 100, topic_filter: str | None = None) -> list[dict]:
         """Search topic-based transcript chunks via remote server (vector search)."""
@@ -135,17 +269,6 @@ class DataProvider:
         transcripts = load("mock_transcripts.json")
         return videos_list, frames, ocr, transcripts
 
-    def _local_raw_data(self, limit: int, video_genre: str = "All") -> dict:
-        videos_by_id = {v["video_id"]: v for v in self._videos}
-        return {
-            "frames":             self._frames[:limit],
-            "ocr":                self._ocr[:limit],
-            "transcripts":        self._transcripts[:limit],
-            "transcript_chunks":  [],
-            "videos":             videos_by_id,
-            "video_genre":        video_genre,
-        }
-
     # ── SAMPLE ───────────────────────────────────────────────────────────────
 
     def _load_sample(self):
@@ -163,12 +286,23 @@ class DataProvider:
 
         videos = []
         frames = []
+        self._feature_paths_by_channel = {
+            channel: {
+                f"{video_dir.name}_{path.stem}": path
+                for video_dir in sorted((features_dir / dirname).glob("*"))
+                if video_dir.is_dir()
+                for path in video_dir.glob("*.npy")
+            }
+            for channel, dirname in VISUAL_FEATURE_DIRS.items()
+        }
 
         for metadata_path in sorted(metadata_dir.glob("*.json")):
             video_id = metadata_path.stem
             data = json.loads(metadata_path.read_text(encoding="utf-8"))
             fps = float(data.get("fps") or 25.0)
-            frame_paths = sorted((features_dir / video_id).glob("*.npy"))
+            frame_paths = sorted(
+                (features_dir / VISUAL_FEATURE_DIRS["raw.semantic"] / video_id).glob("*.npy")
+            )
             if not frame_paths:
                 frame_paths = sorted((keyframes_dir / video_id).glob("*.jpg"))
 
@@ -205,33 +339,6 @@ class DataProvider:
 
     # ── SAMPLE linear vector search ──────────────────────────────────────────
 
-    def _sample_raw_data(self, query_groups: list[dict], limit: int, video_genre: str = "All") -> dict:
-        frames = []
-        for group_index, group in enumerate(query_groups):
-            semantic_query = str(group.get("semantic_query", "")).strip()
-            if not semantic_query:
-                continue
-
-            query_vector = self._encode_sample_text(semantic_query)
-            hits = self.linear_search_by_vector(query_vector, top_k=limit)
-            for hit in hits:
-                hit["_query_group_index"] = group_index
-            frames.extend(hits)
-            logger.info("SAMPLE semantic query group=%s returned %s hits", group_index, len(hits))
-
-        if not frames:
-            frames = self._frames[:limit]
-
-        videos_by_id = {v["video_id"]: v for v in self._videos}
-        return {
-            "frames":             self._dedupe_sample_frames(frames),
-            "ocr":                self._ocr[:limit],
-            "transcripts":        self._transcripts[:limit],
-            "transcript_chunks":  [],
-            "videos":             videos_by_id,
-            "video_genre":        video_genre,
-        }
-
     def _encode_sample_text(self, text: str):
         if self._text_encoder is None:
             from app.services.text_encoder import PECoreTextEncoder
@@ -240,8 +347,7 @@ class DataProvider:
         return self._text_encoder.encode(text)
 
     def get_frame_and_video(self, frame_id: str) -> tuple[dict, dict] | None:
-        """Look up (frame, video) by frame_id in SAMPLE mode. Used by the
-        youtube_storyboard thumbnail workaround to resolve timestamp_ms/youtube_id."""
+        """Look up frame/video metadata used by SAMPLE-mode image routes."""
         if self.mode != "SAMPLE":
             return None
         frame = self._frames_by_id.get(frame_id)
@@ -252,59 +358,31 @@ class DataProvider:
             return None
         return frame, video
 
-    def resolve_sample_frame_id(self, query: str) -> str | None:
-        """Accept L01_V001_000022, L01_V001/000022, or L01_V001 000022."""
-        if self.mode != "SAMPLE":
-            return None
-
-        query = query.strip().replace("\\", "/")
-        if not query:
-            return None
-
-        candidates = [query]
-        if "/" in query:
-            video_id, frame = query.rsplit("/", 1)
-            candidates.append(f"{video_id}_{Path(frame).stem}")
-        parts = query.split()
-        if len(parts) == 2:
-            candidates.append(f"{parts[0]}_{Path(parts[1]).stem}")
-
-        for candidate in candidates:
-            if candidate in self._frames_by_id:
-                return candidate
-        return None
-
-    def linear_search_by_frame_id(self, frame_id: str, top_k: int = 100) -> list[dict]:
-        if self.mode != "SAMPLE":
-            raise RuntimeError("linear_search_by_frame_id is only available in ENV_MODE=SAMPLE")
-        self._ensure_feature_index()
-
-        if frame_id not in self._feature_frame_ids:
-            raise ValueError(f"Frame '{frame_id}' has no PECore feature vector")
-
-        query_idx = self._feature_frame_ids.index(frame_id)
-        query_vector = self._feature_matrix[query_idx]
-        return self.linear_search_by_vector(query_vector, top_k=top_k)
-
-    def linear_search_by_vector(self, query_vector, top_k: int = 100) -> list[dict]:
+    def linear_search_by_vector(
+        self,
+        query_vector,
+        top_k: int = 100,
+        channel: str = "raw.semantic",
+    ) -> list[dict]:
         if self.mode != "SAMPLE":
             raise RuntimeError("linear_search_by_vector is only available in ENV_MODE=SAMPLE")
-        self._ensure_feature_index()
+        self._ensure_feature_index(channel)
+        matrix, frame_ids = self._feature_indexes[channel]
 
         import numpy as np
 
         query_vector = np.asarray(query_vector, dtype="float32").reshape(-1)
-        if query_vector.shape[0] != self._feature_matrix.shape[1]:
+        if query_vector.shape[0] != matrix.shape[1]:
             raise ValueError(
                 f"Query vector has dim {query_vector.shape[0]}; "
-                f"expected {self._feature_matrix.shape[1]}"
+                f"expected {matrix.shape[1]}"
             )
         norm = np.linalg.norm(query_vector)
         if norm == 0:
             raise ValueError("Query vector has zero norm")
 
         query_vector = query_vector / norm
-        scores = self._feature_matrix @ query_vector
+        scores = matrix @ query_vector
         top_k = max(1, min(int(top_k), len(scores)))
         partition_k = min(top_k - 1, len(scores) - 1)
         top_indices = np.argpartition(-scores, partition_k)[:top_k]
@@ -312,14 +390,16 @@ class DataProvider:
 
         results = []
         for idx in top_indices:
-            hit_frame_id = self._feature_frame_ids[int(idx)]
+            hit_frame_id = frame_ids[int(idx)]
             frame = dict(self._frames_by_id[hit_frame_id])
             frame["score"] = float(scores[int(idx)])
             results.append(frame)
         return results
 
-    def _ensure_feature_index(self) -> None:
-        if self._feature_matrix is not None:
+    def _ensure_feature_index(self, channel: str = "raw.semantic") -> None:
+        if channel not in VISUAL_FEATURE_DIRS:
+            raise ValueError(f"'{channel}' is not a visual channel")
+        if channel in self._feature_indexes:
             return
 
         import numpy as np
@@ -327,8 +407,9 @@ class DataProvider:
 
         vectors = []
         frame_ids = []
-        for frame in tqdm(self._frames, desc="Building SAMPLE vector index", unit="frame"):
-            feature_path = frame.get("_feature_path")
+        paths = self._feature_paths_by_channel.get(channel, {})
+        for frame in tqdm(self._frames, desc=f"Building {channel} index", unit="frame"):
+            feature_path = paths.get(frame["frame_id"])
             if not feature_path:
                 continue
             vector = np.load(feature_path).astype("float32").reshape(-1)
@@ -341,24 +422,62 @@ class DataProvider:
         if not vectors:
             raise RuntimeError("No PECore .npy feature vectors found for SAMPLE mode")
 
-        self._feature_matrix = np.vstack(vectors)
-        self._feature_frame_ids = frame_ids
+        matrix = np.vstack(vectors)
+        self._feature_indexes[channel] = (matrix, frame_ids)
         print(
-            f"DataProvider: built linear PECore index — "
-            f"{self._feature_matrix.shape[0]} vectors x {self._feature_matrix.shape[1]} dims"
+            f"DataProvider: built {channel} index — "
+            f"{matrix.shape[0]} vectors x {matrix.shape[1]} dims"
         )
 
     @staticmethod
-    def _dedupe_sample_frames(frames: list[dict]) -> list[dict]:
-        seen = set()
-        deduped = []
-        for frame in frames:
-            identity = (frame.get("frame_id"), frame.get("_query_group_index"))
-            if identity in seen:
-                continue
-            seen.add(identity)
-            deduped.append(frame)
-        return deduped
+    def _rank_hits(channel: str, hits: list[dict]) -> list[dict]:
+        return [
+            {**hit, "channel": channel, "item_id": hit["frame_id"], "rank": rank}
+            for rank, hit in enumerate(hits, start=1)
+        ]
+
+    def _search_local_transcripts(self, query: str, top_k: int) -> list[dict]:
+        if self.mode == "MOCK":
+            chunks = [
+                {
+                    "chunk_id": row.get("id", f"mock:{index}"),
+                    "video_id": row["video_id"],
+                    "start_time_ms": row["start_time_ms"],
+                    "end_time_ms": row["end_time_ms"],
+                    "text": row["text"],
+                }
+                for index, row in enumerate(self._transcripts)
+            ]
+        else:
+            if self._transcript_chunks is None:
+                from app.services.transcript_index import Transcript
+
+                chunks = []
+                for path in sorted(sample_subdir("transcripts").glob("*_Transcript.txt")):
+                    transcript = Transcript.from_txt(path)
+                    for index, segment in enumerate(transcript.segments):
+                        chunks.append({
+                            "chunk_id": f"{transcript.video_id}:{index}",
+                            "video_id": transcript.video_id,
+                            "start_time_ms": segment.start_ms,
+                            "end_time_ms": segment.end_ms,
+                            "text": segment.text,
+                        })
+                self._transcript_chunks = chunks
+            chunks = self._transcript_chunks
+
+        tokens = set(re.findall(r"\w+", query.casefold()))
+        scored = []
+        for chunk in chunks:
+            text_tokens = set(re.findall(r"\w+", chunk["text"].casefold()))
+            score = len(tokens & text_tokens) / max(1, len(tokens))
+            if score:
+                scored.append(({**chunk, "score": score}, score))
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return [
+            {**hit, "channel": "transcript.lexical", "rank": rank}
+            for rank, (hit, _) in enumerate(scored[:top_k], start=1)
+        ]
 
     @staticmethod
     def _youtube_id_from_link(link: str, fallback: str) -> str:
@@ -367,13 +486,9 @@ class DataProvider:
             return parsed.path.strip("/") or fallback
         return parse_qs(parsed.query).get("v", [fallback])[0] or fallback
 
-    # ── LOCAL (proxy to remote server) ────────────────────────────────────────
-
-    async def _fetch_from_remote(self, query_groups: list[dict], limit: int, video_genre: str = "All") -> dict:
-        async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=15.0) as client:
-            response = await client.post(
-                "/api/raw-data",
-                json={"query_groups": query_groups, "limit": limit, "video_genre": video_genre},
-            )
-            response.raise_for_status()
-            return response.json()
+def _strip_private(value):
+    if isinstance(value, dict):
+        return {key: _strip_private(item) for key, item in value.items() if not key.startswith("_")}
+    if isinstance(value, list):
+        return [_strip_private(item) for item in value]
+    return value

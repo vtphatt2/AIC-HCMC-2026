@@ -381,9 +381,9 @@ curl -X POST http://localhost:8000/api/warmup_text_encoder
 
 ## Adding a New Strategy
 
-Copy `local-client/local-backend/app/strategies/_example_strategy.py`, edit
-it, restart the backend — see [strategy_guide.md](strategy_guide.md) for the
-full walkthrough.
+Copy the template in [strategy_template_v2.md](strategy_template_v2.md) into
+`local-client/local-backend/app/strategies/`; see [strategy_v2.md](strategy_v2.md)
+for the data contract.
 
 ---
 
@@ -425,7 +425,7 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `REMOTE_SERVER_URL` | _(empty)_ | Required when `ENV_MODE=LOCAL` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) — see [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
-| `FRAME_IMAGE_SOURCE` | `local` | `local` or `youtube_storyboard` workaround — see [youtube-storyboard-thumbnails-workaround.md](youtube-storyboard-thumbnails-workaround.md) |
+| `FRAME_IMAGE_SOURCE` | `local` | `local` (JPG), `local_video` (ffmpeg over `data/videos`), or `youtube_storyboard` fallback |
 
 See [running.md](running.md) for the full scenario matrix and exact commands.
 

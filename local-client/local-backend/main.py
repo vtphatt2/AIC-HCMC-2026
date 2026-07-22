@@ -21,6 +21,7 @@ load_dotenv(override=True)
 
 from app.data_provider import DataProvider, sample_subdir
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
+from app.services.query_parser import QueryParser
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
@@ -28,7 +29,7 @@ _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 
 
-def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
+def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
     """
     Scan strategies/ for .py files. Any class that inherits BaseStrategy
     (except BaseStrategy itself) is instantiated and registered under the
@@ -43,7 +44,7 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
             module = importlib.import_module(module_name)
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
-                    instance = cls(data_provider)
+                    instance = cls(data_provider, parser)
                     found[path.stem] = instance
                     print(f"  OK {path.stem}  [{cls.name}]  by {cls.author}")
                     break  # one strategy class per file
@@ -58,7 +59,8 @@ async def lifespan(app: FastAPI):
     print("Starting local backend…")
     _data_provider = DataProvider()
     print("Discovering strategies…")
-    _strategies = discover_strategies(_data_provider)
+    parser = QueryParser() if os.getenv("GEMINI_API_KEY", "").strip() else None
+    _strategies = discover_strategies(_data_provider, parser)
     print(f"Ready — {len(_strategies)} strategy/strategies available.\n")
     yield
 
@@ -73,6 +75,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,19 +111,13 @@ if FRAME_IMAGE_SOURCE == "youtube_storyboard":
 
         return Response(content=jpeg_bytes, media_type="image/jpeg")
 
-elif FRAME_IMAGE_SOURCE == "youtube_precise":
-    # Sharper + timestamp-accurate than the storyboard crop above: resolves
-    # the real video stream via yt-dlp and seeks into it with ffmpeg. Slower
-    # per frame on a cache miss (network + seek + decode), so this runs in a
-    # worker thread per request instead of blocking the event loop — a
-    # results grid's images load concurrently rather than one at a time.
-    # See docs/youtube-storyboard-thumbnails-workaround.md.
+elif FRAME_IMAGE_SOURCE == "local_video":
+    # Read data/videos/<video_id>.mp4 only; this path never opens YouTube.
     import asyncio
-    from app.services.youtube_precise_frame import PreciseFrameUnavailable, get_precise_frame_jpeg
-    from app.services.youtube_thumbnail import StoryboardUnavailable, get_thumbnail_jpeg
+    from app.services.local_video_frame import LocalFrameUnavailable, get_local_frame_jpeg
 
     @app.get("/static/frames/{video_id}/{frame_file}")
-    async def precise_frame(video_id: str, frame_file: str):
+    async def local_video_frame(video_id: str, frame_file: str):
         if _data_provider is None:
             raise HTTPException(503, "Backend not ready")
 
@@ -128,43 +125,12 @@ elif FRAME_IMAGE_SOURCE == "youtube_precise":
         lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
         if lookup is None:
             raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, video = lookup
-        youtube_id = video.get("youtube_id")
-        if not youtube_id:
-            raise HTTPException(404, f"No youtube_id for video {video_id}")
-
+        frame, _video = lookup
         try:
             jpeg_bytes = await asyncio.to_thread(
-                get_precise_frame_jpeg, youtube_id, int(frame["timestamp_ms"])
+                get_local_frame_jpeg, video_id, int(frame["timestamp_ms"])
             )
-        except PreciseFrameUnavailable as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
-
-    # Fast, blurry placeholder counterpart to the route above — same
-    # storyboard-crop workaround as FRAME_IMAGE_SOURCE=youtube_storyboard,
-    # always available here so the frontend can show *something* instantly
-    # while the precise frame extracts in the background, then swap to it.
-    @app.get("/static/frames-preview/{video_id}/{frame_file}")
-    async def precise_frame_preview(video_id: str, frame_file: str):
-        if _data_provider is None:
-            raise HTTPException(503, "Backend not ready")
-
-        frame_stem = Path(frame_file).stem
-        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
-        if lookup is None:
-            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, video = lookup
-        youtube_id = video.get("youtube_id")
-        if not youtube_id:
-            raise HTTPException(404, f"No youtube_id for video {video_id}")
-
-        try:
-            jpeg_bytes = await asyncio.to_thread(
-                get_thumbnail_jpeg, youtube_id, int(frame["timestamp_ms"])
-            )
-        except StoryboardUnavailable as exc:
+        except LocalFrameUnavailable as exc:
             raise HTTPException(502, str(exc)) from exc
 
         return Response(content=jpeg_bytes, media_type="image/jpeg")
@@ -191,48 +157,10 @@ elif os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
         )
 
 
-def _annotate_and_prefetch_precise_frames(results: list[dict]) -> None:
-    """No-op unless FRAME_IMAGE_SOURCE=youtube_precise. Otherwise:
-    (1) tags each result (and each temporal-cluster step) with a fast
-        frame_preview_url the frontend can show immediately while the
-        precise frame is still extracting, and
-    (2) kicks off background resolution of every distinct video's stream
-        URL right now, so the (slow, ~1-4s) yt-dlp lookup mostly finishes
-        before the frontend ever requests a thumbnail image, instead of
-        happening lazily on the first image request.
-    Best-effort: failures here must never break the search response itself.
-    """
-    if FRAME_IMAGE_SOURCE != "youtube_precise":
-        return
-
-    import asyncio
-    from app.services.youtube_precise_frame import prefetch_stream_url
-    from app.services.youtube_thumbnail import prefetch_storyboard_index
-
-    youtube_ids: set[str] = set()
-
-    def tag(row: dict) -> None:
-        image_url = row.get("frame_image_url") or ""
-        if image_url.startswith("/static/frames/"):
-            row["frame_preview_url"] = image_url.replace("/static/frames/", "/static/frames-preview/", 1)
-        if row.get("youtube_id"):
-            youtube_ids.add(row["youtube_id"])
-        for step in row.get("steps") or []:
-            tag(step)
-
-    for row in results:
-        tag(row)
-
-    for youtube_id in youtube_ids:
-        asyncio.create_task(asyncio.to_thread(prefetch_stream_url, youtube_id))
-        asyncio.create_task(asyncio.to_thread(prefetch_storyboard_index, youtube_id))
-
-
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class QueryGroup(BaseModel):
-    semantic_query: str = ""
-    text_query: str = ""
+    query: str = ""
     temporal_offset_ms: int = 0   # ms after the previous group's result window
 
 
@@ -278,6 +206,20 @@ async def static_debug(path: str = "L01_V001/000022.jpg"):
         "is_file": target.is_file(),
         "size": target.stat().st_size if target.exists() else None,
     }
+
+
+@app.get("/api/warmup_text_encoder")
+@app.post("/api/warmup_text_encoder")
+async def warmup_text_encoder(passes: int = 1):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready.")
+    try:
+        return await _data_provider.warmup_text_encoder(
+            "warmup query",
+            passes=min(max(passes, 1), 10),
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"Text encoder warmup error: {exc}") from exc
 
 
 @app.get("/api/transcript/{video_id}")
@@ -384,16 +326,12 @@ async def search(req: SearchRequest):
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
     query_groups = [g.model_dump() for g in req.query_groups]
-    if req.vector_search_algorithm:
-        algorithm = req.vector_search_algorithm.strip().lower()
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-
     try:
         results = await strategy.search(
             query_groups,
             limit=top_k,
             video_genre=req.video_genre,
+            vector_search_algorithm=req.vector_search_algorithm,
         )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
@@ -403,7 +341,6 @@ async def search(req: SearchRequest):
         raise HTTPException(500, f"Strategy error: {exc}")
 
     results = results[:top_k]
-    _annotate_and_prefetch_precise_frames(results)
 
     return {
         "results":           results,
@@ -432,7 +369,6 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
         raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
     results = results[:top_k]
-    _annotate_and_prefetch_precise_frames(results)
 
     return {
         "results":           results,

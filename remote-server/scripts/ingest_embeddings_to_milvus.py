@@ -34,6 +34,10 @@ from scripts.sample_paths import default_sample_root, sample_subdir
 
 logger = logging.getLogger("ingest_embeddings_to_milvus")
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+FEATURE_DIRS = {
+    "raw.semantic": "raw_keyframe_embeddings",
+    "subtitled.semantic": "subtitled_keyframe_embeddings",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         default="PECore-features",
         help="Subdirectory name under sample-root containing .npy vector files (default: PECore-features).",
     )
+    parser.add_argument(
+        "--channel",
+        choices=sorted(FEATURE_DIRS),
+        default="raw.semantic",
+        help="Visual data channel to ingest.",
+    )
     return parser.parse_args()
 
 
@@ -106,10 +116,17 @@ def load_metadata(metadata_dir: Path) -> dict[str, dict[str, Any]]:
     return metadata
 
 
-def iter_video_records(sample_root: Path, features_subdir: str = "PECore-features") -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], int]]:
+def iter_video_records(
+    sample_root: Path,
+    features_subdir: str = "PECore-features",
+    channel: str = "raw.semantic",
+) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]], int]]:
     metadata_dir = require_dir(sample_subdir(sample_root, "metadata"), "metadata directory")
     keyframes_dir = require_dir(sample_subdir(sample_root, "keyframes"), "keyframes directory")
-    features_dir = require_dir(sample_subdir(sample_root, features_subdir), f"features directory ({features_subdir})")
+    features_dir = require_dir(
+        sample_subdir(sample_root, features_subdir) / FEATURE_DIRS[channel],
+        f"features directory ({channel})",
+    )
     metadata = load_metadata(metadata_dir)
 
     for feature_video_dir in sorted(path for path in features_dir.iterdir() if path.is_dir()):
@@ -246,7 +263,11 @@ async def main() -> None:
     videos: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
     missing_images_total = 0
-    for video, video_records, missing_images in iter_video_records(sample_root, args.features_subdir):
+    for video, video_records, missing_images in iter_video_records(
+        sample_root,
+        args.features_subdir,
+        args.channel,
+    ):
         videos.append(video)
         records.extend(video_records)
         missing_images_total += missing_images
@@ -285,10 +306,10 @@ async def main() -> None:
     target_indexes = ["hnsw", "flat", "scann"] if args.vector_index == "all" else [args.vector_index]
     for vector_index in target_indexes:
         if args.recreate_milvus:
-            milvus_client.drop_collection_if_exists(vector_index)
-        collection = milvus_client.create_collection_if_missing(vector_index)
+            milvus_client.drop_collection_if_exists(vector_index, args.channel)
+        collection = milvus_client.create_collection_if_missing(vector_index, args.channel)
         indexed = upsert_vectors(collection, records, max(1, args.batch_size), milvus_client.VECTOR_DIM)
-        collection_name = milvus_client.collection_name_for_algorithm(vector_index)
+        collection_name = milvus_client.collection_name_for_algorithm(vector_index, args.channel)
         logger.info(
             "Done. Indexed %s vectors into Milvus collection '%s' (%s).",
             indexed,

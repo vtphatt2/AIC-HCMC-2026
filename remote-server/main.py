@@ -23,6 +23,7 @@ from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 from app.services.translation import TranslationService
 from app.services.transcript_search import TranscriptSearchService
+from app.services.query_parser import QueryParser
 from scripts.sample_paths import default_sample_root, sample_subdir
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -81,7 +82,7 @@ async def _auto_populate_video_metadata() -> int:
     return await postgres_client.upsert_video_metadata(videos)
 
 
-def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
+def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
     found = {}
     for path in sorted(STRATEGIES_DIR.glob("*.py")):
         if path.stem.startswith("_") or path.stem == "base_strategy":
@@ -91,7 +92,7 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
             module = importlib.import_module(module_name)
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
-                    instance = cls(data_provider)
+                    instance = cls(data_provider, parser)
                     found[path.stem] = instance
                     print(f"  ✓ {path.stem}  ({cls.name}  by {cls.author})")
                     break
@@ -142,7 +143,8 @@ async def lifespan(app: FastAPI):
             _transcript_search_service = None
 
     print("Discovering strategies...")
-    _strategies = discover_strategies(_data_provider)
+    parser = QueryParser() if os.getenv("GEMINI_API_KEY", "").strip() else None
+    _strategies = discover_strategies(_data_provider, parser)
     print(f"Server ready — {len(_strategies)} strategy/strategies loaded.")
 
     yield
@@ -191,8 +193,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class QueryGroup(BaseModel):
-    semantic_query: str = ""
-    text_query: str = ""
+    query: str = ""
     temporal_offset_ms: int = 0   # ms after the previous group's result window
 
 
@@ -202,6 +203,21 @@ class SearchRequest(BaseModel):
     top_k: int = 100
     video_genre: str = "All"
     vector_search_algorithm: str | None = None
+
+
+class RetrieveRequest(BaseModel):
+    channel: str
+    query: str
+    top_k: int = 100
+    video_genre: str = "All"
+    vector_search_algorithm: str | None = None
+
+
+class KeyframesRequest(BaseModel):
+    video_id: str
+    start_ms: int
+    end_ms: int
+    limit: int = 20
 
 
 class TranslationRequest(BaseModel):
@@ -324,6 +340,39 @@ async def translate(req: TranslationRequest):
     return {"translations": translations}
 
 
+@app.post("/api/retrieve")
+async def retrieve(req: RetrieveRequest):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready")
+    try:
+        hits = await _data_provider.retrieve(
+            req.channel,
+            req.query,
+            top_k=req.top_k,
+            video_genre=req.video_genre,
+            vector_search_algorithm=req.vector_search_algorithm,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"hits": hits}
+
+
+@app.post("/api/keyframes")
+async def keyframes(req: KeyframesRequest):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready")
+    try:
+        hits = await _data_provider.keyframes(
+            req.video_id,
+            req.start_ms,
+            req.end_ms,
+            limit=req.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"hits": hits}
+
+
 @app.post("/api/search")
 async def search(req: SearchRequest):
     t0 = time.monotonic()
@@ -345,16 +394,16 @@ async def search(req: SearchRequest):
 
     strategy = _strategies[req.strategy_id]
     query_groups = [g.model_dump() for g in req.query_groups]
-    if req.vector_search_algorithm:
-        algorithm = _normalize_vector_algorithm(req.vector_search_algorithm)
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-
     try:
         results = await strategy.search(
             query_groups,
             limit=top_k,
             video_genre=req.video_genre,
+            vector_search_algorithm=(
+                _normalize_vector_algorithm(req.vector_search_algorithm)
+                if req.vector_search_algorithm
+                else None
+            ),
         )
     except TimeoutError as exc:
         logger.info(
@@ -419,21 +468,6 @@ async def search_transcript(req: TranscriptSearchRequest):
         "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
     }
-
-
-# ── Raw-data endpoint (called by local-client DataProvider in LOCAL mode) ─────
-
-@app.post("/api/raw-data")
-async def raw_data(body: dict):
-    query_groups = body.get("query_groups", [])
-    limit = min(int(body.get("limit", 1000)), 1000)
-    video_genre = str(body.get("video_genre", "All"))
-    if body.get("vector_search_algorithm"):
-        algorithm = _normalize_vector_algorithm(str(body["vector_search_algorithm"]))
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-    data = await _data_provider.get_raw_data(query_groups, limit=limit, video_genre=video_genre)
-    return data
 
 
 def _normalize_vector_algorithm(value: str) -> str:

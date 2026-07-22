@@ -112,7 +112,11 @@ runtime switching real while still using Milvus search for these algorithms.
 CAGRA changes only semantic vector search. Milvus and PostgreSQL still run for
 collection access, metadata, OCR, transcripts, and temporal workflows.
 
-### Raw data shape
+### Legacy V1 raw data shape (archived)
+
+The shape below documents the archived `app/archive_v1/strategies` path only.
+Active strategies use `SearchContext` and channel hits; see
+[strategy_v2.md](strategy_v2.md).
 
 Every strategy receives the same `raw_data` dict regardless of mode:
 
@@ -180,8 +184,8 @@ A reload of the backend (or `--reload` watching the `.py` file) is all that's ne
 
 | Guardrail | Value | Where enforced |
 |---|---|---|
-| Fetch cap | 1000 records max per query | `BaseStrategy.search()` → `DataProvider.get_raw_data(limit=FETCH_CAP)` |
-| Execution timeout | 2.0 seconds | `asyncio.wait_for(asyncio.to_thread(fusion_and_temporal), timeout=2.0)` |
+| Fetch cap | 1000 hits max per retrieval/final response | `SearchContext` + `BaseStrategy.search()` |
+| Execution timeout | 30 seconds | `asyncio.wait_for(strategy.run(context), timeout=30)` |
 | Top K cap | User-controlled (default 100, max 1000) | `main.py` slices `results[:top_k]` before returning |
 
 The timeout cancels the HTTP response but does not forcibly kill the worker thread. If a strategy has a true infinite loop the thread will continue in the background until the process restarts. This is acceptable for a development playground.
@@ -191,7 +195,7 @@ The timeout cancels the HTTP response but does not forcibly kill the worker thre
 ## Promoting a Strategy to Production
 
 1. Test your strategy locally until satisfied with the score
-2. Copy the file verbatim to `remote-server/app/strategies/yourname_v1.py`
+2. Copy the file verbatim to `remote-server/app/strategies/yourname_v2.py`
 3. Restart the remote server
 4. Select it in the frontend dropdown
 

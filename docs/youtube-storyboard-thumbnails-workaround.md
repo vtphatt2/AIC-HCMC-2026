@@ -2,6 +2,10 @@
 
 ## What this is
 
+If `data/videos/<video_id>.mp4` exists, prefer `FRAME_IMAGE_SOURCE=local_video`.
+It uses ffmpeg locally and returns the requested timestamp without YouTube access.
+The storyboard mode below is only a fallback when neither video nor keyframe JPG is local.
+
 `local-backend` (and, if wired up the same way, `remote-server`) can serve
 `/static/frames/{video_id}/{frame}.jpg` from a source other than local files
 on disk: the **storyboard sprite sheet** YouTube generates for its own
