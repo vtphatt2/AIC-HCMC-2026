@@ -10,12 +10,15 @@ import type {
   TranscriptChunkSearchResponse,
   VectorSearchAlgorithm,
   StrategyConfigPreset,
+  StrategyConfigDraft,
+  StrategyConfigValue,
 } from "@/types";
 import {
   fetchVectorSearchAlgorithms,
   fetchStrategies,
   fetchStrategyConfigs,
-  saveStrategyConfig,
+  fetchStrategyConfigDraft,
+  saveStrategyConfigDraft,
   runSearch,
   warmupTextEncoder,
   searchTranscriptChunks,
@@ -71,6 +74,7 @@ export default function Home() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>("");
   const [strategyConfigs, setStrategyConfigs] = useState<StrategyConfigPreset[]>([]);
+  const [strategyConfigDraft, setStrategyConfigDraft] = useState<StrategyConfigDraft | null>(null);
   const [selectedConfig, setSelectedConfig] = useState("default");
   const [queryGroups, setQueryGroups] = useState<QueryGroup[]>([
     { ...DEFAULT_GROUP, temporalOffsetMs: 0 },
@@ -126,6 +130,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!selectedStrategy) return;
+    setStrategyConfigDraft(null);
     let cancelled = false;
     async function loadConfigs() {
       try {
@@ -152,6 +157,7 @@ export default function Home() {
 
   function selectConfig(configId: string) {
     setSelectedConfig(configId);
+    setStrategyConfigDraft(null);
     if (selectedStrategy) {
       window.localStorage.setItem(CONFIG_STORAGE_PREFIX + selectedStrategy, configId);
     }
@@ -159,26 +165,21 @@ export default function Home() {
 
   useEffect(() => {
     const config = strategyConfigs.find((item) => item.id === selectedConfig);
-    const eventWeights = config?.weights.event_weights;
+    const eventWeights = strategyConfigDraft?.overrides.event_weights ?? config?.weights.event_weights;
     if (!selectedStrategy || !Array.isArray(eventWeights) || eventWeights.length === queryGroups.length) return;
 
     const nextWeights = eventWeights.slice(0, queryGroups.length);
     while (nextWeights.length < queryGroups.length) nextWeights.push(1);
     let cancelled = false;
 
-    // ponytail: presets are shared; add session-scoped state only if multiple search clients need different event counts.
-    saveStrategyConfig(selectedStrategy, selectedConfig, { event_weights: nextWeights })
-      .then((saved) => {
-        if (!cancelled) {
-          setStrategyConfigs((current) => current.map((item) => item.id === saved.id ? saved : item));
-        }
-      })
+    saveStrategyConfigDraft(selectedStrategy, selectedConfig, { event_weights: nextWeights })
+      .then((saved) => { if (!cancelled) setStrategyConfigDraft(saved); })
       .catch(() => {
         if (!cancelled) setError("Cannot sync event weights with temporal steps.");
       });
 
     return () => { cancelled = true; };
-  }, [queryGroups.length, selectedConfig, selectedStrategy, strategyConfigs]);
+  }, [queryGroups.length, selectedConfig, selectedStrategy, strategyConfigDraft, strategyConfigs]);
 
   // ── Video modal transcript panel: load saved on/off preference ────────────
   useEffect(() => {
@@ -294,7 +295,7 @@ export default function Home() {
   }
 
   // ── Frame search ───────────────────────────────────────────────────────────
-  async function handleSearch() {
+  async function handleSearch(configOverrides?: Record<string, StrategyConfigValue>) {
     const hasInput = queryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
       setError("Enter at least one search query.");
@@ -317,6 +318,7 @@ export default function Home() {
         videoGenre,
         selectedVectorAlgorithm || undefined,
         selectedConfig,
+        configOverrides ?? strategyConfigDraft?.overrides ?? {},
       );
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
@@ -329,27 +331,21 @@ export default function Home() {
 
   useEffect(() => {
     if (!selectedStrategy) return;
-    let revision = response?.config_revision
-      ?? strategyConfigs.find((config) => config.id === selectedConfig)?.revision
-      ?? null;
+    let revision = strategyConfigDraft?.revision ?? null;
     let checking = false;
     let cancelled = false;
 
-    async function checkConfigRevision() {
+    async function checkDraftRevision() {
       if (checking) return;
       checking = true;
       try {
-        const payload = await fetchStrategyConfigs(selectedStrategy);
+        const draft = await fetchStrategyConfigDraft(selectedStrategy, selectedConfig);
         if (cancelled) return;
-        setStrategyConfigs(payload.configs);
-        const current = payload.configs.find((config) => config.id === selectedConfig);
-        if (!current) return;
-        if (revision !== null && current.revision !== revision) {
-          revision = current.revision;
-          if (response) void handleSearch();
-        } else {
-          revision = current.revision;
+        if (revision !== null && draft.revision !== revision && response) {
+          void handleSearch(draft.overrides);
         }
+        revision = draft.revision;
+        setStrategyConfigDraft(draft);
       } catch {
         // Keep the current search usable while the tuning device is unavailable.
       } finally {
@@ -357,12 +353,13 @@ export default function Home() {
       }
     }
 
-    const timer = window.setInterval(checkConfigRevision, 1000);
+    void checkDraftRevision();
+    const timer = window.setInterval(checkDraftRevision, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, topKInput, videoGenre]);
+  }, [queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, strategyConfigDraft?.revision, topKInput, videoGenre]);
 
   // ── Transcript search ──────────────────────────────────────────────────────
   async function handleTranscriptSearch() {
@@ -887,7 +884,7 @@ export default function Home() {
                       </div>
 
                       <button
-                        onClick={handleSearch}
+                        onClick={() => void handleSearch()}
                         disabled={loading}
                         className={`${RETRO_STAMP_BTN} w-full py-2 bg-orange-700 hover:bg-orange-600 disabled:bg-stone-300 dark:disabled:bg-stone-700 disabled:text-stone-500 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0 text-white text-sm rounded`}
                       >

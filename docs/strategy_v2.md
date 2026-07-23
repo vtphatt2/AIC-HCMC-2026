@@ -45,11 +45,15 @@ Frontend gửi raw query, không quyết định query thuộc data nào:
 {
   "strategy_id": "team_multi_source_v1",
   "config_id": "default",
+  "config_overrides": {"event_weights": [1.0, 1.4]},
   "query_groups": [{"query": "người nói về giá xăng", "temporal_offset_ms": 0}],
   "top_k": 100,
   "video_genre": "All"
 }
 ```
+
+`config_id` selects a read-only backend preset. `config_overrides` is the local
+frontend draft: the backend validates and merges it for this request only.
 
 ## SearchContext
 

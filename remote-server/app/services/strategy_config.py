@@ -61,6 +61,10 @@ class StrategyConfigStore:
             normalized[key] = self._value(key, schema[key], raw)
         return normalized
 
+    def resolve(self, schema: dict, base: dict, overrides: dict | None = None) -> dict:
+        """Validate request-scoped overrides without persisting them."""
+        return self._normalize(schema, overrides or {}, base)
+
     def _path(self, strategy_id: str, config_id: str) -> Path:
         self._validate_id(strategy_id, "strategy id")
         self._validate_id(config_id, "config id")
