@@ -11,7 +11,7 @@ decision table + commands.
 | Nothing, just want the UI working | MOCK | `ENV_MODE=MOCK` → [setup.md Option A](setup.md#option-a--local-development-mock-data) |
 | `AIC2026_sample` (or a partial copy: `metadata/` + `PECore-features/`, no `keyframes/`) | SAMPLE | see below |
 | Access to a teammate's running GPU server (ngrok/LAN URL) | LOCAL | [setup.md Option B](setup.md#option-b--local-backend-connected-to-gpu-server-local-mode) |
-| The GPU workstation itself, full dataset, Docker | SERVER | [setup.md Option C](setup.md#option-c--gpu-server-production) |
+| The GPU workstation itself, full dataset, Docker | SERVER | `bash scripts/start-remote.sh` from repo root |
 
 All local-backend scenarios: `cd local-client/frontend && npm install && cp .env.local.example .env.local && npm run dev` for the UI (port 3000).
 

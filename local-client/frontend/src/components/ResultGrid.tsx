@@ -216,7 +216,7 @@ const ResultGrid = forwardRef<ResultGridHandle, Props>(function ResultGrid(
           <span className="text-stone-900 dark:text-white font-semibold">{total}</span> results
         </span>
         <span>·</span>
-        <span title="Total time including translation and search">
+        <span title="Total search time">
           <span className="text-stone-900 dark:text-white font-semibold">{executionTimeMs}</span> ms
         </span>
       </div>

@@ -15,6 +15,9 @@ class SearchContext:
         data_provider,
         parser=None,
         vector_search_algorithm=None,
+        options=None,
+        config_id="default",
+        config_revision=0,
     ):
         self.query_groups = query_groups
         self.top_k = top_k
@@ -22,6 +25,12 @@ class SearchContext:
         self._data_provider = data_provider
         self._parser = parser
         self._vector_search_algorithm = vector_search_algorithm
+        self.options = dict(options or {})
+        self.config_id = config_id
+        self.config_revision = config_revision
+
+    def option(self, key, default=None):
+        return self.options.get(key, default)
 
     async def retrieve(self, channel, query, *, top_k=None):
         kwargs = {
@@ -53,6 +62,7 @@ class BaseStrategy(ABC):
     description = ""
     author = ""
     version = "2.0"
+    config_schema = {}
 
     def __init__(self, data_provider, parser=None):
         self.data_provider = data_provider
@@ -69,6 +79,9 @@ class BaseStrategy(ABC):
         limit=100,
         video_genre="All",
         vector_search_algorithm=None,
+        options=None,
+        config_id="default",
+        config_revision=0,
     ):
         top_k = min(max(int(limit), 1), FETCH_CAP)
         context = SearchContext(
@@ -78,6 +91,9 @@ class BaseStrategy(ABC):
             self.data_provider,
             self.parser,
             vector_search_algorithm,
+            options,
+            config_id,
+            config_revision,
         )
         try:
             results = await asyncio.wait_for(self.run(context), timeout=EXECUTION_TIMEOUT_SEC)

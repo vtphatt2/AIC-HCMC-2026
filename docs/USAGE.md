@@ -40,10 +40,9 @@ search. Everything else is a slash-command:
 |---|---|
 | `/step add [x]` | Insert a step at position x (default: end). Steps at x.. shift +1. |
 | `/step del [x]` | Remove step x (default: last). |
-| `/step clear [x]` | Clear a step's semantic / text / translate (default: active step). |
+| `/step clear [x]` | Clear a step's semantic / text (default: active step). |
 | `/step <n>` | Jump to step n. |
 | `/text <value>` | Set the active step's OCR / transcript text field. |
-| `/translate on\|off` | Toggle VI→EN translation for the active step. |
 | `/mode frames\|transcripts` | Switch search mode. |
 | `/view score\|video` | Switch results view. |
 | `/topk <n>` | Set number of results to fetch. |

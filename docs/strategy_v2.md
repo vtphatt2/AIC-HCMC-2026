@@ -44,6 +44,7 @@ Frontend gửi raw query, không quyết định query thuộc data nào:
 ```json
 {
   "strategy_id": "team_multi_source_v1",
+  "config_id": "default",
   "query_groups": [{"query": "người nói về giá xăng", "temporal_offset_ms": 0}],
   "top_k": 100,
   "video_genre": "All"
@@ -56,12 +57,13 @@ Backend tạo một context mới cho mỗi request. Strategy không tự kết 
 
 ```python
 class SearchContext:
-    def __init__(self, query_groups, top_k, video_genre, data_provider, parser=None):
+    def __init__(self, query_groups, top_k, video_genre, data_provider, parser=None, options=None):
         self.query_groups = query_groups
         self.top_k = top_k
         self.video_genre = video_genre
         self._data_provider = data_provider
         self._parser = parser
+        self.options = options or {}
 
     async def retrieve(self, channel, query, *, top_k=None):
         return await self._data_provider.retrieve(
@@ -129,11 +131,11 @@ theo timestamp; nó không phải V2 channel.
 
 ## Không làm ở V2 vòng đầu
 
-Không plugin/factory retriever, service locator, generic filters/options, public trace API,
+Không plugin/factory retriever, service locator, generic filters, public trace API,
 global StrategyPlan, class riêng cho channel hoặc strategy tự chọn collection/database.
 
 ## Done khi
 
-Một file strategy có thể dùng bất kỳ tổ hợp bốn channel, optional system prompt, custom
-fusion/temporal/reranking và trả evidence mà không sửa endpoint, DataProvider hay DB client.
+Một file strategy có thể dùng bất kỳ tổ hợp bốn channel, optional system prompt, schema-driven
+Tune config, custom fusion/temporal/reranking và trả evidence mà không sửa endpoint hay DataProvider.
 SAMPLE smoke test phải pass; SERVER cần smoke test lại trên máy có Milvus/PostgreSQL.

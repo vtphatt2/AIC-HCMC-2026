@@ -31,6 +31,14 @@ class FrontendHttpContractTests(unittest.TestCase):
 
         self.assertEqual(provider.warmup_text_encoder.await_count, 2)
 
+    def test_translation_runs_in_sample_mode_without_remote_proxy(self):
+        with patch.object(main._translation_service, "translate", return_value=["hello"]) as translate:
+            response = self.client.post("/api/translate", json={"texts": ["xin chào"]})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"translations": ["hello"]})
+        translate.assert_called_once_with(["xin chào"])
+
 
 if __name__ == "__main__":
     unittest.main()

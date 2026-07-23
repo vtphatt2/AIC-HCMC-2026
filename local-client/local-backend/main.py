@@ -2,6 +2,7 @@
 AIC 2026 — Local Backend (Development Playground)
 Run with: uvicorn main:app --reload --port 8000
 """
+import asyncio
 import os
 import time
 import importlib
@@ -20,6 +21,8 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from app.data_provider import DataProvider, sample_subdir
+from app.services.translation import TranslationService
+from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
 
@@ -27,6 +30,10 @@ STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
+_translation_service = TranslationService()
+_strategy_configs = StrategyConfigStore(
+    Path(__file__).resolve().parents[2] / "data" / "strategy-configs"
+)
 
 
 def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
@@ -113,7 +120,6 @@ if FRAME_IMAGE_SOURCE == "youtube_storyboard":
 
 elif FRAME_IMAGE_SOURCE == "local_video":
     # Read data/videos/<video_id>.mp4 only; this path never opens YouTube.
-    import asyncio
     from app.services.local_video_frame import LocalFrameUnavailable, get_local_frame_jpeg
 
     @app.get("/static/frames/{video_id}/{frame_file}")
@@ -166,6 +172,7 @@ class QueryGroup(BaseModel):
 
 class SearchRequest(BaseModel):
     strategy_id: str
+    config_id: str = "default"
     query_groups: list[QueryGroup]
     top_k: int = 100
     video_genre: str = "All"
@@ -180,6 +187,10 @@ class TranscriptChunkSearchRequest(BaseModel):
 
 class TranslationRequest(BaseModel):
     texts: list[str]
+
+
+class StrategyConfigUpdate(BaseModel):
+    weights: dict[str, float | list[float]]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -251,9 +262,52 @@ async def list_strategies():
             "description": s.description,
             "author":      s.author,
             "version":     s.version,
+            "configurable": bool(s.config_schema),
         }
         for sid, s in _strategies.items()
     ]
+
+
+def _strategy_or_404(strategy_id: str) -> BaseStrategy:
+    strategy = _strategies.get(strategy_id)
+    if strategy is None:
+        raise HTTPException(404, f"Strategy '{strategy_id}' not found")
+    return strategy
+
+
+@app.get("/api/strategies/{strategy_id}/configs")
+async def list_strategy_configs(strategy_id: str):
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        configs = _strategy_configs.list(
+            strategy_id, strategy.version, strategy.config_schema
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"strategy_id": strategy_id, "schema": strategy.config_schema, "configs": configs}
+
+
+@app.put("/api/strategies/{strategy_id}/configs/{config_id}")
+async def save_strategy_config(strategy_id: str, config_id: str, req: StrategyConfigUpdate):
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        return _strategy_configs.save(
+            strategy_id, strategy.version, strategy.config_schema, config_id, req.weights
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/strategies/{strategy_id}/configs/{config_id}")
+async def delete_strategy_config(strategy_id: str, config_id: str):
+    _strategy_or_404(strategy_id)
+    try:
+        _strategy_configs.delete(strategy_id, config_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "deleted"}
 
 
 @app.get("/api/vector-search-algorithms")
@@ -287,33 +341,13 @@ async def list_vector_search_algorithms():
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
-    """Proxy translation to the remote server when local-backend runs in LOCAL mode."""
-    if os.getenv("ENV_MODE", "MOCK").upper() != "LOCAL":
-        raise HTTPException(501, "Translation requires ENV_MODE=LOCAL or direct remote-server mode.")
-
-    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
-    if not remote_base:
-        raise HTTPException(500, "REMOTE_SERVER_URL is required for translation proxy.")
-
-    async with httpx.AsyncClient(base_url=remote_base, timeout=30.0) as client:
-        try:
-            response = await client.post(
-                "/api/translate",
-                json=req.model_dump(),
-                headers={"ngrok-skip-browser-warning": "1"},
-            )
-        except httpx.RequestError as exc:
-            raise HTTPException(502, f"Remote translation request failed: {exc}") from exc
-
-    if response.status_code >= 400:
-        detail = response.text
-        try:
-            detail = response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise HTTPException(response.status_code, detail)
-
-    return response.json()
+    try:
+        translations = await asyncio.to_thread(_translation_service.translate, req.texts)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Translation failed: {exc}")
+    return {"translations": translations}
 
 
 @app.post("/api/search")
@@ -323,6 +357,14 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found. Available: {list(_strategies)}")
 
     strategy = _strategies[req.strategy_id]
+    try:
+        config = _strategy_configs.get(
+            req.strategy_id, strategy.version, strategy.config_schema, req.config_id
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{req.config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
     query_groups = [g.model_dump() for g in req.query_groups]
@@ -332,6 +374,9 @@ async def search(req: SearchRequest):
             limit=top_k,
             video_genre=req.video_genre,
             vector_search_algorithm=req.vector_search_algorithm,
+            options=config["weights"],
+            config_id=config["id"],
+            config_revision=config["revision"],
         )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
@@ -345,6 +390,8 @@ async def search(req: SearchRequest):
     return {
         "results":           results,
         "strategy_id":       req.strategy_id,
+        "config_id":         config["id"],
+        "config_revision":   config["revision"],
         "total":             len(results),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }

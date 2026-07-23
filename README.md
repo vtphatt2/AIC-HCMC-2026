@@ -15,7 +15,7 @@ or run the complete PE-Core retrieval pipeline directly on the server.
 |---|---|
 | [docs/running.md](docs/running.md) | **Start here** — scenario picker + exact commands |
 | [docs/setup.md](docs/setup.md) | Step-by-step setup for local dev and GPU server |
-| [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local launch (Windows/Mac/Linux/WSL), backend/GPU selection |
+| [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local and remote launch (Windows/Mac/Linux/WSL) |
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
 | [docs/strategy_v2.md](docs/strategy_v2.md) | Strategy/data contract |
 | [docs/strategy_template_v2.md](docs/strategy_template_v2.md) | **How to write your own strategy** |
@@ -127,5 +127,5 @@ the dropdown automatically.
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
 | Video player | YouTube IFrame API |
-| Translation | Optional Google Cloud NMT or Gemini, configured on the backend |
+| Translation | Local CTranslate2 INT8 VI→EN; button replaces the editable query |
 | Local transport | HTTP via `httpx` (LOCAL mode) |

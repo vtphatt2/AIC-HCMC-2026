@@ -4,8 +4,8 @@
 # See docs/launch_scripts.md for which --backend to pick per machine.
 set -euo pipefail
 
-backend_port=8002
-frontend_port=3002
+backend_port=8000
+frontend_port=3000
 backend=onnx-cpu
 
 usage() {
@@ -36,6 +36,12 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="$root/local-client/local-backend"
 frontend_dir="$root/local-client/frontend"
 log_dir="$root/runtime-logs"
+
+[[ -x "$backend_dir/.venv/bin/python" ]] || {
+    echo "Missing backend venv. Run: cd local-client/local-backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+    exit 1
+}
+command -v npm >/dev/null 2>&1 || { echo "npm was not found. Install Node.js first." >&2; exit 1; }
 
 port_listening() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null

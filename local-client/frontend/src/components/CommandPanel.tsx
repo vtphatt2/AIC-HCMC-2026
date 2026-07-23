@@ -1,22 +1,22 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import type { QueryGroup, Strategy } from "@/types";
+import type { QueryGroup, Strategy, StrategyConfigPreset } from "@/types";
 
-type FieldKey = "semantic" | "text" | "offset" | "translate";
-const FIELD_ORDER: FieldKey[] = ["semantic", "text", "offset", "translate"];
+type FieldKey = "semantic" | "text" | "offset";
+const FIELD_ORDER: FieldKey[] = ["semantic", "text", "offset"];
 const SLASH_COMMANDS = [
-  "/step add", "/step del", "/step clear", "/text", "/translate", "/mode", "/topk",
-  "/genre", "/strategy", "/view", "/transcript", "/search", "/clear", "/help",
+  "/step add", "/step del", "/step clear", "/text", "/mode", "/topk",
+  "/genre", "/strategy", "/config", "/view", "/transcript", "/search", "/clear", "/help",
 ];
 const COMMAND_USAGE: Record<string, string> = {
   "/step add": "/step add [x] — insert a new step at position x (default: end); steps at x.. shift +1",
   "/step del": "/step del [x] — remove step at position x (default: last step)",
-  "/step clear": "/step clear [x] — clear semantic/text/translate of step x (default: active step)",
+  "/step clear": "/step clear [x] — clear semantic/text of step x (default: active step)",
   "/text": "/text <value> — set the OCR/transcript text field of the active step",
-  "/translate": "/translate on|off — toggle VI→EN translation for the active step",
   "/mode": "/mode frames|transcripts — switch search mode",
   "/topk": "/topk <n> — set number of results to fetch",
   "/genre": "/genre <name> — filter results by genre",
   "/strategy": "/strategy <id|name> — select the search strategy",
+  "/config": "/config <id> — select a saved config for the current strategy",
   "/view": "/view score|video — switch results view (grouped by video vs. flat score list)",
   "/transcript": "/transcript on|off — show/hide the transcript panel in the video modal",
   "/search": "/search — run the search immediately",
@@ -30,6 +30,9 @@ interface Props {
   strategies: Strategy[];
   selectedStrategy: string;
   setSelectedStrategy: (id: string) => void;
+  strategyConfigs: StrategyConfigPreset[];
+  selectedConfig: string;
+  setSelectedConfig: (id: string) => void;
   queryGroups: QueryGroup[];
   setQueryGroups: (updater: QueryGroup[] | ((prev: QueryGroup[]) => QueryGroup[])) => void;
   topKInput: string;
@@ -63,24 +66,23 @@ function getFieldDisplay(g: QueryGroup, field: FieldKey): string {
     case "semantic": return g.semanticQuery;
     case "text": return g.textQuery;
     case "offset": return String(g.temporalOffsetMs);
-    case "translate": return g.translateSemantic ? "on" : "off";
   }
 }
 
 function applyFieldValue(g: QueryGroup, field: FieldKey, raw: string): QueryGroup {
   switch (field) {
-    case "semantic": return { ...g, semanticQuery: raw, translatedQuery: "" };
+    case "semantic": return { ...g, semanticQuery: raw };
     case "text": return { ...g, textQuery: raw };
     case "offset": {
       const n = Number.parseInt(raw, 10);
       return Number.isNaN(n) ? g : { ...g, temporalOffsetMs: Math.max(0, n) };
     }
-    case "translate": return { ...g, translateSemantic: /^(on|true|y|yes|1)$/i.test(raw), translatedQuery: "" };
   }
 }
 
 const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel({
   searchMode, defaultGroup, strategies, selectedStrategy, setSelectedStrategy,
+  strategyConfigs, selectedConfig, setSelectedConfig,
   queryGroups, setQueryGroups, topKInput, setTopKInput, videoGenre, setVideoGenre,
   transcriptQuery, setTranscriptQuery, transcriptTopK, setTranscriptTopK,
   transcriptGenre, setTranscriptGenre, allGenres,
@@ -159,12 +161,12 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
   function resolveArgOptions(inputVal: string): { base: string; options: string[] } | null {
     const argSources: Record<string, string[]> = {
       "/step": ["add", "del", "clear"],
-      "/translate": ["on", "off"],
       "/mode": ["frames", "transcripts"],
       "/view": ["score", "video"],
       "/transcript": ["on", "off"],
       "/genre": allGenres,
       "/strategy": strategies.map((s) => s.id),
+      "/config": strategyConfigs.map((config) => config.id),
     };
     for (const [base, options] of Object.entries(argSources)) {
       if (inputVal === base || inputVal.startsWith(base + " ")) {
@@ -295,7 +297,7 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
               const updated = [...prev];
               updated[n - 1] = {
                 ...updated[n - 1],
-                semanticQuery: "", textQuery: "", translateSemantic: false, translatedQuery: "",
+                semanticQuery: "", textQuery: "",
               };
               return updated;
             });
@@ -320,10 +322,6 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
       case "text":
         if (searchMode === "frames") applyOneShot("text", arg);
         else setStatus("/text only applies in Frames mode", "error");
-        break;
-      case "translate":
-        if (searchMode === "frames") applyOneShot("translate", arg || (queryGroups[activeStepIndex]?.translateSemantic ? "off" : "on"));
-        else setStatus("/translate only applies in Frames mode", "error");
         break;
       case "mode":
         if (arg === "frames" || arg === "transcripts") {
@@ -366,6 +364,17 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
         }
         break;
       }
+      case "config": {
+        if (searchMode !== "frames") { setStatus("/config only applies in Frames mode", "error"); return; }
+        const match = strategyConfigs.find((config) => config.id === arg);
+        if (match) {
+          setSelectedConfig(match.id);
+          setStatus(`✓ config=${match.id}`);
+        } else {
+          setStatus("Unknown config for the selected strategy", "error");
+        }
+        break;
+      }
       case "view": {
         if (arg === "score" || arg === "video") {
           if (searchMode === "frames") setViewMode(arg);
@@ -401,7 +410,7 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
         setStatus("✓ cleared");
         break;
       case "help":
-        setStatus("Commands: /step add|del|clear|<n>, /text, /translate, /mode, /topk, /genre, /strategy, /view, /transcript, /search, /clear, /help");
+        setStatus("Commands: /step add|del|clear|<n>, /text, /mode, /topk, /genre, /strategy, /config, /view, /transcript, /search, /clear, /help");
         break;
       default:
         setStatus(`Unknown command: /${cmd}`, "error");
@@ -453,7 +462,7 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
         const idx = activeStepIndex;
         setQueryGroups((prev) => {
           const updated = [...prev];
-          updated[idx] = { ...updated[idx], semanticQuery: raw.trim(), translatedQuery: "" };
+          updated[idx] = { ...updated[idx], semanticQuery: raw.trim() };
           return updated;
         });
         setInputValue("");
@@ -602,6 +611,7 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
           {searchMode === "frames" && (
             <>
               <span>Strategy: <span className="text-stone-900 dark:text-stone-100 font-semibold">{selectedStrategy || "—"}</span></span>
+              <span>Config: <span className="text-stone-900 dark:text-stone-100 font-semibold">{selectedConfig}</span></span>
               <span>TopK: <span className="text-stone-900 dark:text-stone-100 font-semibold">{topKInput}</span></span>
               <span>Genre: <span className="text-stone-900 dark:text-stone-100 font-semibold">{videoGenre}</span></span>
             </>
@@ -635,7 +645,7 @@ const CommandPanel = forwardRef<CommandPanelHandle, Props>(function CommandPanel
               >
                 <span className="truncate flex-1">
                   <span className="text-orange-700 dark:text-orange-400 mr-1">{i === activeStepIndex ? "▸" : " "}</span>
-                  [{i + 1}] sem:&quot;{g.semanticQuery || "—"}&quot;  text:&quot;{g.textQuery || "—"}&quot;  off:{g.temporalOffsetMs}ms  tr:{g.translateSemantic ? "on" : "off"}
+                  [{i + 1}] sem:&quot;{g.semanticQuery || "—"}&quot;  text:&quot;{g.textQuery || "—"}&quot;  off:{g.temporalOffsetMs}ms
                 </span>
                 {queryGroups.length > 1 && (
                   <button
