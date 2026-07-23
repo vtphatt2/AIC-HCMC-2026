@@ -35,6 +35,11 @@ export interface StrategyConfigResponse {
   configs: StrategyConfigPreset[];
 }
 
+export interface StrategyConfigDraft {
+  revision: number;
+  overrides: Record<string, StrategyConfigValue>;
+}
+
 export interface VectorSearchAlgorithm {
   id: string;
   name: string;
@@ -81,6 +86,7 @@ export interface SearchResponse {
   execution_time_ms: number;
   config_id?: string;
   config_revision?: number;
+  effective_config?: Record<string, StrategyConfigValue>;
 }
 
 export interface TranscriptChunkResult {

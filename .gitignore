@@ -227,6 +227,7 @@ node_modules/
 out/
 .vercel/
 *.tsbuildinfo
+local-client/frontend/.runtime/
 
 # Docker volumes
 volumes/

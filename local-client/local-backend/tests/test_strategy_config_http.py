@@ -49,6 +49,7 @@ class StrategyConfigHttpTests(unittest.TestCase):
                 json={
                     "strategy_id": "tunable",
                     "config_id": "transcript-heavy",
+                    "config_overrides": {"transcript.semantic": 0.4},
                     "query_groups": [{"query": "hello"}],
                 },
             )
@@ -56,8 +57,13 @@ class StrategyConfigHttpTests(unittest.TestCase):
         self.assertEqual(saved.status_code, 200)
         self.assertEqual([row["id"] for row in listed.json()["configs"]], ["default", "transcript-heavy"])
         self.assertEqual(searched.json()["config_id"], "transcript-heavy")
+        self.assertEqual(searched.json()["effective_config"], {"transcript.semantic": 0.4})
         self.strategy.search.assert_awaited_once()
-        self.assertEqual(self.strategy.search.await_args.kwargs["options"], {"transcript.semantic": 1.7})
+        self.assertEqual(self.strategy.search.await_args.kwargs["options"], {"transcript.semantic": 0.4})
+        self.assertEqual(
+            self.store.get("tunable", "2.0", self.strategy.config_schema, "transcript-heavy")["weights"],
+            {"transcript.semantic": 1.7},
+        )
 
     def test_unknown_config_is_rejected(self):
         with (

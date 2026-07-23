@@ -2,7 +2,7 @@ import type {
   Strategy,
   QueryGroup,
   SearchResponse,
-  StrategyConfigPreset,
+  StrategyConfigDraft,
   StrategyConfigResponse,
   StrategyConfigValue,
   TranslationResponse,
@@ -29,35 +29,35 @@ export async function fetchStrategyConfigs(strategyId: string): Promise<Strategy
   return res.json();
 }
 
-export async function saveStrategyConfig(
+function draftUrl(strategyId: string, configId: string): string {
+  const query = new URLSearchParams({ strategy_id: strategyId, config_id: configId });
+  return `/api/tuning-draft?${query}`;
+}
+
+export async function fetchStrategyConfigDraft(
   strategyId: string,
   configId: string,
-  weights: Record<string, StrategyConfigValue>,
-): Promise<StrategyConfigPreset> {
-  const res = await fetch(
-    apiUrl(`/api/strategies/${encodeURIComponent(strategyId)}/configs/${encodeURIComponent(configId)}`),
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ weights }),
-    },
-  );
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Failed to save strategy config");
-  }
+): Promise<StrategyConfigDraft> {
+  const res = await fetch(draftUrl(strategyId, configId), { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load local tuning draft");
   return res.json();
 }
 
-export async function deleteStrategyConfig(strategyId: string, configId: string): Promise<void> {
-  const res = await fetch(
-    apiUrl(`/api/strategies/${encodeURIComponent(strategyId)}/configs/${encodeURIComponent(configId)}`),
-    { method: "DELETE" },
-  );
+export async function saveStrategyConfigDraft(
+  strategyId: string,
+  configId: string,
+  overrides: Record<string, StrategyConfigValue>,
+): Promise<StrategyConfigDraft> {
+  const res = await fetch(draftUrl(strategyId, configId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Failed to delete strategy config");
+    throw new Error(errorData.error || "Failed to save local tuning draft");
   }
+  return res.json();
 }
 
 export async function fetchVectorSearchAlgorithms(): Promise<VectorSearchAlgorithmResponse> {
@@ -95,10 +95,12 @@ export async function runSearch(
   videoGenre: string = "All",
   vectorSearchAlgorithm?: string,
   configId: string = "default",
+  configOverrides: Record<string, StrategyConfigValue> = {},
 ): Promise<SearchResponse> {
   const payload: Record<string, unknown> = {
     strategy_id: strategyId,
     config_id: configId,
+    config_overrides: configOverrides,
     query_groups: queryGroups.map(g => ({
       query: [g.semanticQuery, g.textQuery]
         .map(value => value.trim())

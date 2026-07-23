@@ -1,12 +1,12 @@
 import Head from "next/head";
 import { useRouter } from "next/router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import {
-  deleteStrategyConfig,
   fetchStrategies,
   fetchStrategyConfigs,
-  saveStrategyConfig,
+  fetchStrategyConfigDraft,
+  saveStrategyConfigDraft,
 } from "@/lib/api";
 import type {
   Strategy,
@@ -61,7 +61,7 @@ export default function TuningPage() {
   const [schema, setSchema] = useState<Record<string, StrategyConfigField>>({});
   const [configId, setConfigId] = useState("default");
   const [weights, setWeights] = useState<Record<string, StrategyConfigValue>>({});
-  const [newId, setNewId] = useState("");
+  const [draftRevision, setDraftRevision] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("Loading…");
 
@@ -95,6 +95,7 @@ export default function TuningPage() {
         setConfigs(payload.configs);
         setConfigId(selected.id);
         setWeights(selected.weights);
+        setDraftRevision(0);
         setDirty(false);
         setStatus("Saved");
       })
@@ -105,11 +106,11 @@ export default function TuningPage() {
     if (!dirty) return;
     setStatus("Saving…");
     const timer = window.setTimeout(() => {
-      saveStrategyConfig(strategyId, configId, weights)
-        .then((saved) => {
-          setConfigs((current) => current.map((config) => config.id === saved.id ? saved : config));
+      saveStrategyConfigDraft(strategyId, configId, weights)
+        .then((draft) => {
+          setDraftRevision(draft.revision);
           setDirty(false);
-          setStatus(`Saved revision ${saved.revision}`);
+          setStatus(`Saved local draft ${draft.revision}`);
         })
         .catch((error) => setStatus(error instanceof Error ? error.message : "Save failed"));
     }, 400);
@@ -118,83 +119,48 @@ export default function TuningPage() {
 
   useEffect(() => {
     if (!strategyId || !configId || dirty) return;
-    const knownRevision = configs.find((config) => config.id === configId)?.revision;
+    const preset = configs.find((config) => config.id === configId);
+    if (!preset) return;
+    let revision = draftRevision;
     let cancelled = false;
 
-    async function refreshConfig() {
+    async function refreshDraft() {
       try {
-        const payload = await fetchStrategyConfigs(strategyId);
+        const draft = await fetchStrategyConfigDraft(strategyId, configId);
         if (cancelled) return;
-        const current = payload.configs.find((config) => config.id === configId);
-        if (!current || current.revision === knownRevision) return;
-        setSchema(payload.schema);
-        setConfigs(payload.configs);
-        setWeights(current.weights);
-        setStatus(`Synced revision ${current.revision}`);
+        if (draft.revision === revision) return;
+        revision = draft.revision;
+        setDraftRevision(draft.revision);
+        setWeights({ ...preset.weights, ...draft.overrides });
+        setStatus(`Synced local draft ${draft.revision}`);
       } catch {
         // Keep sliders usable through a temporary network interruption.
       }
     }
 
-    const timer = window.setInterval(refreshConfig, 1000);
+    void refreshDraft();
+    const timer = window.setInterval(refreshDraft, 1000);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [configId, configs, dirty, strategyId]);
+  }, [configId, configs, dirty, draftRevision, strategyId]);
 
-  const selectedConfig = useMemo(
-    () => configs.find((config) => config.id === configId),
-    [configId, configs],
-  );
+  const selectedConfig = configs.find((config) => config.id === configId);
 
   function chooseConfig(nextId: string) {
     const selected = configs.find((config) => config.id === nextId);
     if (!selected) return;
     setConfigId(selected.id);
     setWeights(selected.weights);
+    setDraftRevision(0);
     setDirty(false);
-    setStatus("Saved");
+    setStatus("Loading local draft...");
   }
 
   function updateWeight(key: string, value: StrategyConfigValue) {
     setWeights((current) => ({ ...current, [key]: value }));
     setDirty(true);
-  }
-
-  async function saveAs() {
-    const id = newId.trim();
-    if (!id) return;
-    if (configs.some((config) => config.id === id)) {
-      setStatus(`Config '${id}' already exists`);
-      return;
-    }
-    try {
-      const saved = await saveStrategyConfig(strategyId, id, weights);
-      setConfigs((current) => [...current.filter((config) => config.id !== saved.id), saved]);
-      setConfigId(saved.id);
-      setNewId("");
-      setDirty(false);
-      setStatus(`Saved revision ${saved.revision}`);
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Save failed");
-    }
-  }
-
-  async function removeCurrent() {
-    if (configId === "default") return;
-    if (!window.confirm(`Delete config '${configId}'?`)) return;
-    try {
-      await deleteStrategyConfig(strategyId, configId);
-      const fallback = configs.find((config) => config.id === "default")!;
-      setConfigs((current) => current.filter((config) => config.id !== configId));
-      setConfigId("default");
-      setWeights(fallback.weights);
-      setDirty(false);
-      setStatus("Preset deleted");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Delete failed");
-    }
   }
 
   return (
@@ -205,7 +171,7 @@ export default function TuningPage() {
           <header className="flex items-start justify-between gap-4">
             <div>
               <h1 className="font-retro text-2xl font-bold uppercase">Strategy Weight Tuning</h1>
-              <p className="text-sm text-stone-500 dark:text-stone-400">Saved presets are available to the search UI and `/config` command.</p>
+              <p className="text-sm text-stone-500 dark:text-stone-400">Presets stay read-only on the backend; tuning is saved on this frontend machine.</p>
             </div>
             <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
           </header>
@@ -252,18 +218,10 @@ export default function TuningPage() {
             </div>
 
             <p className="text-xs text-stone-500 dark:text-stone-400">
-              {status}{selectedConfig ? ` · ${selectedConfig.id}@${selectedConfig.revision}` : ""}
+              {status}{selectedConfig ? ` · preset ${selectedConfig.id}@${selectedConfig.revision} · draft@${draftRevision}` : ""}
             </p>
           </section>
 
-          <section className="flex flex-wrap items-end gap-2">
-            <label className="flex-1 min-w-52 space-y-1">
-              <span className="text-xs font-bold uppercase text-stone-500">New preset ID</span>
-              <input value={newId} onChange={(event) => setNewId(event.target.value)} placeholder="transcript-heavy" className={`${INPUT} w-full`} />
-            </label>
-            <button onClick={saveAs} disabled={!newId.trim()} className="font-retro px-4 py-2 border-2 border-stone-900 dark:border-stone-100 rounded bg-orange-700 text-white disabled:opacity-40">Save as</button>
-            <button onClick={removeCurrent} disabled={configId === "default"} className="font-retro px-4 py-2 border-2 border-rose-700 rounded text-rose-700 dark:text-rose-400 disabled:opacity-40">Delete</button>
-          </section>
         </div>
       </main>
     </>

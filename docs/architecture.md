@@ -30,6 +30,12 @@ flowchart LR
 The local and remote backends expose the same strategy lifecycle and local
 translation endpoint. CAGRA remains a remote-server feature.
 
+In the full demo, strategy presets on the remote server are read-only. Each
+machine's Next.js frontend stores its tuning draft under `.runtime/` and sends
+it as request-scoped `config_overrides`; the remote validates and uses it
+without writing shared state. Desktop and phone share a draft only when they
+open the same machine's frontend.
+
 ---
 
 ## ENV_MODE

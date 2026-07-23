@@ -173,6 +173,7 @@ class QueryGroup(BaseModel):
 class SearchRequest(BaseModel):
     strategy_id: str
     config_id: str = "default"
+    config_overrides: dict[str, float | list[float]] | None = None
     query_groups: list[QueryGroup]
     top_k: int = 100
     video_genre: str = "All"
@@ -365,6 +366,12 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Config '{req.config_id}' not found") from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    try:
+        effective_config = _strategy_configs.resolve(
+            strategy.config_schema, config["weights"], req.config_overrides
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
     query_groups = [g.model_dump() for g in req.query_groups]
@@ -374,7 +381,7 @@ async def search(req: SearchRequest):
             limit=top_k,
             video_genre=req.video_genre,
             vector_search_algorithm=req.vector_search_algorithm,
-            options=config["weights"],
+            options=effective_config,
             config_id=config["id"],
             config_revision=config["revision"],
         )
@@ -392,6 +399,7 @@ async def search(req: SearchRequest):
         "strategy_id":       req.strategy_id,
         "config_id":         config["id"],
         "config_revision":   config["revision"],
+        "effective_config":  effective_config,
         "total":             len(results),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }
