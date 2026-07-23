@@ -15,7 +15,7 @@ flowchart LR
     SAMPLE[AIC sample vectors]
     SEARCH[PE-Core + HNSW, CAGRA, or ScaNN]
     TEXT[PostgreSQL]
-    TRANS[Optional VI/mixed to English]
+    TRANS[Local CTranslate2 INT8 VI to English]
 
     UI -->|Local development| LB
     LB -->|MOCK| MOCK
@@ -27,9 +27,8 @@ flowchart LR
     RB --> TEXT
 ```
 
-The local and remote backends expose the same strategy lifecycle. Translation
-and CAGRA are remote-server features; the simple local MOCK/SAMPLE backend does
-not provide the translation endpoint.
+The local and remote backends expose the same strategy lifecycle and local
+translation endpoint. CAGRA remains a remote-server feature.
 
 ---
 
@@ -69,7 +68,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant ST as Strategy
 
-    opt VI-EN enabled
+    opt VI-EN button clicked
         UI->>API: POST /api/translate
         API->>TR: Translate to English
         TR-->>UI: Translated queries
@@ -90,10 +89,10 @@ sequenceDiagram
     API-->>UI: Results and search timing
 ```
 
-The translation provider is configured by `TRANSLATION_PROVIDER` on the remote
-backend and is not selectable in the UI. Exact translated queries and PE-Core
-text embeddings use bounded in-process caches. Optional startup warmups avoid
-model/client initialization during the first user request.
+The VI→EN button runs an INT8 CTranslate2 conversion of
+`Helsinki-NLP/opus-mt-vi-en` locally and replaces the semantic input with the
+English result. Search never triggers translation. Translations and PE-Core
+text embeddings use bounded in-process caches.
 
 ## Production Search Backends
 

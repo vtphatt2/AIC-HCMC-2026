@@ -85,7 +85,7 @@ under `remote-server/static/frames`.
 ## 5. Run the backend
 
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+bash ../scripts/start-remote.sh                 # starts Docker + backend
 curl http://localhost:8000/api/health
 curl -X POST http://localhost:8000/api/warmup_text_encoder   # load the text model once before a demo
 ```

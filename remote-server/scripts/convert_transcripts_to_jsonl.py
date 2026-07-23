@@ -67,7 +67,7 @@ def main():
     sample_transcripts = repo_root.parent / "AIC2026_sample" / "transcripts" / "transcripts"
     notebooks_transcripts = repo_root.parent / "notebooks" / "transcripts_sample"
 
-    dirs = [sample_transcripts, notebooks_transcripts]
+    dirs = [repo_root.parent / "data" / "transcripts", sample_transcripts, notebooks_transcripts]
     converted = 0
 
     for transcripts_dir in dirs:

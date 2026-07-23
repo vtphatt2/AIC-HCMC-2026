@@ -9,7 +9,7 @@
 | Search sample vectors without Docker | `local-backend` | `AIC2026_sample` | SAMPLE mode |
 | Develop against another GPU server | `local-backend` | Remote raw-data proxy | Option B |
 
-For the current complete demo with **CAGRA + Google NMT**, use the recommended
+For the current complete demo with **CAGRA + local CTranslate2 INT8**, use the recommended
 path below. You do not need `local-client/local-backend`.
 
 ## Recommended Full Demo
@@ -21,7 +21,7 @@ Next.js frontend :3000
         |
         v
 remote-server :8000
-  +-- Google NMT
+  +-- Local CTranslate2 INT8 VI→EN
   +-- PE-Core + CAGRA
   +-- PostgreSQL + Milvus
 ```
@@ -54,8 +54,8 @@ curl http://localhost:8000/api/health
 ```
 
 For CAGRA, the response should report `"vector_search_backend":"cagra"` and
-`"pecore_device":"cuda"` with `"pecore_precision":"fp16"`. With
-`TRANSLATION_PROVIDER=nmt`, the VI→EN toggle uses Google NMT.
+`"pecore_device":"cuda"` with `"pecore_precision":"fp16"`. The VI→EN button
+runs CTranslate2 INT8 on CPU and replaces the query input.
 
 ### 3. Start the frontend
 
@@ -193,9 +193,9 @@ npm run dev
 
 Open http://localhost:3000. You should see the search UI with the strategy dropdown populated.
 
-This MOCK setup is for UI and strategy development. The VI→EN endpoint is
-provided by `remote-server`; point `NEXT_PUBLIC_API_URL` to that server for the
-complete translation and GPU-search demo.
+This MOCK setup is for UI and strategy development. VI→EN translation runs in
+the local backend; point `NEXT_PUBLIC_API_URL` to `remote-server` only for the
+complete GPU-search demo.
 
 ---
 
@@ -314,22 +314,22 @@ PECORE_DEVICE=mps
 PECORE_PRECISION=fp32
 ```
 
-For optional Vietnamese or mixed-language translation through Google NMT:
+For local Vietnamese-to-English translation (the ~78 MB INT8 model downloads once, then uses the local cache):
 
 ```env
-GOOGLE_CLOUD_PROJECT=your-project-id
-TRANSLATION_PROVIDER=nmt
+TRANSLATION_MODEL_ID=dekthedev/opus-mt-vi-en-ct2-int8
+TRANSLATION_MODEL_REVISION=14a921f3c4b7238b2b49d247e53810f0f7c78236
+TRANSLATION_CPU_THREADS=4
 WARMUP_TRANSLATION=true
 ```
 
-Application Default Credentials must be configured on the server. Gemini is
-also supported through backend configuration; see
-`remote-server/README_INDEXING_SEARCH.md`.
-
-Start the server:
+Start the server (the launcher also starts Milvus/PostgreSQL):
 ```bash
-uvicorn main:app --host 0.0.0.0 --port 8000
+bash ../scripts/start-remote.sh
 ```
+
+On Windows use `..\scripts\start-remote.ps1`. Pass `--skip-databases` /
+`-SkipDatabases` when Milvus and PostgreSQL are managed elsewhere.
 
 ### 3. Expose via Ngrok (for LOCAL mode contestants)
 
@@ -448,9 +448,11 @@ See [running.md](running.md) for the full scenario matrix and exact commands.
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
 | `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
 | `WARMUP_TEXT_ENCODER` | `false` | Load and warm PE-Core during startup |
-| `TRANSLATION_PROVIDER` | `nmt` | Backend translation provider: `nmt` or `gemini` |
+| `TRANSLATION_MODEL_ID` | `dekthedev/opus-mt-vi-en-ct2-int8` | Local CTranslate2 INT8 translation model |
+| `TRANSLATION_MODEL_REVISION` | pinned commit | Reproducible model revision |
+| `TRANSLATION_CPU_THREADS` | `4` | CPU threads used by CTranslate2 |
+| `TRANSLATION_MODEL_PATH` | _(empty)_ | Optional pre-downloaded local model directory |
 | `WARMUP_TRANSLATION` | `false` | Initialize translation during startup |
-| `GOOGLE_CLOUD_PROJECT` | _(empty)_ | Required for Google Cloud NMT |
 
 ### `local-client/frontend/.env.local`
 

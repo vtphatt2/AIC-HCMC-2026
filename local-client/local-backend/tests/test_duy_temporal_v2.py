@@ -59,6 +59,22 @@ class DuyTemporalV2Tests(unittest.IsolatedAsyncioTestCase):
             ["end15"],
         )
 
+    def test_event_weights_change_chain_score(self):
+        rankings = [
+            [frame("first", 0, 0.2)],
+            [frame("second", 1000, 0.2)],
+            [frame("third", 2000, 1.0)],
+        ]
+        groups = [
+            {"query": "first", "temporal_offset_ms": 0},
+            {"query": "second", "temporal_offset_ms": 1000},
+            {"query": "third", "temporal_offset_ms": 1000},
+        ]
+
+        hits = match_temporal(rankings, groups, event_weights=[1, 1, 3])
+
+        self.assertAlmostEqual(hits[0]["confidence"], 0.68)
+
     async def test_strategy_retrieves_one_ranking_per_query_group(self):
         context = Mock()
         context.top_k = 10
@@ -70,6 +86,7 @@ class DuyTemporalV2Tests(unittest.IsolatedAsyncioTestCase):
             [frame("a", 0, 0.8)],
             [frame("b", 1000, 0.7)],
         ])
+        context.option.side_effect = lambda _key, default: default
         context.results.side_effect = lambda hits: [dict(hit) for hit in hits]
 
         results = await DuyTemporalSearch(Mock()).run(context)

@@ -30,7 +30,7 @@ unset in `.env` if you want `--backend` to control it.
 ## Windows
 
 ```powershell
-scripts\start-local.ps1                       # onnx-cpu, ports 8002/3002
+scripts\start-local.ps1                       # onnx-cpu, ports 8000/3000
 scripts\start-local.ps1 -Backend torch-cuda
 scripts\start-local.ps1 -Backend torch-cpu -BackendPort 8010 -FrontendPort 3010
 ```
@@ -38,7 +38,7 @@ scripts\start-local.ps1 -Backend torch-cpu -BackendPort 8010 -FrontendPort 3010
 ## Mac / Linux / WSL
 
 ```bash
-scripts/start-local.sh                        # onnx-cpu, ports 8002/3002
+bash scripts/start-local.sh                   # onnx-cpu, ports 8000/3000
 scripts/start-local.sh --backend torch-mps     # Apple Silicon
 scripts/start-local.sh --backend torch-cuda    # Linux/WSL2 with an NVIDIA GPU
 ```
@@ -47,14 +47,35 @@ Requires the backend venv at `local-client/local-backend/.venv` (`python -m
 venv .venv && .venv/bin/pip install -r requirements.txt`, see
 [setup.md](setup.md)) and `npm install` already run in `local-client/frontend`.
 
+## Remote server
+
+`start-remote` starts Milvus/PostgreSQL with Docker Compose, waits for their
+ports, then runs the remote FastAPI backend in the current terminal:
+
+```powershell
+scripts\start-remote.ps1
+scripts\start-remote.ps1 -SkipDatabases -Reload
+```
+
+```bash
+bash scripts/start-remote.sh
+bash scripts/start-remote.sh --skip-databases --reload
+```
+
+It creates `remote-server/.env` from `.env.example` only when missing. The
+remote launcher does not start the frontend; clients point
+`NEXT_PUBLIC_API_URL` or `REMOTE_SERVER_URL` at port `8000`.
+It expects dependencies in `remote-server/.venv`; setup remains explicit
+because the GPU/CPU dependency choice is machine-specific.
+
 ## Stopping
 
 Close the terminal window (or Ctrl+C inside it, then close). If a service
 fell back to running in the background (no terminal emulator found), kill it
 by port instead:
 
-- Windows: `Get-NetTCPConnection -LocalPort 8002,3002 | Select-Object -Expand OwningProcess | Stop-Process`
-- Mac/Linux/WSL: `lsof -ti:8002,3002 | xargs kill`
+- Windows: `Get-NetTCPConnection -LocalPort 8000,3000 | Select-Object -Expand OwningProcess | Stop-Process`
+- Mac/Linux/WSL: `lsof -ti:8000,3000 | xargs kill`
 
 ## Not covered by `--backend`
 

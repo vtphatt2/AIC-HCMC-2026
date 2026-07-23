@@ -4,6 +4,35 @@ export interface Strategy {
   description: string;
   author: string;
   version: string;
+  configurable?: boolean;
+}
+
+export interface StrategyConfigField {
+  type?: "number" | "number_list";
+  label: string;
+  item_label?: string;
+  default: number | number[];
+  min: number;
+  max: number;
+  step: number;
+  min_items?: number;
+  max_items?: number;
+}
+
+export type StrategyConfigValue = number | number[];
+
+export interface StrategyConfigPreset {
+  id: string;
+  strategy_id: string;
+  strategy_version: string;
+  revision: number;
+  weights: Record<string, StrategyConfigValue>;
+}
+
+export interface StrategyConfigResponse {
+  strategy_id: string;
+  schema: Record<string, StrategyConfigField>;
+  configs: StrategyConfigPreset[];
 }
 
 export interface VectorSearchAlgorithm {
@@ -22,8 +51,6 @@ export interface QueryGroup {
   semanticQuery: string;
   textQuery: string;
   temporalOffsetMs: number;  // ms after the previous group's result — 0 for the first group
-  translateSemantic: boolean;
-  translatedQuery: string;
 }
 
 export interface TranslationResponse {
@@ -52,6 +79,8 @@ export interface SearchResponse {
   strategy_id: string;
   total: number;
   execution_time_ms: number;
+  config_id?: string;
+  config_revision?: number;
 }
 
 export interface TranscriptChunkResult {

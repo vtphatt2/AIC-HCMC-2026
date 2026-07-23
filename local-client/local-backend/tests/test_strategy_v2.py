@@ -54,6 +54,19 @@ class StrategyV2Tests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "parser is not configured"):
             await context.parse_json(system_prompt="x", user_input="y", response_model=dict)
 
+    def test_context_exposes_request_scoped_strategy_config(self):
+        context = SearchContext(
+            [], 10, "All", Mock(),
+            options={"transcript.semantic": 0.7},
+            config_id="balanced",
+            config_revision=2,
+        )
+
+        self.assertEqual(context.option("transcript.semantic"), 0.7)
+        self.assertEqual(context.option("missing", 1.0), 1.0)
+        self.assertEqual(context.config_id, "balanced")
+        self.assertEqual(context.config_revision, 2)
+
     async def test_base_strategy_builds_one_request_context_and_caps_results(self):
         provider = Mock()
         provider.retrieve = AsyncMock(return_value=[{"frame_id": "f1"}])
@@ -85,6 +98,23 @@ class StrategyV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fused[0]["frame_id"], "b")
         self.assertEqual(len(fused[0]["evidence"]), 2)
         self.assertGreaterEqual(fused[0]["confidence"], fused[1]["confidence"])
+
+    def test_rrf_accepts_one_weight_per_ranking(self):
+        fused = rrf(
+            [[{"frame_id": "visual"}], [{"frame_id": "transcript"}]],
+            key="frame_id",
+            weights=[0.5, 2.0],
+        )
+
+        self.assertEqual(fused[0]["frame_id"], "transcript")
+        self.assertEqual(
+            [row["frame_id"] for row in rrf(
+                [[{"frame_id": "disabled"}], [{"frame_id": "enabled"}]],
+                key="frame_id",
+                weights=[0.0, 1.0],
+            )],
+            ["enabled"],
+        )
 
 
 if __name__ == "__main__":

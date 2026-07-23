@@ -98,11 +98,11 @@ Không cần LLM thì bỏ planner và dùng raw query hoặc parser Python.
 |---|---|
 | `context.query_groups` | Raw queries và temporal offsets |
 | `context.top_k` | Số kết quả cuối request cần |
-| `context.video_genre` | Genre filter hiện tại |
+| `context.video_genre` / `context.option(key, default)` | Genre filter / giá trị từ preset của strategy |
 | `await context.retrieve(channel, query, top_k=...)` | Lấy ranked hits từ một channel |
 | `await context.parse_json(...)` | Optional LLM structured parsing |
 | `await context.keyframes(video_id, start_ms, end_ms)` | Lấy keyframes trong interval |
-| `rrf(rankings, key="frame_id")` | Fusion rankings khác scale |
+| `rrf(rankings, key="frame_id", weights=[...])` | Weighted fusion rankings khác scale |
 | `context.results(frame_hits)` | Hydrate/validate final output |
 
 ## Tùy biến trong `run`
@@ -113,7 +113,7 @@ Strategy được quyền:
 - query một hay nhiều channel, song song hoặc nhiều vòng;
 - tự chọn per-channel `top_k`;
 - tự fusion, temporal matching, rerank và fallback;
-- định nghĩa helper/schema riêng trong cùng file.
+- khai báo `config_schema`: field mặc định là số; dùng `type: "number_list"`, `default: [1,1,1]`, `item_label: "Event {index}"` cho event weights; đọc bằng `context.option`.
 
 Không truyền SQL/DB/collection/credentials hoặc lưu per-request state trong `self`.
 

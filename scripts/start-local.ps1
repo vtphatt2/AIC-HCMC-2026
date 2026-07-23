@@ -1,6 +1,6 @@
 param(
-    [int]$BackendPort = 8002,
-    [int]$FrontendPort = 3002,
+    [int]$BackendPort = 8000,
+    [int]$FrontendPort = 3000,
     # onnx-cpu:  PECore ONNX text encoder, CPU only, no torch install needed (default; matches this machine).
     # torch-cpu: full OpenCLIP model on CPU.
     # torch-cuda: full OpenCLIP model on an NVIDIA GPU.
@@ -13,6 +13,14 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $backendDir = Join-Path $root "local-client\local-backend"
 $frontendDir = Join-Path $root "local-client\frontend"
+$backendPython = Join-Path $backendDir ".venv\Scripts\python.exe"
+
+if (-not (Test-Path -LiteralPath $backendPython)) {
+    throw "Missing backend venv. Run: cd local-client\local-backend; python -m venv .venv; .venv\Scripts\pip install -r requirements.txt"
+}
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+    throw "npm.cmd was not found. Install Node.js first."
+}
 
 function Test-Port([int]$Port) {
     return $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
@@ -31,7 +39,7 @@ $backendEnvPrefix = (($backendEnvByChoice[$Backend]).GetEnumerator() |
 # window vanishing.
 if (-not (Test-Port $BackendPort)) {
     $origins = "http://localhost:$FrontendPort,http://127.0.0.1:$FrontendPort"
-    $backendCommand = "title Backend ($Backend) && $backendEnvPrefix set CORS_ORIGINS=$origins&& `"$(Join-Path $backendDir '.venv\Scripts\python.exe')`" -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
+    $backendCommand = "title Backend ($Backend) && $backendEnvPrefix set CORS_ORIGINS=$origins&& `"$backendPython`" -m uvicorn main:app --host 127.0.0.1 --port $BackendPort"
     Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $backendCommand -WorkingDirectory $backendDir | Out-Null
     $backendNote = "opened in its own terminal window"
 } else {

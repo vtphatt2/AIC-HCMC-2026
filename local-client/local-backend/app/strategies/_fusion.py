@@ -1,12 +1,26 @@
-def rrf(rankings: list[list[dict]], *, key: str, k: int = 60) -> list[dict]:
+def rrf(
+    rankings: list[list[dict]],
+    *,
+    key: str,
+    k: int = 60,
+    weights: list[float] | None = None,
+) -> list[dict]:
     """Reciprocal-rank fusion for rankings whose raw score scales may differ."""
     if k < 1:
         raise ValueError("k must be positive")
+    if weights is None:
+        weights = [1.0] * len(rankings)
+    if len(weights) != len(rankings):
+        raise ValueError("weights must match rankings")
+    if any(float(weight) < 0 for weight in weights):
+        raise ValueError("weights must not be negative")
 
     merged: dict[object, dict] = {}
     scores: dict[object, float] = {}
     evidence: dict[object, list[dict]] = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, weights):
+        if float(weight) == 0:
+            continue
         seen = set()
         for rank, hit in enumerate(ranking, start=1):
             identity = hit.get(key)
@@ -14,7 +28,7 @@ def rrf(rankings: list[list[dict]], *, key: str, k: int = 60) -> list[dict]:
                 continue
             seen.add(identity)
             merged.setdefault(identity, dict(hit))
-            scores[identity] = scores.get(identity, 0.0) + 1.0 / (k + rank)
+            scores[identity] = scores.get(identity, 0.0) + float(weight) / (k + rank)
             evidence.setdefault(identity, []).append(dict(hit))
 
     if not scores:

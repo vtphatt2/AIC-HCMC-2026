@@ -1,6 +1,7 @@
 import asyncio
 
 from .base_strategy import BaseStrategy
+from ._duy_temporal_core import TEMPORAL_CONFIG_SCHEMA, resolve_event_weights
 
 
 class TemporalVisual(BaseStrategy):
@@ -8,6 +9,7 @@ class TemporalVisual(BaseStrategy):
     description = "Match raw visual queries in order using each group's time offset."
     author = "AIC HCMC"
     version = "2.0"
+    config_schema = TEMPORAL_CONFIG_SCHEMA
 
     PER_STEP = 300
     TOLERANCE_MS = 3000
@@ -26,6 +28,7 @@ class TemporalVisual(BaseStrategy):
         ])
         if len(rankings) == 1:
             return context.results(rankings[0])
+        weights = resolve_event_weights(context.option("event_weights", None), len(rankings))
 
         offsets = [0]
         total = 0
@@ -52,7 +55,10 @@ class TemporalVisual(BaseStrategy):
                     - abs(int(hit["timestamp_ms"]) - expected) / self.TOLERANCE_MS,
                 ))
             if len(chain) == len(rankings):
-                score = sum(float(hit.get("score", 0.0)) for hit in chain) / len(chain)
+                score = sum(
+                    float(hit.get("score", 0.0)) * weight
+                    for hit, weight in zip(chain, weights)
+                ) / (sum(weights) or 1.0)
                 matches.append({**chain[-1], "confidence": score, "evidence": chain, "_steps": chain})
 
         matches.sort(key=lambda hit: hit["confidence"], reverse=True)
