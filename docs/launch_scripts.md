@@ -33,6 +33,7 @@ unset in `.env` if you want `--backend` to control it.
 scripts\start-local.ps1                       # onnx-cpu, ports 8000/3000
 scripts\start-local.ps1 -Backend torch-cuda
 scripts\start-local.ps1 -Backend torch-cpu -BackendPort 8010 -FrontendPort 3010
+scripts\start-local.ps1 -LanAddress 192.168.0.102
 ```
 
 ## Mac / Linux / WSL
@@ -41,7 +42,15 @@ scripts\start-local.ps1 -Backend torch-cpu -BackendPort 8010 -FrontendPort 3010
 bash scripts/start-local.sh                   # onnx-cpu, ports 8000/3000
 scripts/start-local.sh --backend torch-mps     # Apple Silicon
 scripts/start-local.sh --backend torch-cuda    # Linux/WSL2 with an NVIDIA GPU
+bash scripts/start-local.sh --lan-address 192.168.0.102
 ```
+
+`-LanAddress` / `--lan-address` exposes both dev servers on the local network
+and gives the frontend a backend URL that phones can reach. Stop any existing
+processes on ports 8000/3000 first, run the LAN command, then open
+`http://192.168.0.102:3000/tuning` on a phone connected to the same trusted
+Wi-Fi. The query page checks the selected config revision once per second and
+automatically searches again after a tuning save.
 
 Requires the backend venv at `local-client/local-backend/.venv` (`python -m
 venv .venv && .venv/bin/pip install -r requirements.txt`, see

@@ -7,9 +7,10 @@ set -euo pipefail
 backend_port=8000
 frontend_port=3000
 backend=onnx-cpu
+lan_address=""
 
 usage() {
-    echo "Usage: $0 [--backend onnx-cpu|torch-cpu|torch-cuda|torch-mps] [--backend-port PORT] [--frontend-port PORT]"
+    echo "Usage: $0 [--backend onnx-cpu|torch-cpu|torch-cuda|torch-mps] [--backend-port PORT] [--frontend-port PORT] [--lan-address IPv4]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -17,6 +18,7 @@ while [[ $# -gt 0 ]]; do
         --backend) backend="$2"; shift 2 ;;
         --backend-port) backend_port="$2"; shift 2 ;;
         --frontend-port) frontend_port="$2"; shift 2 ;;
+        --lan-address) lan_address="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -32,6 +34,17 @@ case "$backend" in
         exit 1 ;;
 esac
 
+bind_host=127.0.0.1
+public_host=127.0.0.1
+if [[ -n "$lan_address" ]]; then
+    if [[ ! "$lan_address" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+        echo "--lan-address must be an IPv4 address, for example 192.168.0.102" >&2
+        exit 1
+    fi
+    bind_host=0.0.0.0
+    public_host="$lan_address"
+fi
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="$root/local-client/local-backend"
 frontend_dir="$root/local-client/frontend"
@@ -46,6 +59,11 @@ command -v npm >/dev/null 2>&1 || { echo "npm was not found. Install Node.js fir
 port_listening() {
     (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
+
+if [[ -n "$lan_address" ]] && { port_listening "$backend_port" || port_listening "$frontend_port"; }; then
+    echo "LAN mode needs fresh processes. Stop services on ports $backend_port and $frontend_port, then run this command again." >&2
+    exit 1
+fi
 
 # Runs $cmd in its own terminal window (Terminal.app on Mac, gnome-terminal
 # or xterm on Linux/WSL) so you can watch it live. Falls back to a background
@@ -75,8 +93,8 @@ run_service() {
 }
 
 if ! port_listening "$backend_port"; then
-    origins="http://localhost:$frontend_port,http://127.0.0.1:$frontend_port"
-    backend_cmd="cd \"$backend_dir\" && $backend_env_vars CORS_ORIGINS=\"$origins\" .venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port $backend_port"
+    origins="http://localhost:$frontend_port,http://127.0.0.1:$frontend_port,http://$public_host:$frontend_port"
+    backend_cmd="cd \"$backend_dir\" && $backend_env_vars CORS_ORIGINS=\"$origins\" .venv/bin/python -m uvicorn main:app --host $bind_host --port $backend_port"
     run_service "Backend ($backend)" "$backend_cmd" "backend"
     backend_note="opened in its own terminal window"
 else
@@ -84,9 +102,9 @@ else
     backend_note="already running"
 fi
 
-api_url="http://127.0.0.1:$backend_port"
+api_url="http://$public_host:$backend_port"
 if ! port_listening "$frontend_port"; then
-    frontend_cmd="cd \"$frontend_dir\" && NEXT_PUBLIC_API_URL=\"$api_url\" npm run dev -- -p $frontend_port"
+    frontend_cmd="cd \"$frontend_dir\" && NEXT_PUBLIC_API_URL=\"$api_url\" npm run dev -- -H $bind_host -p $frontend_port"
     run_service "Frontend" "$frontend_cmd" "frontend"
     frontend_note="opened in its own terminal window"
 else
@@ -95,4 +113,4 @@ else
 fi
 
 echo "Backend:  $api_url (--backend $backend) - $backend_note"
-echo "Frontend: http://127.0.0.1:$frontend_port - $frontend_note"
+echo "Frontend: http://$public_host:$frontend_port - $frontend_note"
