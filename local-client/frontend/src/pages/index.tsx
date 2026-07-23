@@ -15,10 +15,10 @@ import {
   fetchVectorSearchAlgorithms,
   fetchStrategies,
   fetchStrategyConfigs,
+  saveStrategyConfig,
   runSearch,
   warmupTextEncoder,
   searchTranscriptChunks,
-  strategyConfigUpdateKey,
 } from "@/lib/api";
 import QueryGroupComponent from "@/components/QueryGroup";
 import CommandPanel, { type CommandPanelHandle } from "@/components/CommandPanel";
@@ -156,6 +156,29 @@ export default function Home() {
       window.localStorage.setItem(CONFIG_STORAGE_PREFIX + selectedStrategy, configId);
     }
   }
+
+  useEffect(() => {
+    const config = strategyConfigs.find((item) => item.id === selectedConfig);
+    const eventWeights = config?.weights.event_weights;
+    if (!selectedStrategy || !Array.isArray(eventWeights) || eventWeights.length === queryGroups.length) return;
+
+    const nextWeights = eventWeights.slice(0, queryGroups.length);
+    while (nextWeights.length < queryGroups.length) nextWeights.push(1);
+    let cancelled = false;
+
+    // ponytail: presets are shared; add session-scoped state only if multiple search clients need different event counts.
+    saveStrategyConfig(selectedStrategy, selectedConfig, { event_weights: nextWeights })
+      .then((saved) => {
+        if (!cancelled) {
+          setStrategyConfigs((current) => current.map((item) => item.id === saved.id ? saved : item));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError("Cannot sync event weights with temporal steps.");
+      });
+
+    return () => { cancelled = true; };
+  }, [queryGroups.length, selectedConfig, selectedStrategy, strategyConfigs]);
 
   // ── Video modal transcript panel: load saved on/off preference ────────────
   useEffect(() => {
@@ -305,18 +328,41 @@ export default function Home() {
   }
 
   useEffect(() => {
-    if (!selectedStrategy || !response) return;
-    const updateKey = strategyConfigUpdateKey(selectedStrategy, selectedConfig);
-    function handleConfigUpdate(event: StorageEvent) {
-      if (event.key !== updateKey) return;
-      fetchStrategyConfigs(selectedStrategy)
-        .then((payload) => setStrategyConfigs(payload.configs))
-        .catch(() => undefined);
-      void handleSearch();
+    if (!selectedStrategy) return;
+    let revision = response?.config_revision
+      ?? strategyConfigs.find((config) => config.id === selectedConfig)?.revision
+      ?? null;
+    let checking = false;
+    let cancelled = false;
+
+    async function checkConfigRevision() {
+      if (checking) return;
+      checking = true;
+      try {
+        const payload = await fetchStrategyConfigs(selectedStrategy);
+        if (cancelled) return;
+        setStrategyConfigs(payload.configs);
+        const current = payload.configs.find((config) => config.id === selectedConfig);
+        if (!current) return;
+        if (revision !== null && current.revision !== revision) {
+          revision = current.revision;
+          if (response) void handleSearch();
+        } else {
+          revision = current.revision;
+        }
+      } catch {
+        // Keep the current search usable while the tuning device is unavailable.
+      } finally {
+        checking = false;
+      }
     }
-    window.addEventListener("storage", handleConfigUpdate);
-    return () => window.removeEventListener("storage", handleConfigUpdate);
-  }, [queryGroups, response, selectedConfig, selectedStrategy, selectedVectorAlgorithm, topKInput, videoGenre]);
+
+    const timer = window.setInterval(checkConfigRevision, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, topKInput, videoGenre]);
 
   // ── Transcript search ──────────────────────────────────────────────────────
   async function handleTranscriptSearch() {

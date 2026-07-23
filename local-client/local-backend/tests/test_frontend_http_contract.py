@@ -11,16 +11,15 @@ class FrontendHttpContractTests(unittest.TestCase):
         self.client = TestClient(main.app)
 
     def test_local_frontend_origin_is_allowed(self):
-        response = self.client.get(
-            "/api/strategies",
-            headers={"Origin": "http://localhost:3000"},
-        )
+        for origin in ("http://localhost:3000", "http://192.168.0.102:3000"):
+            with self.subTest(origin=origin):
+                response = self.client.get(
+                    "/api/strategies",
+                    headers={"Origin": origin},
+                )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.headers.get("access-control-allow-origin"),
-            "http://localhost:3000",
-        )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers.get("access-control-allow-origin"), origin)
 
     def test_warmup_contract_accepts_get_and_post(self):
         provider = AsyncMock()

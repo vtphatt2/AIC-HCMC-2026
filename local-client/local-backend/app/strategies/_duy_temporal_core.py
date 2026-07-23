@@ -8,7 +8,7 @@ TEMPORAL_CONFIG_SCHEMA = {
         "type": "number_list",
         "label": "Event weights",
         "item_label": "Event {index}",
-        "default": [1.0, 1.0, 1.0],
+        "default": [1.0],
         "min": 0.0,
         "max": 2.0,
         "step": 0.1,

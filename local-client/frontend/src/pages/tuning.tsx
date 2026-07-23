@@ -7,7 +7,6 @@ import {
   fetchStrategies,
   fetchStrategyConfigs,
   saveStrategyConfig,
-  strategyConfigUpdateKey,
 } from "@/lib/api";
 import type {
   Strategy,
@@ -111,15 +110,38 @@ export default function TuningPage() {
           setConfigs((current) => current.map((config) => config.id === saved.id ? saved : config));
           setDirty(false);
           setStatus(`Saved revision ${saved.revision}`);
-          window.localStorage.setItem(
-            strategyConfigUpdateKey(strategyId, saved.id),
-            `${saved.revision}:${Date.now()}`,
-          );
         })
         .catch((error) => setStatus(error instanceof Error ? error.message : "Save failed"));
     }, 400);
     return () => window.clearTimeout(timer);
   }, [configId, dirty, strategyId, weights]);
+
+  useEffect(() => {
+    if (!strategyId || !configId || dirty) return;
+    const knownRevision = configs.find((config) => config.id === configId)?.revision;
+    let cancelled = false;
+
+    async function refreshConfig() {
+      try {
+        const payload = await fetchStrategyConfigs(strategyId);
+        if (cancelled) return;
+        const current = payload.configs.find((config) => config.id === configId);
+        if (!current || current.revision === knownRevision) return;
+        setSchema(payload.schema);
+        setConfigs(payload.configs);
+        setWeights(current.weights);
+        setStatus(`Synced revision ${current.revision}`);
+      } catch {
+        // Keep sliders usable through a temporary network interruption.
+      }
+    }
+
+    const timer = window.setInterval(refreshConfig, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [configId, configs, dirty, strategyId]);
 
   const selectedConfig = useMemo(
     () => configs.find((config) => config.id === configId),
@@ -221,20 +243,6 @@ export default function TuningPage() {
                           onChange={(next) => updateWeight(key, values.map((item, itemIndex) => itemIndex === index ? next : item))}
                         />
                       ))}
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={values.length >= (field.max_items ?? Number.POSITIVE_INFINITY)}
-                          onClick={() => updateWeight(key, [...values, 1])}
-                          className="font-retro text-xs px-3 py-1 border-2 border-stone-700 dark:border-stone-400 rounded disabled:opacity-40"
-                        >+ Event</button>
-                        <button
-                          type="button"
-                          disabled={values.length <= (field.min_items ?? 0)}
-                          onClick={() => updateWeight(key, values.slice(0, -1))}
-                          className="font-retro text-xs px-3 py-1 border-2 border-stone-400 rounded disabled:opacity-40"
-                        >- Event</button>
-                      </div>
                     </fieldset>
                   );
                 }
