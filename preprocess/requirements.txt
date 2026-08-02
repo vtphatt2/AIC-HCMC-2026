@@ -1,0 +1,8 @@
+# Python dependencies for the isolated SSH preprocessing environment.
+# aria2c, ffmpeg and ffprobe remain system executables installed with APT.
+numpy==2.2.6
+Pillow
+tqdm==4.68.4
+kaggle
+transnetv2-pytorch==1.0.5
+open_clip_torch==3.3.0
