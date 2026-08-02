@@ -9,12 +9,17 @@ import type {
   TranscriptChunkResult,
   TranscriptChunkSearchResponse,
   VectorSearchAlgorithm,
+  StrategyConfigPreset,
+  StrategyConfigDraft,
+  StrategyConfigValue,
 } from "@/types";
 import {
   fetchVectorSearchAlgorithms,
   fetchStrategies,
+  fetchStrategyConfigs,
+  fetchStrategyConfigDraft,
+  saveStrategyConfigDraft,
   runSearch,
-  translateTexts,
   warmupTextEncoder,
   searchTranscriptChunks,
 } from "@/lib/api";
@@ -29,9 +34,7 @@ import HelpModal from "@/components/HelpModal";
 const DEFAULT_GROUP: QueryGroup = {
   semanticQuery: "",
   textQuery: "",
-  temporalOffsetMs: 5000,
-  translateSemantic: false,
-  translatedQuery: "",
+  temporalOffsetMs: 1000,
 };
 
 const ALL_GENRES = [
@@ -43,6 +46,7 @@ const ALL_GENRES = [
 
 const THEME_STORAGE_KEY = "aic2026-theme";
 const SHOW_TRANSCRIPT_KEY = "aic2026-show-transcript";
+const CONFIG_STORAGE_PREFIX = "aic2026-strategy-config:";
 const SIDEBAR_WIDTH_KEY = "aic2026-sidebar-width";
 const SIDEBAR_DEFAULT_WIDTH = 520;
 const SIDEBAR_MIN_WIDTH = 300;
@@ -69,6 +73,9 @@ export default function Home() {
   // ── State ──────────────────────────────────────────────────────────────────
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [selectedStrategy, setSelectedStrategy] = useState<string>("");
+  const [strategyConfigs, setStrategyConfigs] = useState<StrategyConfigPreset[]>([]);
+  const [strategyConfigDraft, setStrategyConfigDraft] = useState<StrategyConfigDraft | null>(null);
+  const [selectedConfig, setSelectedConfig] = useState("default");
   const [queryGroups, setQueryGroups] = useState<QueryGroup[]>([
     { ...DEFAULT_GROUP, temporalOffsetMs: 0 },
   ]);
@@ -120,6 +127,59 @@ export default function Home() {
     const prefersLight = window.matchMedia?.("(prefers-color-scheme: light)").matches;
     setTheme(prefersLight ? "light" : "dark");
   }, []);
+
+  useEffect(() => {
+    if (!selectedStrategy) return;
+    setStrategyConfigDraft(null);
+    let cancelled = false;
+    async function loadConfigs() {
+      try {
+        const payload = await fetchStrategyConfigs(selectedStrategy);
+        if (cancelled) return;
+        setStrategyConfigs(payload.configs);
+        const saved = window.localStorage.getItem(CONFIG_STORAGE_PREFIX + selectedStrategy);
+        const next = payload.configs.some((config) => config.id === saved) ? saved! : "default";
+        setSelectedConfig(next);
+      } catch {
+        if (!cancelled) {
+          setStrategyConfigs([]);
+          setSelectedConfig("default");
+        }
+      }
+    }
+    loadConfigs();
+    window.addEventListener("focus", loadConfigs);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", loadConfigs);
+    };
+  }, [selectedStrategy]);
+
+  function selectConfig(configId: string) {
+    setSelectedConfig(configId);
+    setStrategyConfigDraft(null);
+    if (selectedStrategy) {
+      window.localStorage.setItem(CONFIG_STORAGE_PREFIX + selectedStrategy, configId);
+    }
+  }
+
+  useEffect(() => {
+    const config = strategyConfigs.find((item) => item.id === selectedConfig);
+    const eventWeights = strategyConfigDraft?.overrides.event_weights ?? config?.weights.event_weights;
+    if (!selectedStrategy || !Array.isArray(eventWeights) || eventWeights.length === queryGroups.length) return;
+
+    const nextWeights = eventWeights.slice(0, queryGroups.length);
+    while (nextWeights.length < queryGroups.length) nextWeights.push(1);
+    let cancelled = false;
+
+    saveStrategyConfigDraft(selectedStrategy, selectedConfig, { event_weights: nextWeights })
+      .then((saved) => { if (!cancelled) setStrategyConfigDraft(saved); })
+      .catch(() => {
+        if (!cancelled) setError("Cannot sync event weights with temporal steps.");
+      });
+
+    return () => { cancelled = true; };
+  }, [queryGroups.length, selectedConfig, selectedStrategy, strategyConfigDraft, strategyConfigs]);
 
   // ── Video modal transcript panel: load saved on/off preference ────────────
   useEffect(() => {
@@ -235,7 +295,7 @@ export default function Home() {
   }
 
   // ── Frame search ───────────────────────────────────────────────────────────
-  async function handleSearch() {
+  async function handleSearch(configOverrides?: Record<string, StrategyConfigValue>) {
     const hasInput = queryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
       setError("Enter at least one search query.");
@@ -253,33 +313,12 @@ export default function Home() {
     setTopKInput(String(topK));
     const started = performance.now();
     try {
-      const groupsForSearch = queryGroups.map((group) => ({ ...group }));
-      const pendingIndices = groupsForSearch
-        .map((group, index) => ({ group, index }))
-        .filter(({ group }) =>
-          group.translateSemantic &&
-          group.semanticQuery.trim() &&
-          !group.translatedQuery
-        )
-        .map(({ index }) => index);
-
-      if (pendingIndices.length > 0) {
-        setLoadingLabel("Translating…");
-        const translation = await translateTexts(
-          pendingIndices.map((index) => groupsForSearch[index].semanticQuery),
-        );
-        pendingIndices.forEach((groupIndex, translationIndex) => {
-          groupsForSearch[groupIndex].translatedQuery =
-            translation.translations[translationIndex];
-        });
-        setQueryGroups(groupsForSearch);
-      }
-
-      setLoadingLabel("Searching…");
       const res = await runSearch(
-        selectedStrategy, groupsForSearch, topK,
+        selectedStrategy, queryGroups, topK,
         videoGenre,
         selectedVectorAlgorithm || undefined,
+        selectedConfig,
+        configOverrides ?? strategyConfigDraft?.overrides ?? {},
       );
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
@@ -289,6 +328,38 @@ export default function Home() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!selectedStrategy) return;
+    let revision = strategyConfigDraft?.revision ?? null;
+    let checking = false;
+    let cancelled = false;
+
+    async function checkDraftRevision() {
+      if (checking) return;
+      checking = true;
+      try {
+        const draft = await fetchStrategyConfigDraft(selectedStrategy, selectedConfig);
+        if (cancelled) return;
+        if (revision !== null && draft.revision !== revision && response) {
+          void handleSearch(draft.overrides);
+        }
+        revision = draft.revision;
+        setStrategyConfigDraft(draft);
+      } catch {
+        // Keep the current search usable while the tuning device is unavailable.
+      } finally {
+        checking = false;
+      }
+    }
+
+    void checkDraftRevision();
+    const timer = window.setInterval(checkDraftRevision, 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, strategyConfigDraft?.revision, topKInput, videoGenre]);
 
   // ── Transcript search ──────────────────────────────────────────────────────
   async function handleTranscriptSearch() {
@@ -512,6 +583,9 @@ export default function Home() {
                   strategies={strategies}
                   selectedStrategy={selectedStrategy}
                   setSelectedStrategy={setSelectedStrategy}
+                  strategyConfigs={strategyConfigs}
+                  selectedConfig={selectedConfig}
+                  setSelectedConfig={selectConfig}
                   queryGroups={queryGroups}
                   setQueryGroups={setQueryGroups}
                   topKInput={topKInput}
@@ -561,6 +635,29 @@ export default function Home() {
                           {currentStrategy.description} — by {currentStrategy.author}
                         </p>
                       )}
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={selectedConfig}
+                          onChange={(e) => selectConfig(e.target.value)}
+                          className={`${RETRO_INPUT} min-w-0 flex-1`}
+                          aria-label="Strategy config"
+                        >
+                          {strategyConfigs.length === 0 && <option value="default">default</option>}
+                          {strategyConfigs.map((config) => (
+                            <option key={config.id} value={config.id}>{config.id}</option>
+                          ))}
+                        </select>
+                        {currentStrategy?.configurable && (
+                          <a
+                            href={`/tuning?strategy=${encodeURIComponent(selectedStrategy)}&config=${encodeURIComponent(selectedConfig)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-retro px-3 py-1.5 rounded border-2 border-stone-800 dark:border-stone-500 text-xs font-bold uppercase hover:text-orange-700 dark:hover:text-orange-400"
+                          >
+                            Tune
+                          </a>
+                        )}
+                      </div>
                     </div>
 
                     {/* Toolbar 1: step editing tools */}
@@ -787,7 +884,7 @@ export default function Home() {
                       </div>
 
                       <button
-                        onClick={handleSearch}
+                        onClick={() => void handleSearch()}
                         disabled={loading}
                         className={`${RETRO_STAMP_BTN} w-full py-2 bg-orange-700 hover:bg-orange-600 disabled:bg-stone-300 dark:disabled:bg-stone-700 disabled:text-stone-500 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0 text-white text-sm rounded`}
                       >

@@ -2,6 +2,9 @@ import type {
   Strategy,
   QueryGroup,
   SearchResponse,
+  StrategyConfigDraft,
+  StrategyConfigResponse,
+  StrategyConfigValue,
   TranslationResponse,
   TranscriptChunkSearchResponse,
   TranscriptResponse,
@@ -17,6 +20,43 @@ export function apiUrl(path: string): string {
 export async function fetchStrategies(): Promise<Strategy[]> {
   const res = await fetch(apiUrl("/api/strategies"));
   if (!res.ok) throw new Error("Failed to fetch strategies");
+  return res.json();
+}
+
+export async function fetchStrategyConfigs(strategyId: string): Promise<StrategyConfigResponse> {
+  const res = await fetch(apiUrl(`/api/strategies/${encodeURIComponent(strategyId)}/configs`));
+  if (!res.ok) throw new Error("Failed to fetch strategy configs");
+  return res.json();
+}
+
+function draftUrl(strategyId: string, configId: string): string {
+  const query = new URLSearchParams({ strategy_id: strategyId, config_id: configId });
+  return `/api/tuning-draft?${query}`;
+}
+
+export async function fetchStrategyConfigDraft(
+  strategyId: string,
+  configId: string,
+): Promise<StrategyConfigDraft> {
+  const res = await fetch(draftUrl(strategyId, configId), { cache: "no-store" });
+  if (!res.ok) throw new Error("Failed to load local tuning draft");
+  return res.json();
+}
+
+export async function saveStrategyConfigDraft(
+  strategyId: string,
+  configId: string,
+  overrides: Record<string, StrategyConfigValue>,
+): Promise<StrategyConfigDraft> {
+  const res = await fetch(draftUrl(strategyId, configId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.error || "Failed to save local tuning draft");
+  }
   return res.json();
 }
 
@@ -54,12 +94,18 @@ export async function runSearch(
   topK: number,
   videoGenre: string = "All",
   vectorSearchAlgorithm?: string,
+  configId: string = "default",
+  configOverrides: Record<string, StrategyConfigValue> = {},
 ): Promise<SearchResponse> {
   const payload: Record<string, unknown> = {
     strategy_id: strategyId,
+    config_id: configId,
+    config_overrides: configOverrides,
     query_groups: queryGroups.map(g => ({
-      semantic_query: g.translateSemantic ? g.translatedQuery : g.semanticQuery,
-      text_query: g.textQuery,
+      query: [g.semanticQuery, g.textQuery]
+        .map(value => value.trim())
+        .filter(Boolean)
+        .join(" "),
       temporal_offset_ms: g.temporalOffsetMs
     })),
     top_k: topK,

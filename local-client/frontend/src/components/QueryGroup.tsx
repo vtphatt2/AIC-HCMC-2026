@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { translateTexts } from "@/lib/api";
 import type { QueryGroup as QueryGroupType } from "@/types";
 
 interface Props {
@@ -10,8 +12,27 @@ interface Props {
 }
 
 export default function QueryGroup({ group, index, isFirst, onChange, onRemove, onSubmit }: Props) {
+  const [translating, setTranslating] = useState(false);
+  const [translationError, setTranslationError] = useState("");
+
   function update(patch: Partial<QueryGroupType>) {
     onChange({ ...group, ...patch });
+  }
+
+  async function handleTranslate() {
+    const text = group.semanticQuery.trim();
+    if (!text || translating) return;
+
+    setTranslating(true);
+    setTranslationError("");
+    try {
+      const response = await translateTexts([text]);
+      update({ semanticQuery: response.translations[0] });
+    } catch (error) {
+      setTranslationError(error instanceof Error ? error.message : "Translation failed");
+    } finally {
+      setTranslating(false);
+    }
   }
 
   // Enter in any of this step's inputs runs the search. Previously this
@@ -65,49 +86,31 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove, 
         <div className="flex-1 relative">
           <input
             type="text"
-            placeholder="Semantic search (visual scene description)…"
+            placeholder="Describe what you want to find…"
             value={group.semanticQuery}
-            onChange={(e) => update({
-              semanticQuery: e.target.value,
-              translatedQuery: "",
-            })}
+            disabled={translating}
+            onChange={(e) => {
+              setTranslationError("");
+              update({ semanticQuery: e.target.value });
+            }}
             onKeyDown={handleKeyDown}
             className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-600"
           />
         </div>
-        {/* Translation toggle */}
+        {/* Translate in place so the English can be edited before searching. */}
         <button
-          title={group.translateSemantic ? "Translate ON (query will be translated to English)" : "Translate OFF"}
-          onClick={() => update({
-            translateSemantic: !group.translateSemantic,
-            translatedQuery: "",
-          })}
-          className={`font-retro px-3 py-2 rounded text-xs font-bold border-2 transition ${
-            group.translateSemantic
-              ? "bg-orange-700 border-orange-800 text-white"
-              : "bg-cream-card dark:bg-stone-700 border-stone-700 dark:border-stone-500 text-stone-500 dark:text-stone-400 hover:text-orange-700 dark:hover:text-orange-400"
-          }`}
+          type="button"
+          title="Translate this query to English"
+          disabled={!group.semanticQuery.trim() || translating}
+          onClick={handleTranslate}
+          className="font-retro px-3 py-2 rounded text-xs font-bold border-2 transition bg-cream-card dark:bg-stone-700 border-stone-700 dark:border-stone-500 text-stone-500 dark:text-stone-400 hover:text-orange-700 dark:hover:text-orange-400 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          VI→EN
+          {translating ? "Translating…" : "VI→EN"}
         </button>
       </div>
 
-      {group.translateSemantic && group.translatedQuery && (
-        <div className="border-l-4 border-orange-700 pl-3">
-          <p className="text-xs text-stone-500">English query</p>
-          <p className="text-sm text-orange-800 dark:text-orange-300 break-words">{group.translatedQuery}</p>
-        </div>
-      )}
+      {translationError && <p className="text-xs text-rose-700 dark:text-rose-400">{translationError}</p>}
 
-      {/* OCR / Transcript text search box */}
-      <input
-        type="text"
-        placeholder="Text search (OCR / transcript keywords)…"
-        value={group.textQuery}
-        onChange={(e) => update({ textQuery: e.target.value })}
-        onKeyDown={handleKeyDown}
-        className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-teal-600"
-      />
     </div>
   );
 }

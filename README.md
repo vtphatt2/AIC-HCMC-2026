@@ -15,8 +15,10 @@ or run the complete PE-Core retrieval pipeline directly on the server.
 |---|---|
 | [docs/running.md](docs/running.md) | **Start here** — scenario picker + exact commands |
 | [docs/setup.md](docs/setup.md) | Step-by-step setup for local dev and GPU server |
+| [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local and remote launch (Windows/Mac/Linux/WSL) |
 | [docs/architecture.md](docs/architecture.md) | System design, data flow, ENV_MODE switching |
-| [docs/strategy_guide.md](docs/strategy_guide.md) | **How to write your own strategy** |
+| [docs/strategy_v2.md](docs/strategy_v2.md) | Strategy/data contract |
+| [docs/strategy_template_v2.md](docs/strategy_template_v2.md) | **How to write your own strategy** |
 | [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
 | [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | PE-Core ingestion, HNSW/CAGRA, translation, validation, and performance |
 | [docs/PE-Core-bigG-14-448-Text-Encoder.README.md](docs/PE-Core-bigG-14-448-Text-Encoder.README.md) | Lightweight ONNX text encoder (no torch) |
@@ -45,8 +47,10 @@ AIC-HCMC-2026/
 │       │   └── translation.py        # Optional VI/mixed → English translation
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/
-│           ├── base_strategy.py      # Abstract base — guardrails live here
-│           └── stable_fusion.py      # Current production strategy
+│           ├── base_strategy.py      # SearchContext + BaseStrategy V2
+│           ├── raw_visual.py         # Single-channel baseline
+│           ├── temporal_visual.py    # Multi-step temporal baseline
+│           └── multi_source.py       # Four-channel RRF example
 │
 └── local-client/
     ├── frontend/                # Next.js UI (Pages Router, Tailwind, TS strict=false)
@@ -63,9 +67,7 @@ AIC-HCMC-2026/
         └── app/
             ├── data_provider.py      # MOCK JSON | SAMPLE vectors | LOCAL proxy
             ├── mock/                 # 105 sample frames across 3 videos
-            └── strategies/
-                ├── base_strategy.py  # Identical to server — copy strategies freely
-                └── _example_strategy.py   # Template / UI smoke-test strategy
+            └── strategies/           # Same V2 strategy contract as server
 ```
 
 ---
@@ -73,8 +75,8 @@ AIC-HCMC-2026/
 ## Core System Concept
 
 Every retrieval strategy is a Python file that subclasses `BaseStrategy` and
-implements `fusion_and_temporal()`. It receives visual-search results, OCR,
-transcripts, and video metadata through a common `DataProvider` interface.
+implements `async run(context)`. It chooses data channels through
+`context.retrieve()` and owns fusion, temporal matching, and reranking.
 Local modes use mock/sample data or proxy to the server. Production mode uses
 PE-Core text embeddings with Milvus HNSW or optional cuVS CAGRA, plus
 PostgreSQL for metadata and text retrieval.
@@ -88,12 +90,10 @@ PostgreSQL for metadata and text retrieval.
 │  AIC 2026   Strategy: [Example (Mock) ▼]                            │
 │  [▼ Hide Search]  [+ Add Temporal Step]   Top K [100]  [Search]    │
 │  ┌ Query Group 1 ───────────────────────────────────────────────┐   │
-│  │ [Semantic search…────────────────────────] [VI→EN]           │   │
-│  │ [Text / OCR search…──────────────────────]                   │   │
+│  │ [Describe what you want to find…─────────] [VI→EN]           │   │
 │  └───────────────────────────────────────────────────────────────┘  │
 │  ┌ Temporal Step 2 (5s after step 1) ──────────────────────────┐   │
-│  │ [Semantic search…────────────────────────] [VI→EN]           │   │
-│  │ [Text / OCR search…──────────────────────]          [Remove] │   │
+│  │ [Describe what you want to find…─────────] [VI→EN] [Remove] │   │
 │  └───────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
   Result grid (sorted by confidence ↓)
@@ -111,13 +111,9 @@ PostgreSQL for metadata and text retrieval.
 
 ## Strategy Development Quickstart
 
-1. Copy `local-client/local-backend/app/strategies/_example_strategy.py`
-2. Rename to `yourname_idea_v1.py`
-3. Fill in `name`, `description`, `author`
-4. Implement `fusion_and_temporal()`
-5. Restart the backend — your strategy appears in the dropdown
-
-See [docs/strategy_guide.md](docs/strategy_guide.md) for full details.
+Copy the template in [docs/strategy_template_v2.md](docs/strategy_template_v2.md)
+into `local-client/local-backend/app/strategies/`; backend discovery adds it to
+the dropdown automatically.
 
 ---
 
@@ -131,5 +127,5 @@ See [docs/strategy_guide.md](docs/strategy_guide.md) for full details.
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
 | Video player | YouTube IFrame API |
-| Translation | Optional Google Cloud NMT or Gemini, configured on the backend |
+| Translation | Local CTranslate2 INT8 VI→EN; button replaces the editable query |
 | Local transport | HTTP via `httpx` (LOCAL mode) |

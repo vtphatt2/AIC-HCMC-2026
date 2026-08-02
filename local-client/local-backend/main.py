@@ -2,6 +2,7 @@
 AIC 2026 — Local Backend (Development Playground)
 Run with: uvicorn main:app --reload --port 8000
 """
+import asyncio
 import os
 import time
 import importlib
@@ -20,15 +21,22 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from app.data_provider import DataProvider, sample_subdir
+from app.services.translation import TranslationService
+from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
+from app.services.query_parser import QueryParser
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
+_translation_service = TranslationService()
+_strategy_configs = StrategyConfigStore(
+    Path(__file__).resolve().parents[2] / "data" / "strategy-configs"
+)
 
 
-def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
+def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
     """
     Scan strategies/ for .py files. Any class that inherits BaseStrategy
     (except BaseStrategy itself) is instantiated and registered under the
@@ -43,7 +51,7 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
             module = importlib.import_module(module_name)
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
-                    instance = cls(data_provider)
+                    instance = cls(data_provider, parser)
                     found[path.stem] = instance
                     print(f"  OK {path.stem}  [{cls.name}]  by {cls.author}")
                     break  # one strategy class per file
@@ -58,7 +66,8 @@ async def lifespan(app: FastAPI):
     print("Starting local backend…")
     _data_provider = DataProvider()
     print("Discovering strategies…")
-    _strategies = discover_strategies(_data_provider)
+    parser = QueryParser() if os.getenv("GEMINI_API_KEY", "").strip() else None
+    _strategies = discover_strategies(_data_provider, parser)
     print(f"Ready — {len(_strategies)} strategy/strategies available.\n")
     yield
 
@@ -73,6 +82,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,19 +118,12 @@ if FRAME_IMAGE_SOURCE == "youtube_storyboard":
 
         return Response(content=jpeg_bytes, media_type="image/jpeg")
 
-elif FRAME_IMAGE_SOURCE == "youtube_precise":
-    # Sharper + timestamp-accurate than the storyboard crop above: resolves
-    # the real video stream via yt-dlp and seeks into it with ffmpeg. Slower
-    # per frame on a cache miss (network + seek + decode), so this runs in a
-    # worker thread per request instead of blocking the event loop — a
-    # results grid's images load concurrently rather than one at a time.
-    # See docs/youtube-storyboard-thumbnails-workaround.md.
-    import asyncio
-    from app.services.youtube_precise_frame import PreciseFrameUnavailable, get_precise_frame_jpeg
-    from app.services.youtube_thumbnail import StoryboardUnavailable, get_thumbnail_jpeg
+elif FRAME_IMAGE_SOURCE == "local_video":
+    # Read data/videos/<video_id>.mp4 only; this path never opens YouTube.
+    from app.services.local_video_frame import LocalFrameUnavailable, get_local_frame_jpeg
 
     @app.get("/static/frames/{video_id}/{frame_file}")
-    async def precise_frame(video_id: str, frame_file: str):
+    async def local_video_frame(video_id: str, frame_file: str):
         if _data_provider is None:
             raise HTTPException(503, "Backend not ready")
 
@@ -128,43 +131,12 @@ elif FRAME_IMAGE_SOURCE == "youtube_precise":
         lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
         if lookup is None:
             raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, video = lookup
-        youtube_id = video.get("youtube_id")
-        if not youtube_id:
-            raise HTTPException(404, f"No youtube_id for video {video_id}")
-
+        frame, _video = lookup
         try:
             jpeg_bytes = await asyncio.to_thread(
-                get_precise_frame_jpeg, youtube_id, int(frame["timestamp_ms"])
+                get_local_frame_jpeg, video_id, int(frame["timestamp_ms"])
             )
-        except PreciseFrameUnavailable as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
-
-    # Fast, blurry placeholder counterpart to the route above — same
-    # storyboard-crop workaround as FRAME_IMAGE_SOURCE=youtube_storyboard,
-    # always available here so the frontend can show *something* instantly
-    # while the precise frame extracts in the background, then swap to it.
-    @app.get("/static/frames-preview/{video_id}/{frame_file}")
-    async def precise_frame_preview(video_id: str, frame_file: str):
-        if _data_provider is None:
-            raise HTTPException(503, "Backend not ready")
-
-        frame_stem = Path(frame_file).stem
-        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
-        if lookup is None:
-            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, video = lookup
-        youtube_id = video.get("youtube_id")
-        if not youtube_id:
-            raise HTTPException(404, f"No youtube_id for video {video_id}")
-
-        try:
-            jpeg_bytes = await asyncio.to_thread(
-                get_thumbnail_jpeg, youtube_id, int(frame["timestamp_ms"])
-            )
-        except StoryboardUnavailable as exc:
+        except LocalFrameUnavailable as exc:
             raise HTTPException(502, str(exc)) from exc
 
         return Response(content=jpeg_bytes, media_type="image/jpeg")
@@ -191,53 +163,17 @@ elif os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
         )
 
 
-def _annotate_and_prefetch_precise_frames(results: list[dict]) -> None:
-    """No-op unless FRAME_IMAGE_SOURCE=youtube_precise. Otherwise:
-    (1) tags each result (and each temporal-cluster step) with a fast
-        frame_preview_url the frontend can show immediately while the
-        precise frame is still extracting, and
-    (2) kicks off background resolution of every distinct video's stream
-        URL right now, so the (slow, ~1-4s) yt-dlp lookup mostly finishes
-        before the frontend ever requests a thumbnail image, instead of
-        happening lazily on the first image request.
-    Best-effort: failures here must never break the search response itself.
-    """
-    if FRAME_IMAGE_SOURCE != "youtube_precise":
-        return
-
-    import asyncio
-    from app.services.youtube_precise_frame import prefetch_stream_url
-    from app.services.youtube_thumbnail import prefetch_storyboard_index
-
-    youtube_ids: set[str] = set()
-
-    def tag(row: dict) -> None:
-        image_url = row.get("frame_image_url") or ""
-        if image_url.startswith("/static/frames/"):
-            row["frame_preview_url"] = image_url.replace("/static/frames/", "/static/frames-preview/", 1)
-        if row.get("youtube_id"):
-            youtube_ids.add(row["youtube_id"])
-        for step in row.get("steps") or []:
-            tag(step)
-
-    for row in results:
-        tag(row)
-
-    for youtube_id in youtube_ids:
-        asyncio.create_task(asyncio.to_thread(prefetch_stream_url, youtube_id))
-        asyncio.create_task(asyncio.to_thread(prefetch_storyboard_index, youtube_id))
-
-
 # ── Request / Response models ─────────────────────────────────────────────────
 
 class QueryGroup(BaseModel):
-    semantic_query: str = ""
-    text_query: str = ""
+    query: str = ""
     temporal_offset_ms: int = 0   # ms after the previous group's result window
 
 
 class SearchRequest(BaseModel):
     strategy_id: str
+    config_id: str = "default"
+    config_overrides: dict[str, float | list[float]] | None = None
     query_groups: list[QueryGroup]
     top_k: int = 100
     video_genre: str = "All"
@@ -252,6 +188,10 @@ class TranscriptChunkSearchRequest(BaseModel):
 
 class TranslationRequest(BaseModel):
     texts: list[str]
+
+
+class StrategyConfigUpdate(BaseModel):
+    weights: dict[str, float | list[float]]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -278,6 +218,20 @@ async def static_debug(path: str = "L01_V001/000022.jpg"):
         "is_file": target.is_file(),
         "size": target.stat().st_size if target.exists() else None,
     }
+
+
+@app.get("/api/warmup_text_encoder")
+@app.post("/api/warmup_text_encoder")
+async def warmup_text_encoder(passes: int = 1):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready.")
+    try:
+        return await _data_provider.warmup_text_encoder(
+            "warmup query",
+            passes=min(max(passes, 1), 10),
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"Text encoder warmup error: {exc}") from exc
 
 
 @app.get("/api/transcript/{video_id}")
@@ -309,9 +263,52 @@ async def list_strategies():
             "description": s.description,
             "author":      s.author,
             "version":     s.version,
+            "configurable": bool(s.config_schema),
         }
         for sid, s in _strategies.items()
     ]
+
+
+def _strategy_or_404(strategy_id: str) -> BaseStrategy:
+    strategy = _strategies.get(strategy_id)
+    if strategy is None:
+        raise HTTPException(404, f"Strategy '{strategy_id}' not found")
+    return strategy
+
+
+@app.get("/api/strategies/{strategy_id}/configs")
+async def list_strategy_configs(strategy_id: str):
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        configs = _strategy_configs.list(
+            strategy_id, strategy.version, strategy.config_schema
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"strategy_id": strategy_id, "schema": strategy.config_schema, "configs": configs}
+
+
+@app.put("/api/strategies/{strategy_id}/configs/{config_id}")
+async def save_strategy_config(strategy_id: str, config_id: str, req: StrategyConfigUpdate):
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        return _strategy_configs.save(
+            strategy_id, strategy.version, strategy.config_schema, config_id, req.weights
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/strategies/{strategy_id}/configs/{config_id}")
+async def delete_strategy_config(strategy_id: str, config_id: str):
+    _strategy_or_404(strategy_id)
+    try:
+        _strategy_configs.delete(strategy_id, config_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "deleted"}
 
 
 @app.get("/api/vector-search-algorithms")
@@ -345,33 +342,13 @@ async def list_vector_search_algorithms():
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
-    """Proxy translation to the remote server when local-backend runs in LOCAL mode."""
-    if os.getenv("ENV_MODE", "MOCK").upper() != "LOCAL":
-        raise HTTPException(501, "Translation requires ENV_MODE=LOCAL or direct remote-server mode.")
-
-    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
-    if not remote_base:
-        raise HTTPException(500, "REMOTE_SERVER_URL is required for translation proxy.")
-
-    async with httpx.AsyncClient(base_url=remote_base, timeout=30.0) as client:
-        try:
-            response = await client.post(
-                "/api/translate",
-                json=req.model_dump(),
-                headers={"ngrok-skip-browser-warning": "1"},
-            )
-        except httpx.RequestError as exc:
-            raise HTTPException(502, f"Remote translation request failed: {exc}") from exc
-
-    if response.status_code >= 400:
-        detail = response.text
-        try:
-            detail = response.json().get("detail", detail)
-        except ValueError:
-            pass
-        raise HTTPException(response.status_code, detail)
-
-    return response.json()
+    try:
+        translations = await asyncio.to_thread(_translation_service.translate, req.texts)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"Translation failed: {exc}")
+    return {"translations": translations}
 
 
 @app.post("/api/search")
@@ -381,19 +358,32 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found. Available: {list(_strategies)}")
 
     strategy = _strategies[req.strategy_id]
+    try:
+        config = _strategy_configs.get(
+            req.strategy_id, strategy.version, strategy.config_schema, req.config_id
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{req.config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        effective_config = _strategy_configs.resolve(
+            strategy.config_schema, config["weights"], req.config_overrides
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
     query_groups = [g.model_dump() for g in req.query_groups]
-    if req.vector_search_algorithm:
-        algorithm = req.vector_search_algorithm.strip().lower()
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-
     try:
         results = await strategy.search(
             query_groups,
             limit=top_k,
             video_genre=req.video_genre,
+            vector_search_algorithm=req.vector_search_algorithm,
+            options=effective_config,
+            config_id=config["id"],
+            config_revision=config["revision"],
         )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
@@ -403,11 +393,13 @@ async def search(req: SearchRequest):
         raise HTTPException(500, f"Strategy error: {exc}")
 
     results = results[:top_k]
-    _annotate_and_prefetch_precise_frames(results)
 
     return {
         "results":           results,
         "strategy_id":       req.strategy_id,
+        "config_id":         config["id"],
+        "config_revision":   config["revision"],
+        "effective_config":  effective_config,
         "total":             len(results),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }
@@ -432,7 +424,6 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
         raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
     results = results[:top_k]
-    _annotate_and_prefetch_precise_frames(results)
 
     return {
         "results":           results,

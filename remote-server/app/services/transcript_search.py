@@ -48,7 +48,10 @@ class TranscriptSearchService:
                 )
 
             self._model = SentenceTransformer(MODEL_ID, device=MODEL_DEVICE)
-            actual_dim = self._model.get_sentence_embedding_dimension()
+            if MODEL_DEVICE == "cuda":
+                # # MODIFIED: Cast E5 model to FP16 half-precision on CUDA | VRAM Optimization | User Request
+                self._model.half()
+            actual_dim = self._model.get_embedding_dimension()
             if actual_dim != EXPECTED_DIM:
                 raise RuntimeError(
                     f"Model {MODEL_ID} has dim {actual_dim}, expected {EXPECTED_DIM}"
@@ -117,7 +120,7 @@ class TranscriptSearchService:
         vector = self.encode_passage(text)
         return self.classify_topic(vector)
 
-    async def search(
+    async def search_chunks(
         self,
         query: str,
         top_k: int = 100,
@@ -126,10 +129,7 @@ class TranscriptSearchService:
         timer_start = time.monotonic()
         self._ensure_loaded()
         self._ensure_collection()
-        self._ensure_frames_collection()
-
         query_vector = self.encode_query(query)
-
         chunk_hits = milvus_client.search_transcript_chunks(
             self._collection,
             query_vector.tolist(),
@@ -150,6 +150,33 @@ class TranscriptSearchService:
         chunk_ids = [int(h["chunk_id"]) for h in chunk_hits]
         metadata_rows = await postgres_client.fetch_transcript_chunks_by_ids(chunk_ids)
         metadata_by_id = {row["chunk_id"]: row for row in metadata_rows}
+        results = []
+        for rank, hit in enumerate(chunk_hits, start=1):
+            meta = metadata_by_id.get(hit["chunk_id"], {})
+            results.append({
+                "channel": "transcript.semantic",
+                "chunk_id": hit["chunk_id"],
+                "video_id": hit["video_id"],
+                "topic": hit["topic"],
+                "start_time_ms": hit["start_time_ms"],
+                "end_time_ms": hit["end_time_ms"],
+                "text": meta.get("raw_text", ""),
+                "rank": rank,
+                "score": float(hit["score"]),
+            })
+        return results
+
+    async def search(
+        self,
+        query: str,
+        top_k: int = 100,
+        topic_filter: str | None = None,
+    ) -> list[dict]:
+        """Legacy UI response; V2 strategies use search_chunks()."""
+        chunk_hits = await self.search_chunks(query, top_k, topic_filter)
+        if not chunk_hits:
+            return []
+        self._ensure_frames_collection()
 
         # Fetch video metadata for youtube_id lookup
         all_video_ids = list({h["video_id"] for h in chunk_hits})
@@ -158,7 +185,6 @@ class TranscriptSearchService:
 
         results = []
         for hit in chunk_hits:
-            meta = metadata_by_id.get(hit["chunk_id"], {})
             vmeta = video_meta.get(hit["video_id"], {})
             if not vmeta:
                 logger.warning("video_id=%s not found in videos table — youtube_id will be empty", hit["video_id"])
@@ -171,7 +197,7 @@ class TranscriptSearchService:
                 "topic":             hit["topic"],
                 "start_time_ms":     hit["start_time_ms"],
                 "end_time_ms":       hit["end_time_ms"],
-                "text":              meta.get("raw_text", ""),
+                "text":              hit["text"],
                 "score":             round(float(hit["score"]), 4),
                 "frame_image_url":   frame_info.get("image_url", ""),
                 "frame_number":      frame_info.get("frame_number", 0),
@@ -249,7 +275,7 @@ class TranscriptSearchService:
             logger.warning("Filesystem frame fallback failed for video_id=%s", video_id)
             return {}
 
-    def warmup(self, query: str = "warmup query", passes: int = 5) -> None:
+    def warmup(self, query: str = "warmup query", passes: int = 2) -> None:
         load_start = time.monotonic()
         was_loaded = self._loaded
         self._ensure_loaded()

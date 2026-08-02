@@ -12,6 +12,10 @@ tqdm==4.68.4
 onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10
+tokenizers==0.22.1
+sentencepiece==0.2.2
+huggingface-hub==0.36.0
+ctranslate2==4.8.1
 
 # For the full "torch" backend (PECORE_BACKEND=torch, GPU-capable, downloads
 # the full PE-Core weights), install requirements-torch.txt as well:

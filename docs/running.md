@@ -11,7 +11,7 @@ decision table + commands.
 | Nothing, just want the UI working | MOCK | `ENV_MODE=MOCK` → [setup.md Option A](setup.md#option-a--local-development-mock-data) |
 | `AIC2026_sample` (or a partial copy: `metadata/` + `PECore-features/`, no `keyframes/`) | SAMPLE | see below |
 | Access to a teammate's running GPU server (ngrok/LAN URL) | LOCAL | [setup.md Option B](setup.md#option-b--local-backend-connected-to-gpu-server-local-mode) |
-| The GPU workstation itself, full dataset, Docker | SERVER | [setup.md Option C](setup.md#option-c--gpu-server-production) |
+| The GPU workstation itself, full dataset, Docker | SERVER | `bash scripts/start-remote.sh` from repo root |
 
 All local-backend scenarios: `cd local-client/frontend && npm install && cp .env.local.example .env.local && npm run dev` for the UI (port 3000).
 
@@ -41,7 +41,8 @@ Decision points inside SAMPLE mode:
 |---|---|
 | Weak machine, no GPU, want fast/light setup | Keep `PECORE_BACKEND=onnx` (default in requirements.txt). No torch installed. |
 | Want the full-precision OpenCLIP model instead | `pip install -r requirements-torch.txt`, set `PECORE_BACKEND=torch`. See [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md). |
-| No `keyframes/` folder (only `metadata/` + `PECore-features/`) | Search still works (vectors are all that's needed). For images: `pip install -r requirements-youtube-thumbnail.txt` and set `FRAME_IMAGE_SOURCE=youtube_storyboard`. See [youtube-storyboard-thumbnails-workaround.md](youtube-storyboard-thumbnails-workaround.md). Not pixel-accurate — dev/test only. |
+| Have `videos/<video_id>.mp4` but no keyframe JPGs | Set `FRAME_IMAGE_SOURCE=local_video`; the backend decodes the requested timestamp locally with ffmpeg. |
+| No local videos or keyframe JPGs | `FRAME_IMAGE_SOURCE=youtube_storyboard` is an approximate dev-only fallback. See [youtube-storyboard-thumbnails-workaround.md](youtube-storyboard-thumbnails-workaround.md). |
 | Have real `keyframes/` images | Leave `FRAME_IMAGE_SOURCE=local` (default). |
 
 ## Full env var reference
@@ -52,9 +53,14 @@ See [setup.md → Environment Variable Reference](setup.md#environment-variable-
 
 | Topic | Doc |
 |---|---|
+| One-command launch scripts (Windows/Mac/Linux/WSL, backend/GPU choice) | [launch_scripts.md](launch_scripts.md) |
 | System design, ENV_MODE switching, data flow | [architecture.md](architecture.md) |
-| Writing a new strategy | [strategy_guide.md](strategy_guide.md) |
+| Strategy/data contract | [strategy_v2.md](strategy_v2.md) |
+| Writing a new strategy | [strategy_template_v2.md](strategy_template_v2.md) |
 | Milvus/Postgres schema | [db_schema.md](db_schema.md) |
 | PE-Core ingestion, CAGRA, translation, validation (remote-server) | [../remote-server/README_INDEXING_SEARCH.md](../remote-server/README_INDEXING_SEARCH.md) |
 | Transcript search | [search_by_transcript.md](search_by_transcript.md) |
-| Repo layout | [folder_tree.md](folder_tree.md) |
+| Repo layout | [../README.md#repository-layout](../README.md#repository-layout) |
+| PE-Core ONNX text encoder specs | [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
+| Keyframe sampling rule | [keyframe_selection.md](keyframe_selection.md) |
+| Vector search backend benchmark (HNSW vs CAGRA vs ScaNN) | [vector_search_benchmark_report.md](vector_search_benchmark_report.md) |

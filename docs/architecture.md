@@ -15,7 +15,7 @@ flowchart LR
     SAMPLE[AIC sample vectors]
     SEARCH[PE-Core + HNSW, CAGRA, or ScaNN]
     TEXT[PostgreSQL]
-    TRANS[Optional VI/mixed to English]
+    TRANS[Local CTranslate2 INT8 VI to English]
 
     UI -->|Local development| LB
     LB -->|MOCK| MOCK
@@ -27,9 +27,14 @@ flowchart LR
     RB --> TEXT
 ```
 
-The local and remote backends expose the same strategy lifecycle. Translation
-and CAGRA are remote-server features; the simple local MOCK/SAMPLE backend does
-not provide the translation endpoint.
+The local and remote backends expose the same strategy lifecycle and local
+translation endpoint. CAGRA remains a remote-server feature.
+
+In the full demo, strategy presets on the remote server are read-only. Each
+machine's Next.js frontend stores its tuning draft under `.runtime/` and sends
+it as request-scoped `config_overrides`; the remote validates and uses it
+without writing shared state. Desktop and phone share a draft only when they
+open the same machine's frontend.
 
 ---
 
@@ -69,7 +74,7 @@ sequenceDiagram
     participant DB as PostgreSQL
     participant ST as Strategy
 
-    opt VI-EN enabled
+    opt VI-EN button clicked
         UI->>API: POST /api/translate
         API->>TR: Translate to English
         TR-->>UI: Translated queries
@@ -90,10 +95,10 @@ sequenceDiagram
     API-->>UI: Results and search timing
 ```
 
-The translation provider is configured by `TRANSLATION_PROVIDER` on the remote
-backend and is not selectable in the UI. Exact translated queries and PE-Core
-text embeddings use bounded in-process caches. Optional startup warmups avoid
-model/client initialization during the first user request.
+The VI→EN button runs an INT8 CTranslate2 conversion of
+`Helsinki-NLP/opus-mt-vi-en` locally and replaces the semantic input with the
+English result. Search never triggers translation. Translations and PE-Core
+text embeddings use bounded in-process caches.
 
 ## Production Search Backends
 
@@ -112,7 +117,11 @@ runtime switching real while still using Milvus search for these algorithms.
 CAGRA changes only semantic vector search. Milvus and PostgreSQL still run for
 collection access, metadata, OCR, transcripts, and temporal workflows.
 
-### Raw data shape
+### Legacy V1 raw data shape (archived)
+
+The shape below documents the archived `app/archive_v1/strategies` path only.
+Active strategies use `SearchContext` and channel hits; see
+[strategy_v2.md](strategy_v2.md).
 
 Every strategy receives the same `raw_data` dict regardless of mode:
 
@@ -180,8 +189,8 @@ A reload of the backend (or `--reload` watching the `.py` file) is all that's ne
 
 | Guardrail | Value | Where enforced |
 |---|---|---|
-| Fetch cap | 1000 records max per query | `BaseStrategy.search()` → `DataProvider.get_raw_data(limit=FETCH_CAP)` |
-| Execution timeout | 2.0 seconds | `asyncio.wait_for(asyncio.to_thread(fusion_and_temporal), timeout=2.0)` |
+| Fetch cap | 1000 hits max per retrieval/final response | `SearchContext` + `BaseStrategy.search()` |
+| Execution timeout | 30 seconds | `asyncio.wait_for(strategy.run(context), timeout=30)` |
 | Top K cap | User-controlled (default 100, max 1000) | `main.py` slices `results[:top_k]` before returning |
 
 The timeout cancels the HTTP response but does not forcibly kill the worker thread. If a strategy has a true infinite loop the thread will continue in the background until the process restarts. This is acceptable for a development playground.
@@ -191,7 +200,7 @@ The timeout cancels the HTTP response but does not forcibly kill the worker thre
 ## Promoting a Strategy to Production
 
 1. Test your strategy locally until satisfied with the score
-2. Copy the file verbatim to `remote-server/app/strategies/yourname_v1.py`
+2. Copy the file verbatim to `remote-server/app/strategies/yourname_v2.py`
 3. Restart the remote server
 4. Select it in the frontend dropdown
 

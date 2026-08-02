@@ -101,12 +101,12 @@ export default function HelpModal({ onClose }: Props) {
             <Row k="/step clear [x]">Clear a step’s content.</Row>
             <Row k="/step <n>">Jump to step n.</Row>
             <Row k="/text <value>">Set the active step’s OCR/transcript text field.</Row>
-            <Row k="/translate on|off">Toggle VI→EN translation for the active step.</Row>
             <Row k="/mode frames|transcripts">Switch search mode.</Row>
             <Row k="/view score|video">Switch results view.</Row>
             <Row k="/topk <n>">Set number of results.</Row>
             <Row k="/genre <name>">Filter by genre.</Row>
             <Row k="/strategy <id>">Choose the search strategy.</Row>
+            <Row k="/config <id>">Choose a saved config for the current strategy.</Row>
             <Row k="/transcript on|off">Show/hide the transcript panel in the video modal.</Row>
             <Row k="/search">Run the search now.</Row>
             <Row k="/clear">Reset to a single empty step.</Row>
@@ -132,7 +132,7 @@ export default function HelpModal({ onClose }: Props) {
           </Section>
 
           <Section title="Video player">
-            <Row k="Enter / Space">Play / pause (first press starts at the exact frame).</Row>
+            <Row k="Click Play / Enter / Space">Play / pause (first action starts at the exact frame).</Row>
             <Row k="← / →">Seek backward / forward 5 seconds.</Row>
             <Row k="Esc">Close the player.</Row>
             <Row k="Transcript">

@@ -22,7 +22,10 @@ from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
 from app.services.translation import TranslationService
+from app.services.strategy_config import StrategyConfigStore
 from app.services.transcript_search import TranscriptSearchService
+from app.services.transcript_jsonl_reader import transcript_response
+from app.services.query_parser import QueryParser
 from scripts.sample_paths import default_sample_root, sample_subdir
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -31,6 +34,7 @@ _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
 _transcript_search_service: TranscriptSearchService | None = None
+_strategy_configs = StrategyConfigStore(REMOTE_ROOT.parent / "data" / "strategy-configs")
 logger = logging.getLogger(__name__)
 
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -81,7 +85,7 @@ async def _auto_populate_video_metadata() -> int:
     return await postgres_client.upsert_video_metadata(videos)
 
 
-def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
+def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
     found = {}
     for path in sorted(STRATEGIES_DIR.glob("*.py")):
         if path.stem.startswith("_") or path.stem == "base_strategy":
@@ -91,7 +95,7 @@ def discover_strategies(data_provider: DataProvider) -> dict[str, BaseStrategy]:
             module = importlib.import_module(module_name)
             for _, cls in inspect.getmembers(module, inspect.isclass):
                 if issubclass(cls, BaseStrategy) and cls is not BaseStrategy:
-                    instance = cls(data_provider)
+                    instance = cls(data_provider, parser)
                     found[path.stem] = instance
                     print(f"  ✓ {path.stem}  ({cls.name}  by {cls.author})")
                     break
@@ -119,15 +123,13 @@ async def lifespan(app: FastAPI):
         await _data_provider.warmup_text_encoder()
     if os.getenv("WARMUP_TRANSLATION", "false").lower() in {"1", "true", "yes"}:
         print("Warming up translation...")
-        provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
         try:
             await asyncio.to_thread(
                 _translation_service.translate,
                 ["khởi động"],
-                provider,
             )
         except Exception:
-            logger.exception("Translation warmup failed provider=%s", provider)
+            logger.exception("Translation warmup failed")
 
     if os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
         try:
@@ -142,7 +144,8 @@ async def lifespan(app: FastAPI):
             _transcript_search_service = None
 
     print("Discovering strategies...")
-    _strategies = discover_strategies(_data_provider)
+    parser = QueryParser() if os.getenv("GEMINI_API_KEY", "").strip() else None
+    _strategies = discover_strategies(_data_provider, parser)
     print(f"Server ready — {len(_strategies)} strategy/strategies loaded.")
 
     yield
@@ -157,6 +160,7 @@ app = FastAPI(title="AIC 2026 Remote Server", version="1.0.0", lifespan=lifespan
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(:\d+)?",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -191,17 +195,33 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 # ── Models ────────────────────────────────────────────────────────────────────
 
 class QueryGroup(BaseModel):
-    semantic_query: str = ""
-    text_query: str = ""
+    query: str = ""
     temporal_offset_ms: int = 0   # ms after the previous group's result window
 
 
 class SearchRequest(BaseModel):
     strategy_id: str
+    config_id: str = "default"
+    config_overrides: dict[str, float | list[float]] | None = None
     query_groups: list[QueryGroup]
     top_k: int = 100
     video_genre: str = "All"
     vector_search_algorithm: str | None = None
+
+
+class RetrieveRequest(BaseModel):
+    channel: str
+    query: str
+    top_k: int = 100
+    video_genre: str = "All"
+    vector_search_algorithm: str | None = None
+
+
+class KeyframesRequest(BaseModel):
+    video_id: str
+    start_ms: int
+    end_ms: int
+    limit: int = 20
 
 
 class TranslationRequest(BaseModel):
@@ -212,6 +232,10 @@ class TranscriptSearchRequest(BaseModel):
     query: str
     top_k: int = 100
     topic_filter: str = ""
+
+
+class StrategyConfigUpdate(BaseModel):
+    weights: dict[str, float | list[float]]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -283,6 +307,14 @@ async def warmup_text_encoder(passes: int = 10):
     return result
 
 
+@app.get("/api/transcript/{video_id}")
+async def get_transcript(video_id: str):
+    payload = transcript_response(video_id)
+    if payload is None:
+        raise HTTPException(404, f"No transcript found for video_id={video_id}")
+    return payload
+
+
 @app.get("/api/strategies")
 async def list_strategies():
     return [
@@ -292,9 +324,57 @@ async def list_strategies():
             "description": s.description,
             "author":      s.author,
             "version":     s.version,
+            "configurable": bool(s.config_schema),
         }
         for sid, s in _strategies.items()
     ]
+
+
+def _strategy_or_404(strategy_id: str) -> BaseStrategy:
+    strategy = _strategies.get(strategy_id)
+    if strategy is None:
+        raise HTTPException(404, f"Strategy '{strategy_id}' not found")
+    return strategy
+
+
+def _require_strategy_config_write():
+    if os.getenv("ALLOW_STRATEGY_CONFIG_WRITES", "false").lower() not in {"1", "true", "yes"}:
+        raise HTTPException(403, "Strategy config writes are disabled on this server")
+
+
+@app.get("/api/strategies/{strategy_id}/configs")
+async def list_strategy_configs(strategy_id: str):
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        configs = _strategy_configs.list(strategy_id, strategy.version, strategy.config_schema)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"strategy_id": strategy_id, "schema": strategy.config_schema, "configs": configs}
+
+
+@app.put("/api/strategies/{strategy_id}/configs/{config_id}")
+async def save_strategy_config(strategy_id: str, config_id: str, req: StrategyConfigUpdate):
+    _require_strategy_config_write()
+    strategy = _strategy_or_404(strategy_id)
+    try:
+        return _strategy_configs.save(
+            strategy_id, strategy.version, strategy.config_schema, config_id, req.weights
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.delete("/api/strategies/{strategy_id}/configs/{config_id}")
+async def delete_strategy_config(strategy_id: str, config_id: str):
+    _require_strategy_config_write()
+    _strategy_or_404(strategy_id)
+    try:
+        _strategy_configs.delete(strategy_id, config_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"status": "deleted"}
 
 
 @app.get("/api/vector-search-algorithms")
@@ -308,20 +388,51 @@ async def list_vector_search_algorithms():
 
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
-    provider = os.getenv("TRANSLATION_PROVIDER", "nmt")
     try:
         translations = await asyncio.to_thread(
             _translation_service.translate,
             req.texts,
-            provider,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
-        logger.exception("Translation failed provider=%s", provider)
+        logger.exception("Translation failed")
         raise HTTPException(502, f"Translation failed: {exc}")
 
     return {"translations": translations}
+
+
+@app.post("/api/retrieve")
+async def retrieve(req: RetrieveRequest):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready")
+    try:
+        hits = await _data_provider.retrieve(
+            req.channel,
+            req.query,
+            top_k=req.top_k,
+            video_genre=req.video_genre,
+            vector_search_algorithm=req.vector_search_algorithm,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"hits": hits}
+
+
+@app.post("/api/keyframes")
+async def keyframes(req: KeyframesRequest):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready")
+    try:
+        hits = await _data_provider.keyframes(
+            req.video_id,
+            req.start_ms,
+            req.end_ms,
+            limit=req.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"hits": hits}
 
 
 @app.post("/api/search")
@@ -344,17 +455,34 @@ async def search(req: SearchRequest):
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found.")
 
     strategy = _strategies[req.strategy_id]
+    try:
+        config = _strategy_configs.get(
+            req.strategy_id, strategy.version, strategy.config_schema, req.config_id
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, f"Config '{req.config_id}' not found") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        effective_config = _strategy_configs.resolve(
+            strategy.config_schema, config["weights"], req.config_overrides
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     query_groups = [g.model_dump() for g in req.query_groups]
-    if req.vector_search_algorithm:
-        algorithm = _normalize_vector_algorithm(req.vector_search_algorithm)
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-
     try:
         results = await strategy.search(
             query_groups,
             limit=top_k,
             video_genre=req.video_genre,
+            vector_search_algorithm=(
+                _normalize_vector_algorithm(req.vector_search_algorithm)
+                if req.vector_search_algorithm
+                else None
+            ),
+            options=effective_config,
+            config_id=config["id"],
+            config_revision=config["revision"],
         )
     except TimeoutError as exc:
         logger.info(
@@ -382,6 +510,9 @@ async def search(req: SearchRequest):
     return {
         "results":           results[:top_k],
         "strategy_id":       req.strategy_id,
+        "config_id":         config["id"],
+        "config_revision":   config["revision"],
+        "effective_config":  effective_config,
         "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
     }
@@ -419,21 +550,6 @@ async def search_transcript(req: TranscriptSearchRequest):
         "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
     }
-
-
-# ── Raw-data endpoint (called by local-client DataProvider in LOCAL mode) ─────
-
-@app.post("/api/raw-data")
-async def raw_data(body: dict):
-    query_groups = body.get("query_groups", [])
-    limit = min(int(body.get("limit", 1000)), 1000)
-    video_genre = str(body.get("video_genre", "All"))
-    if body.get("vector_search_algorithm"):
-        algorithm = _normalize_vector_algorithm(str(body["vector_search_algorithm"]))
-        for group in query_groups:
-            group["_vector_search_algorithm"] = algorithm
-    data = await _data_provider.get_raw_data(query_groups, limit=limit, video_genre=video_genre)
-    return data
 
 
 def _normalize_vector_algorithm(value: str) -> str:
