@@ -1,0 +1,84 @@
+{
+  "data_root": "../../data",
+  "links_file": "../../data/input/links.txt",
+  "metadata_root": "../../data/metadata",
+  "tools": {
+    "aria2c": "aria2c",
+    "ffmpeg": "ffmpeg",
+    "ffprobe": "ffprobe",
+    "kaggle": "kaggle"
+  },
+  "archive": {
+    "prefix": "Videos_",
+    "extension": ".zip",
+    "expected_root_name": "video",
+    "video_extensions": [".mp4"]
+  },
+  "download": {
+    "continue_download": true,
+    "max_tries": 5,
+    "retry_wait_seconds": 5,
+    "timeout_seconds": 60,
+    "connect_timeout_seconds": 30,
+    "max_concurrent_connections": 16,
+    "split_count": 16
+  },
+  "progress": {
+    "enabled": true,
+    "leave": true,
+    "min_interval_seconds": 0.2
+  },
+  "processing": {
+    "strategy": "keyframes",
+    "selector": "uniform",
+    "interval_ms": 1000,
+    "linear_rule": {
+      "short_duration_ms": 1000,
+      "short_frame_count": 1,
+      "base_duration_ms": 3000,
+      "base_frame_count": 2,
+      "increment_duration_ms": 3000,
+      "increment_frame_count": 1
+    },
+    "profile_id": "keyframes",
+    "target_short_edge_px": null,
+    "image_format": "png",
+    "jpeg_quality": 100,
+    "overwrite": false,
+    "decode_checkpoints": [0.0, 0.5, 1.0]
+  },
+  "embedding": {
+    "enabled": false,
+    "model_id": "hf-hub:timm/PE-Core-bigG-14-448",
+    "device": "auto",
+    "precision": "fp32",
+    "expected_dim": 1280,
+    "batch_size": 8,
+    "overwrite": false,
+    "features_dir_name": "PECore-features",
+    "image_extensions": [".jpg", ".jpeg", ".png"]
+  },
+  "upload": {
+    "enabled": false,
+    "mode": "version",
+    "dataset_ref": "owner/dataset-slug",
+    "metadata_template": "../../data/kaggle-dataset-metadata.json",
+    "include_features": true,
+    "include_transcripts": true,
+    "include_transcript_index": true,
+    "version_message": "preprocess batch upload",
+    "public": false
+  },
+  "cleanup": {
+    "enabled": true,
+    "delete_archive": true,
+    "delete_source": true,
+    "delete_keyframes": true,
+    "delete_features": true,
+    "delete_manifests": true,
+    "delete_transcripts": true,
+    "delete_transcript_index": true,
+    "delete_staging": true
+  },
+  "minimum_free_bytes": 0
+}
