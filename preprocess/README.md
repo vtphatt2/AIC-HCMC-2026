@@ -525,13 +525,16 @@ shot_boundary.threshold               = 0.5
 shot_boundary.overwrite               = false # reuse valid manifests
 ```
 
-Progress bar dùng `tqdm` và hiển thị đúng ba dòng cố định trong terminal/tmux:
-metrics ở trên, full-pipeline bar và detail bar của operation hiện tại. Các
-operation lồng nhau dùng lại detail bar nên không tạo thêm hàng. `bar_width`
-giới hạn chiều dài phần bar; `leave=false` xóa hai bar khi pipeline kết thúc.
+Progress bar dùng `tqdm` và hiển thị đúng năm dòng cố định trong terminal/tmux:
+dòng lot/stage, dòng CPU/GPU, dòng disk, full-pipeline bar và detail bar của
+operation hiện tại. Các operation lồng nhau dùng lại detail bar nên không tạo
+thêm hàng. Cả hai progress bar đều hiển thị `eta`; `bar_width` giới hạn chiều
+dài phần bar; `leave=false` xóa hai bar khi pipeline kết thúc.
 Khi output đi qua `tee`, pipeline tự chuyển sang một dòng ASCII duy nhất để
 không ghi cursor escape code vào log, nhưng vẫn giữ full-pipeline, operation
-hiện tại và CPU/GPU/disk metrics. Warning CUDA không gây lỗi pipeline;
+hiện tại, CPU/GPU/disk metrics và ETA. Để xem layout năm dòng cố định, chạy
+trực tiếp trong terminal/tmux không pipe output qua `tee`. Warning CUDA không
+gây lỗi pipeline;
 TransNetV2 chỉ lọc warning lặp lại về `CUBLAS_WORKSPACE_CONFIG`. Nếu cần tái lập
 bit-level, export biến này trước khi khởi động Python theo hướng dẫn của PyTorch.
 
