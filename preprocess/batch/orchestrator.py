@@ -866,7 +866,15 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
         else None
     )
     metadata_provider = JsonMetadataProvider(config.metadata_root)
-    stager = KaggleStagingStrategy(metadata_provider, config.upload) if config.upload.enabled else None
+    stager = (
+        KaggleStagingStrategy(
+            metadata_provider,
+            config.upload,
+            scene_segments_dir=config.processing.scene_segments_dir,
+        )
+        if config.upload.enabled
+        else None
+    )
     uploader = KaggleCliUploader(config.tools.kaggle, config.upload) if config.upload.enabled else None
     return BatchOrchestrator(
         config,

@@ -490,7 +490,7 @@ cleanup artifact tạm
 | FFmpeg renderer | Video + selected frames | JPG/PNG + rendered manifest | Mặc định `target_short_edge_px=null`: giữ nguyên kích thước decoded; nếu đặt giá trị thì resize cạnh ngắn; frame ID là chuỗi sáu chữ số. |
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
 | `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
-| `KaggleStagingStrategy` | Keyframes, features, metadata, manifests | `kaggle-staging/` | Chỉ là file allowlist; không chứa archive, source hoặc video. |
+| `KaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments | `kaggle-staging/` | Chỉ là file allowlist; không chứa archive, source hoặc video. Scene segment được thêm khi `upload.include_scene_segments=true`. |
 | `KaggleCliUploader` | `StagingResult` | `UploadResult` | `verified: bool`; upload dạng `create` hoặc `version`. |
 | `CleanupManager` | UploadResult đã verify | `CleanupResult` | Xóa các directory được bật trong config; metadata độc lập, reports, receipts và state vẫn giữ lại. |
 
@@ -729,7 +729,8 @@ Trong config, kiểm tra tối thiểu:
     "enabled": true,
     "mode": "version",
     "dataset_ref": "owner/dataset-slug",
-    "metadata_template": "../../data/kaggle-dataset-metadata.json"
+    "metadata_template": "../../data/kaggle-dataset-metadata.json",
+    "include_scene_segments": true
   }
 }
 ```
@@ -1006,10 +1007,17 @@ Kaggle staging là allowlist explicit, thường gồm:
 ├── keyframes/<video_id>/*.png       # mặc định; JPEG vẫn cấu hình được
 ├── metadata/<video_id>.json
 ├── manifests/{selection,rendered,validation}/...
+├── scene-segments/<video_id>.json   # nếu upload.include_scene_segments=true
 ├── PECore-features/                    # nếu bật và đã tồn tại
 ├── transcripts/                        # nếu bật và đã tồn tại
 └── keyframe_transcript_index/          # nếu bật và đã tồn tại
 ```
+
+Scene segment nguồn được đọc từ `processing.scene_segments_dir` và copy theo
+từng video vào `kaggle-staging/scene-segments/`. Khi bật
+`upload.include_scene_segments`, manifest của mọi video trong lot phải tồn tại;
+thiếu một file sẽ làm staging dừng để tránh upload dataset không đầy đủ. Các
+file local trong `data/scene-segments/` vẫn được giữ lại.
 
 Staging **không chứa archive, source hoặc video**. Chỉ khi Kaggle CLI upload
 thành công và status được verify thì `CleanupManager` mới xóa artifact được bật

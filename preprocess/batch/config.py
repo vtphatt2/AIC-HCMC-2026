@@ -208,6 +208,7 @@ class UploadConfig:
     dataset_ref: str | None = None
     mode: str = "version"
     metadata_template: Path | None = None
+    include_scene_segments: bool = False
     include_features: bool = True
     include_transcripts: bool = True
     include_transcript_index: bool = True

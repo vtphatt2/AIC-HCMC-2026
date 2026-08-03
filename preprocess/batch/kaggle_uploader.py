@@ -36,11 +36,17 @@ class StagingStrategy(ABC):
 
 
 class KaggleStagingStrategy(StagingStrategy):
-    """Stage keyframes, metadata and manifests; never stage raw video."""
+    """Stage allowlisted artifacts; never stage raw archive, source, or video."""
 
-    def __init__(self, metadata_provider: MetadataProvider, config: UploadConfig) -> None:
+    def __init__(
+        self,
+        metadata_provider: MetadataProvider,
+        config: UploadConfig,
+        scene_segments_dir: Path | None = None,
+    ) -> None:
         self.metadata_provider = metadata_provider
         self.config = config
+        self.scene_segments_dir = scene_segments_dir
 
     def stage(
         self,
@@ -50,12 +56,29 @@ class KaggleStagingStrategy(StagingStrategy):
     ) -> StagingResult:
         if layout.staging_dir.exists() and any(layout.staging_dir.iterdir()):
             raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
-        layout.staging_dir.mkdir(parents=True, exist_ok=True)
         metadata_template = self.config.metadata_template
         if metadata_template is None or not metadata_template.is_file():
             raise FileNotFoundError(
                 "upload.metadata_template is required and must point to dataset-metadata.json"
             )
+
+        scene_segment_paths: dict[str, Path] = {}
+        if self.config.include_scene_segments:
+            if self.scene_segments_dir is None:
+                raise ValueError(
+                    "upload.include_scene_segments=true requires "
+                    "processing.scene_segments_dir"
+                )
+            for asset in assets:
+                scene_segments_path = self.scene_segments_dir / f"{asset.video_id}.json"
+                if not scene_segments_path.is_file():
+                    raise FileNotFoundError(
+                        "Scene-segment manifest not found for "
+                        f"{asset.video_id}: {scene_segments_path}"
+                    )
+                scene_segment_paths[asset.video_id] = scene_segments_path
+
+        layout.staging_dir.mkdir(parents=True, exist_ok=True)
         self._copy_file(metadata_template, layout.staging_dir / "dataset-metadata.json")
         staged: list[Path] = [layout.staging_dir / "dataset-metadata.json"]
 
@@ -82,6 +105,14 @@ class KaggleStagingStrategy(StagingStrategy):
             if validation_path.is_file():
                 self._copy_file(validation_path, layout.staging_dir / "manifests" / "validation" / validation_path.name)
                 staged.append(layout.staging_dir / "manifests" / "validation" / validation_path.name)
+
+            if self.config.include_scene_segments:
+                scene_segments_path = scene_segment_paths[asset.video_id]
+                staged_scene_segments_path = (
+                    layout.staging_dir / "scene-segments" / scene_segments_path.name
+                )
+                self._copy_file(scene_segments_path, staged_scene_segments_path)
+                staged.append(staged_scene_segments_path)
 
             if self.config.include_features:
                 feature_dir = layout.dataset_dir / "PECore-features" / asset.video_id
