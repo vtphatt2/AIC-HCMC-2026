@@ -64,7 +64,8 @@ class RenderingAndProgressTests(unittest.TestCase):
         self.assertEqual(output.getvalue().count("\n"), 1)
         self.assertIn("pipeline", output.getvalue())
         self.assertIn("L21_V001: scan", output.getvalue())
-        self.assertIn("eta=", output.getvalue())
+        self.assertIn("<", output.getvalue())
+        self.assertIn("(", output.getvalue())
 
     def test_progress_interactive_status_has_three_metric_rows(self) -> None:
         reporter = TqdmProgressReporter(
@@ -80,7 +81,9 @@ class RenderingAndProgressTests(unittest.TestCase):
                 "disk=disabled",
             ),
         )
-        self.assertIn("{remaining}", reporter._bar_format())
+        self.assertIn("{elapsed}<{remaining}", reporter._bar_format())
+        self.assertIn("{rate_fmt}", reporter._bar_format())
+        self.assertLessEqual(reporter._display_bar_width(), reporter.config.bar_width)
 
     def test_ffmpeg_renderer_remaps_frame_indexes_after_count_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

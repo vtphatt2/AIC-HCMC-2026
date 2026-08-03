@@ -201,6 +201,19 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(loaded["size"], 42)
         self.assertEqual(len(loaded["events"]), 2)
 
+    def test_completed_stage_records_elapsed_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CheckpointStore(Path(temporary) / "state.json")
+            store.start_stage("embedding", fingerprint="fingerprint")
+            state = store.complete_stage("embedding", fingerprint="fingerprint")
+
+        stage = state["stages"]["embedding"]
+        self.assertIn("elapsed_seconds", stage)
+        self.assertGreaterEqual(stage["elapsed_seconds"], 0.0)
+        completed_event = state["events"][-1]
+        self.assertEqual(completed_event["status"], "completed")
+        self.assertIn("elapsed_seconds", completed_event["payload"])
+
     def test_stage_checkpoint_resumes_only_the_interrupted_stage(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator
 
