@@ -852,22 +852,27 @@ Khi selector cần scene, checkpoint sẽ đi qua `shot_boundaries` rồi
 được dùng lại ở lần chạy sau khi `shot_boundary.overwrite=false`.
 
 Mỗi lot còn có `state.json.stages` với các stage `running` hoặc `completed`.
-Checkpoint được ghi trước và sau từng stage; nếu SSH bị mất hoặc nhấn
-`Ctrl-C`, lần chạy `run` tiếp theo sẽ:
+Stage `process_validate` có thêm
+`state.json.stages.process_validate.videos.<video_id>`; mỗi video được đánh dấu
+`running` trước khi xử lý và `completed` sau khi render + validate thành công,
+kèm fingerprint, artifact result và thời lượng. Checkpoint được ghi trước và
+sau từng stage cũng như từng video; nếu SSH bị mất hoặc nhấn `Ctrl-C`, lần chạy
+`run` tiếp theo sẽ:
 
 ```text
 stage đã completed + artifact còn hợp lệ  → restore/skip
-stage đang running hoặc artifact hỏng      → chạy lại stage đó
+video đã completed + artifact còn hợp lệ   → restore/skip video đó
+stage/video đang running hoặc artifact hỏng → chạy lại phần tương ứng
 ```
 
 Các artifact được kiểm tra lại trước khi skip: ZIP, source video, scene
 manifest, discovery report, rendered/validation manifest, `.npy` feature và
-upload/cleanup receipt. Fingerprint theo stage và dependency chain cũng cho
-phép đổi riêng `embedding.dataloader` mà vẫn giữ lại download, extraction,
+upload/cleanup receipt. Fingerprint theo stage, video và dependency chain cũng
+cho phép đổi riêng `embedding.dataloader` mà vẫn giữ lại download, extraction,
 TransNetV2 và processing hợp lệ; embedding và các stage phụ thuộc nó sẽ chạy
-lại. Khi stage hoàn tất, `state.json` ghi `started_at`, `completed_at` và
-`elapsed_seconds`; event history cũng lưu thời lượng tương ứng. Không xóa
-`state.json` để resume.
+lại. Khi stage hoặc video hoàn tất, `state.json` ghi `started_at`,
+`completed_at` và `elapsed_seconds`; event history cũng lưu thời lượng tương
+ứng. Không xóa `state.json` để resume.
 
 #### 9. Kiểm tra sau khi hoàn thành
 

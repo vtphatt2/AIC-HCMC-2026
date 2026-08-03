@@ -187,7 +187,7 @@ class BatchOrchestrator:
                 checkpoints,
                 request,
                 "process_validate",
-                action=lambda: self._process_and_validate(assets, layout, checkpoints),
+                action=lambda: self._process_and_validate(request, assets, layout, checkpoints),
                 restore=lambda: self._restore_processed(assets, layout),
             )
 
@@ -357,6 +357,20 @@ class BatchOrchestrator:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
+    @staticmethod
+    def _video_checkpoint_fingerprint(stage_fingerprint: str, asset: VideoAsset) -> str:
+        """Fingerprint one source video within a process/validate stage."""
+        stat = asset.path.stat()
+        payload = {
+            "stage": stage_fingerprint,
+            "video_id": asset.video_id,
+            "path": str(asset.path),
+            "size_bytes": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
     def _execute_stage(
         self,
         checkpoints: CheckpointStore,
@@ -480,7 +494,7 @@ class BatchOrchestrator:
         if not isinstance(records, list):
             raise ValueError(f"Processing report is invalid: {report_path}")
         asset_by_id = {asset.video_id: asset for asset in assets}
-        restored: dict[str, ProcessingResult] = {}
+        record_by_id: dict[str, Mapping[str, Any]] = {}
         for record in records:
             if not isinstance(record, Mapping):
                 raise ValueError(f"Invalid processing record: {report_path}")
@@ -488,50 +502,65 @@ class BatchOrchestrator:
             if not isinstance(raw_asset, Mapping):
                 raise ValueError(f"Processing record has no asset: {report_path}")
             video_id = str(raw_asset.get("video_id", ""))
-            asset = asset_by_id.get(video_id)
-            if asset is None:
+            if video_id not in asset_by_id:
                 raise ValueError(f"Processing report contains an unknown video: {video_id}")
-            selection_path = Path(str(record["selection_manifest_path"]))
-            rendered_path = Path(str(record["rendered_manifest_path"]))
-            validation_path = layout.reports_dir / "validation" / f"{video_id}.json"
-            if not selection_path.is_file() or not rendered_path.is_file() or not validation_path.is_file():
-                raise FileNotFoundError(f"Processing artifacts are incomplete for {video_id}")
-            selection = self._read_json(selection_path)
-            source = selection.get("source")
-            fingerprint = source.get("fingerprint") if isinstance(source, Mapping) else None
-            if isinstance(fingerprint, Mapping):
-                stat = asset.path.stat()
-                if (
-                    int(fingerprint.get("size_bytes")) != stat.st_size
-                    or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
-                ):
-                    raise ValueError(f"Source video changed after processing: {video_id}")
-            validation = self._read_json(validation_path)
-            if validation.get("passed") is not True:
-                raise ValueError(f"Validation report is not passing for {video_id}")
-            rendered = self._read_json(rendered_path)
-            frames = rendered.get("frames")
-            if not isinstance(frames, list):
-                raise ValueError(f"Rendered manifest is invalid for {video_id}")
-            for frame in frames:
-                if not isinstance(frame, Mapping) or not frame.get("path"):
-                    raise ValueError(f"Rendered frame record is invalid for {video_id}")
-                frame_path = Path(str(frame["path"]))
-                candidates = [frame_path]
-                if not frame_path.is_absolute():
-                    candidates.append(rendered_path.parent / frame_path.name)
-                if not any(candidate.is_file() for candidate in candidates):
-                    raise FileNotFoundError(f"Rendered frame is missing for {video_id}: {frame_path}")
-            restored[video_id] = ProcessingResult(
-                asset=asset,
-                video_info=dict(record.get("video_info", {})),
-                selected_count=int(record["selected_count"]),
-                selection_manifest_path=selection_path,
-                rendered_manifest_path=rendered_path,
-            )
-        if set(restored) != set(asset_by_id):
+            record_by_id[video_id] = record
+        if set(record_by_id) != set(asset_by_id):
             raise ValueError(f"Processing report does not cover all videos: {report_path}")
-        return [restored[asset.video_id] for asset in assets]
+        return [
+            self._restore_processed_video(asset, layout, record_by_id[asset.video_id])
+            for asset in assets
+        ]
+
+    def _restore_processed_video(
+        self,
+        asset: VideoAsset,
+        layout: LotLayout,
+        record: Mapping[str, Any],
+    ) -> ProcessingResult:
+        """Validate and restore one video's processing result and artifacts."""
+        raw_asset = record.get("asset")
+        if not isinstance(raw_asset, Mapping) or str(raw_asset.get("video_id", "")) != asset.video_id:
+            raise ValueError(f"Processing record does not match video: {asset.video_id}")
+        video_id = asset.video_id
+        selection_path = Path(str(record["selection_manifest_path"]))
+        rendered_path = Path(str(record["rendered_manifest_path"]))
+        validation_path = layout.reports_dir / "validation" / f"{video_id}.json"
+        if not selection_path.is_file() or not rendered_path.is_file() or not validation_path.is_file():
+            raise FileNotFoundError(f"Processing artifacts are incomplete for {video_id}")
+        selection = self._read_json(selection_path)
+        source = selection.get("source")
+        fingerprint = source.get("fingerprint") if isinstance(source, Mapping) else None
+        if isinstance(fingerprint, Mapping):
+            stat = asset.path.stat()
+            if (
+                int(fingerprint.get("size_bytes")) != stat.st_size
+                or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
+            ):
+                raise ValueError(f"Source video changed after processing: {video_id}")
+        validation = self._read_json(validation_path)
+        if validation.get("passed") is not True:
+            raise ValueError(f"Validation report is not passing for {video_id}")
+        rendered = self._read_json(rendered_path)
+        frames = rendered.get("frames")
+        if not isinstance(frames, list):
+            raise ValueError(f"Rendered manifest is invalid for {video_id}")
+        for frame in frames:
+            if not isinstance(frame, Mapping) or not frame.get("path"):
+                raise ValueError(f"Rendered frame record is invalid for {video_id}")
+            frame_path = Path(str(frame["path"]))
+            candidates = [frame_path]
+            if not frame_path.is_absolute():
+                candidates.append(rendered_path.parent / frame_path.name)
+            if not any(candidate.is_file() for candidate in candidates):
+                raise FileNotFoundError(f"Rendered frame is missing for {video_id}: {frame_path}")
+        return ProcessingResult(
+            asset=asset,
+            video_info=dict(record.get("video_info", {})),
+            selected_count=int(record["selected_count"]),
+            selection_manifest_path=selection_path,
+            rendered_manifest_path=rendered_path,
+        )
 
     def _restore_embedding(self, layout: LotLayout) -> EmbeddingBatchResult:
         report_path = layout.reports_dir / "embedding.json"
@@ -691,11 +720,13 @@ class BatchOrchestrator:
 
     def _process_and_validate(
         self,
+        request: ArchiveInput,
         assets: Sequence[VideoAsset],
         layout: LotLayout,
         checkpoints: CheckpointStore,
     ) -> list[ProcessingResult]:
         checkpoints.transition(BatchState.PROCESSING)
+        stage_fingerprint = self._stage_fingerprint(request, "process_validate")
         processed: list[ProcessingResult] = []
         for asset in self.progress.iterate(
             assets,
@@ -703,6 +734,26 @@ class BatchOrchestrator:
             desc=f"{layout.lot_id}: videos",
             unit="video",
         ):
+            video_fingerprint = self._video_checkpoint_fingerprint(stage_fingerprint, asset)
+            if checkpoints.video_is_complete("process_validate", asset.video_id, video_fingerprint):
+                payload = checkpoints.video_payload("process_validate", asset.video_id)
+                if payload is not None:
+                    try:
+                        processed.append(self._restore_processed_video(asset, layout, payload))
+                    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                        checkpoints.invalidate_video(
+                            "process_validate",
+                            asset.video_id,
+                            reason=f"artifact restore failed: {exc}",
+                        )
+                    else:
+                        continue
+
+            checkpoints.start_video(
+                "process_validate",
+                asset.video_id,
+                fingerprint=video_fingerprint,
+            )
             metadata = load_video_metadata(self.metadata_provider, asset.video_id)
             result = self.processor.process([asset], layout)[0]
             report = self.video_validator.validate(VideoValidationContext(asset, metadata, result))
@@ -710,6 +761,16 @@ class BatchOrchestrator:
             if not report.passed:
                 raise RuntimeError(f"Validation failed for {asset.video_id}")
             processed.append(result)
+            self._write_json(
+                layout.reports_dir / "processing.json",
+                {"videos": [item.to_dict() for item in processed]},
+            )
+            checkpoints.complete_video(
+                "process_validate",
+                asset.video_id,
+                fingerprint=video_fingerprint,
+                payload=result.to_dict(),
+            )
         self._write_json(
             layout.reports_dir / "processing.json",
             {"videos": [result.to_dict() for result in processed]},

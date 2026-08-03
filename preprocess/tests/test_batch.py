@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from preprocess.batch.archive_extractor import ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
@@ -213,6 +214,120 @@ class BatchModuleTests(unittest.TestCase):
         completed_event = state["events"][-1]
         self.assertEqual(completed_event["status"], "completed")
         self.assertIn("elapsed_seconds", completed_event["payload"])
+
+    def test_video_checkpoint_survives_retry_of_same_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CheckpointStore(Path(temporary) / "state.json")
+            store.start_stage("process_validate", fingerprint="stage-fingerprint")
+            store.start_video("process_validate", "L21_V001", fingerprint="video-fingerprint")
+            store.complete_video(
+                "process_validate",
+                "L21_V001",
+                fingerprint="video-fingerprint",
+                payload={"asset": {"video_id": "L21_V001"}},
+            )
+            store.start_stage("process_validate", fingerprint="stage-fingerprint")
+            state = store.load()
+            video_is_complete = store.video_is_complete(
+                "process_validate",
+                "L21_V001",
+                "video-fingerprint",
+            )
+
+        self.assertTrue(video_is_complete)
+        self.assertEqual(state["stages"]["process_validate"]["attempt"], 2)
+        self.assertEqual(
+            state["stages"]["process_validate"]["videos"]["L21_V001"]["attempt"],
+            1,
+        )
+
+    def test_process_validate_resumes_after_completed_video(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FakeProcessor:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.fail_video_id: str | None = "L21_V002"
+
+            def process(self, assets, layout):
+                asset = assets[0]
+                self.calls.append(asset.video_id)
+                if asset.video_id == self.fail_video_id:
+                    raise RuntimeError("interrupted after first video")
+                selection = layout.dataset_dir / "selection-manifests" / f"{asset.video_id}.json"
+                rendered = layout.dataset_dir / "keyframes" / asset.video_id / "manifest.json"
+                selection.parent.mkdir(parents=True, exist_ok=True)
+                rendered.parent.mkdir(parents=True, exist_ok=True)
+                stat = asset.path.stat()
+                selection.write_text(
+                    json.dumps(
+                        {
+                            "source": {
+                                "fingerprint": {
+                                    "size_bytes": stat.st_size,
+                                    "mtime_ns": stat.st_mtime_ns,
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                rendered.write_text(json.dumps({"frames": []}), encoding="utf-8")
+                return [ProcessingResult(asset, {"duration_ms": 1}, 0, selection, rendered)]
+
+        class PassingValidator:
+            @staticmethod
+            def validate(_context):
+                return type("Report", (), {"passed": True, "to_dict": lambda self: {"passed": True}})()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping({"data_root": str(root / "data")}, base_dir=root)
+            layout = LotLayout(config.data_root, "L29_a")
+            layout.create_runtime_dirs()
+            assets = []
+            for video_id in ("L21_V001", "L21_V002"):
+                path = layout.source_root / f"{video_id}.mp4"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(video_id.encode("utf-8"))
+                assets.append(VideoAsset(video_id, path, "L29_a", path.name))
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            checkpoints = CheckpointStore(layout.state_path)
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.shot_boundary_detector = None
+            orchestrator.progress = TqdmProgressReporter(ProgressConfig(enabled=False))
+            orchestrator.metadata_provider = object()
+            orchestrator.processor = FakeProcessor()
+            orchestrator.video_validator = PassingValidator()
+            orchestrator._initialize_state(checkpoints, request)
+            stage_fingerprint = orchestrator._stage_fingerprint(request, "process_validate")
+            checkpoints.start_stage("process_validate", fingerprint=stage_fingerprint)
+
+            with patch("preprocess.batch.orchestrator.load_video_metadata", return_value={}):
+                with self.assertRaises(RuntimeError):
+                    orchestrator._process_and_validate(request, assets, layout, checkpoints)
+
+                orchestrator.processor.fail_video_id = None
+                checkpoints.start_stage("process_validate", fingerprint=stage_fingerprint)
+                orchestrator._process_and_validate(request, assets, layout, checkpoints)
+
+            state = checkpoints.load()
+
+        self.assertEqual(orchestrator.processor.calls, ["L21_V001", "L21_V002", "L21_V002"])
+        self.assertEqual(
+            state["stages"]["process_validate"]["videos"]["L21_V001"]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            state["stages"]["process_validate"]["videos"]["L21_V002"]["status"],
+            "completed",
+        )
 
     def test_stage_checkpoint_resumes_only_the_interrupted_stage(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator
