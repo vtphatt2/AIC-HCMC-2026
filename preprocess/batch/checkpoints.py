@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -74,6 +75,7 @@ class CheckpointStore:
         stages = dict(current.get("stages", {}))
         previous = dict(stages.get(name, {}))
         timestamp = utc_now()
+        elapsed_seconds = self._elapsed_seconds(previous.get("started_at"), timestamp)
         previous.update(
             {
                 "status": "completed",
@@ -81,15 +83,36 @@ class CheckpointStore:
                 "completed_at": timestamp,
             }
         )
+        if elapsed_seconds is not None:
+            previous["elapsed_seconds"] = elapsed_seconds
         if payload:
             previous["payload"] = dict(payload)
         stages[name] = previous
         current["stages"] = stages
         if current.get("current_stage") == name:
             current["current_stage"] = None
-        self._append_stage_event(current, name, "completed", timestamp, payload=payload)
+        event_payload = dict(payload or {})
+        if elapsed_seconds is not None:
+            event_payload["elapsed_seconds"] = elapsed_seconds
+        self._append_stage_event(
+            current,
+            name,
+            "completed",
+            timestamp,
+            payload=event_payload or None,
+        )
         self.write(current)
         return current
+
+    @staticmethod
+    def _elapsed_seconds(started_at: object, completed_at: str) -> float | None:
+        if not isinstance(started_at, str):
+            return None
+        try:
+            elapsed = datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)
+        except ValueError:
+            return None
+        return round(max(0.0, elapsed.total_seconds()), 3)
 
     def invalidate_stage(self, name: str, *, reason: str) -> dict[str, Any]:
         """Mark a stale completion so the next attempt executes the stage again."""

@@ -369,6 +369,7 @@ class TqdmProgressReporter(ProgressReporter):
         self._plain_stage_desc = "idle"
         self._plain_stage_current = 0
         self._plain_stage_total: int | None = None
+        self._plain_stage_unit = "item"
         self._plain_stage_started_at: float | None = None
         self._plain_pipeline_total = 0
         self._plain_pipeline_started_at: float | None = None
@@ -420,11 +421,18 @@ class TqdmProgressReporter(ProgressReporter):
             self._compact_text(lines[2], max_width),
         )
 
+    def _display_bar_width(self) -> int:
+        """Use the configured width as a maximum while preserving timing text."""
+        terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+        available = terminal_width - 68
+        return max(8, min(self.config.bar_width, available))
+
     def _bar_format(self) -> str:
         return (
             f"{{desc:<{self._DESCRIPTION_WIDTH}}} "
-            f"|{{bar:{self.config.bar_width}}}| "
-            "{n_fmt}/{total_fmt} {unit} eta={remaining}"
+            f"|{{bar:{self._display_bar_width()}}}| "
+            "{n_fmt}/{total_fmt} {unit} "
+            "{elapsed}<{remaining} ({rate_fmt})"
         )
 
     def _refresh_status(self) -> None:
@@ -522,6 +530,43 @@ class TqdmProgressReporter(ProgressReporter):
         remaining = elapsed * (total - current) / current
         return cls._format_duration(remaining)
 
+    @staticmethod
+    def _format_rate(
+        current: int,
+        started_at: float | None,
+        unit: str,
+    ) -> str:
+        if started_at is None or current <= 0:
+            return "--"
+        elapsed = max(0.0, time.monotonic() - started_at)
+        if elapsed <= 0:
+            return "--"
+        rate = current / elapsed
+        if rate >= 100:
+            value = f"{rate:.0f}"
+        elif rate >= 10:
+            value = f"{rate:.1f}"
+        else:
+            value = f"{rate:.2f}"
+        return f"{value} {unit}/s"
+
+    @classmethod
+    def _timing_text(
+        cls,
+        current: int,
+        total: int | None,
+        started_at: float | None,
+        unit: str,
+    ) -> str:
+        elapsed = (
+            cls._format_duration(max(0.0, time.monotonic() - started_at))
+            if started_at is not None
+            else "--"
+        )
+        eta = cls._format_eta(current, total, started_at)
+        rate = cls._format_rate(current, started_at, unit)
+        return f"{elapsed}<{eta} ({rate})"
+
     def _render_plain(self, *, force: bool = False) -> None:
         if not self.config.enabled or not self._plain_mode:
             return
@@ -530,36 +575,38 @@ class TqdmProgressReporter(ProgressReporter):
             return
         self._plain_last_render_at = now
         parts: list[str] = []
+        bar_width = self._display_bar_width()
         if self.resource_monitor is not None:
             parts.append(self.resource_monitor.format_compact())
         parts.append(self._lot_context)
         if self._plain_pipeline_started:
-            pipeline_eta = self._format_eta(
+            pipeline_timing = self._timing_text(
                 self._pipeline_completed,
                 self._plain_pipeline_total,
                 self._plain_pipeline_started_at,
+                "stage",
             )
             parts.append(
-                f"pipeline {self._ascii_bar(self._pipeline_completed, self._plain_pipeline_total, self.config.bar_width)} "
-                f"{self._pipeline_completed}/{self._plain_pipeline_total} eta={pipeline_eta}"
+                f"pipeline {self._ascii_bar(self._pipeline_completed, self._plain_pipeline_total, bar_width)} "
+                f"{self._pipeline_completed}/{self._plain_pipeline_total} {pipeline_timing}"
             )
         if self._plain_stage_total is None:
-            stage_eta = "--"
             stage = (
                 f"{self._plain_stage_desc} "
-                f"{self._ascii_bar(0, None, self.config.bar_width)} "
-                f"eta={stage_eta}"
+                f"{self._ascii_bar(0, None, bar_width)} "
+                f"{self._timing_text(self._plain_stage_current, None, self._plain_stage_started_at, self._plain_stage_unit)}"
             )
         else:
-            stage_eta = self._format_eta(
+            stage_timing = self._timing_text(
                 self._plain_stage_current,
                 self._plain_stage_total,
                 self._plain_stage_started_at,
+                self._plain_stage_unit,
             )
             stage = (
                 f"{self._plain_stage_desc} "
-                f"{self._ascii_bar(self._plain_stage_current, self._plain_stage_total, self.config.bar_width)} "
-                f"{self._plain_stage_current}/{self._plain_stage_total} eta={stage_eta}"
+                f"{self._ascii_bar(self._plain_stage_current, self._plain_stage_total, bar_width)} "
+                f"{self._plain_stage_current}/{self._plain_stage_total} {stage_timing}"
             )
         parts.append(stage)
         line = " | ".join(parts)
@@ -612,6 +659,7 @@ class TqdmProgressReporter(ProgressReporter):
         self._plain_stage_desc = state.desc
         self._plain_stage_current = state.current
         self._plain_stage_total = state.total
+        self._plain_stage_unit = state.unit
         self._plain_stage_started_at = state.started_at
         if self._plain_mode:
             self._render_plain(force=True)
@@ -678,6 +726,7 @@ class TqdmProgressReporter(ProgressReporter):
             self._plain_stage_desc = desc
             self._plain_stage_current = 0
             self._plain_stage_total = total
+            self._plain_stage_unit = unit
             self._plain_stage_started_at = state.started_at
             self._render_plain(force=True)
             try:
@@ -693,10 +742,12 @@ class TqdmProgressReporter(ProgressReporter):
                     self._plain_stage_desc = parent.desc
                     self._plain_stage_current = parent.current
                     self._plain_stage_total = parent.total
+                    self._plain_stage_unit = parent.unit
                     self._plain_stage_started_at = parent.started_at
                 else:
                     self._plain_stage_current = state.current
                     self._plain_stage_total = state.total
+                    self._plain_stage_unit = state.unit
                     self._plain_stage_started_at = state.started_at
                 self._render_plain(force=True)
                 if not self._plain_detail_stack and not self._plain_pipeline_started:

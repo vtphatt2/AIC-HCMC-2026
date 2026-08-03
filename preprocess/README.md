@@ -528,8 +528,10 @@ shot_boundary.overwrite               = false # reuse valid manifests
 Progress bar dùng `tqdm` và hiển thị đúng năm dòng cố định trong terminal/tmux:
 dòng lot/stage, dòng CPU/GPU, dòng disk, full-pipeline bar và detail bar của
 operation hiện tại. Các operation lồng nhau dùng lại detail bar nên không tạo
-thêm hàng. Cả hai progress bar đều hiển thị `eta`; `bar_width` giới hạn chiều
-dài phần bar; `leave=false` xóa hai bar khi pipeline kết thúc.
+thêm hàng. Cả hai progress bar đều hiển thị theo dạng
+`elapsed<eta (rate)`, ví dụ `00:12<01:45 (8.4 video/s)`; `bar_width` là chiều
+dài tối đa của phần bar và tự co lại nếu terminal hẹp; `leave=false` xóa hai
+bar khi pipeline kết thúc.
 Khi output đi qua `tee`, pipeline tự chuyển sang một dòng ASCII duy nhất để
 không ghi cursor escape code vào log, nhưng vẫn giữ full-pipeline, operation
 hiện tại, CPU/GPU/disk metrics và ETA. Để xem layout năm dòng cố định, chạy
@@ -863,7 +865,9 @@ manifest, discovery report, rendered/validation manifest, `.npy` feature và
 upload/cleanup receipt. Fingerprint theo stage và dependency chain cũng cho
 phép đổi riêng `embedding.dataloader` mà vẫn giữ lại download, extraction,
 TransNetV2 và processing hợp lệ; embedding và các stage phụ thuộc nó sẽ chạy
-lại. Không xóa `state.json` để resume.
+lại. Khi stage hoàn tất, `state.json` ghi `started_at`, `completed_at` và
+`elapsed_seconds`; event history cũng lưu thời lượng tương ứng. Không xóa
+`state.json` để resume.
 
 #### 9. Kiểm tra sau khi hoàn thành
 
