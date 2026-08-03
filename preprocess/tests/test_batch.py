@@ -427,6 +427,96 @@ class BatchModuleTests(unittest.TestCase):
         self.assertNotIn("videos/L21_V030.mp4", staged_paths)
         self.assertNotIn("source/L29_a/L21_V030.mp4", staged_paths)
 
+    def test_staging_includes_scene_segment_per_video_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata_root = root / "metadata"
+            metadata_root.mkdir()
+            (metadata_root / "L21_V030.json").write_text('{"video_link": "x"}\n', encoding="utf-8")
+            layout = LotLayout(root / "data", "L29_a")
+            layout.create_runtime_dirs()
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000000.jpg").write_bytes(b"jpg")
+            selection = layout.dataset_dir / "selection-manifests" / "L21_V030.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}", encoding="utf-8")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text("{}", encoding="utf-8")
+            validation = layout.reports_dir / "validation" / "L21_V030.json"
+            validation.parent.mkdir(parents=True)
+            validation.write_text("{}", encoding="utf-8")
+            source_video = layout.source_root / "L21_V030.mp4"
+            source_video.parent.mkdir(parents=True)
+            source_video.write_bytes(b"raw-video")
+            scene_segments_dir = root / "scene-segments"
+            scene_segments_dir.mkdir()
+            scene_segments = scene_segments_dir / "L21_V030.json"
+            scene_segments.write_text(
+                '{"video_id":"L21_V030","segments":[{"start_ms":0,"end_ms":1000}]}\n',
+                encoding="utf-8",
+            )
+            template = root / "dataset-metadata.json"
+            template.write_text('{"title":"test"}\n', encoding="utf-8")
+
+            asset = VideoAsset("L21_V030", source_video, "L29_a", source_video.name)
+            result = ProcessingResult(asset, {"fps": None}, 1, selection, rendered)
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                metadata_template=template,
+                include_scene_segments=True,
+            )
+            staging = KaggleStagingStrategy(
+                JsonMetadataProvider(metadata_root),
+                config,
+                scene_segments_dir=scene_segments_dir,
+            ).stage(layout, [asset], [result])
+            staged_paths = {
+                path.relative_to(staging.staging_dir).as_posix() for path in staging.files
+            }
+
+        self.assertIn("scene-segments/L21_V030.json", staged_paths)
+
+    def test_staging_requires_scene_segment_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata_root = root / "metadata"
+            metadata_root.mkdir()
+            (metadata_root / "L21_V030.json").write_text("{}\n", encoding="utf-8")
+            layout = LotLayout(root / "data", "L29_a")
+            layout.create_runtime_dirs()
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000000.jpg").write_bytes(b"jpg")
+            selection = layout.dataset_dir / "selection-manifests" / "L21_V030.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}", encoding="utf-8")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text("{}", encoding="utf-8")
+            source_video = layout.source_root / "L21_V030.mp4"
+            source_video.parent.mkdir(parents=True)
+            source_video.write_bytes(b"raw-video")
+            template = root / "dataset-metadata.json"
+            template.write_text('{"title":"test"}\n', encoding="utf-8")
+            asset = VideoAsset("L21_V030", source_video, "L29_a", source_video.name)
+            result = ProcessingResult(asset, {"fps": None}, 1, selection, rendered)
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                metadata_template=template,
+                include_scene_segments=True,
+            )
+
+            with self.assertRaises(FileNotFoundError):
+                KaggleStagingStrategy(
+                    JsonMetadataProvider(metadata_root),
+                    config,
+                    scene_segments_dir=root / "scene-segments",
+                ).stage(layout, [asset], [result])
+
+            self.assertFalse(layout.staging_dir.exists())
+
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

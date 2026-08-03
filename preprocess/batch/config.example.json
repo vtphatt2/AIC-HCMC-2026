@@ -80,6 +80,7 @@
     "mode": "version",
     "dataset_ref": "owner/dataset-slug",
     "metadata_template": "../../data/kaggle-dataset-metadata.json",
+    "include_scene_segments": false,
     "include_features": true,
     "include_transcripts": true,
     "include_transcript_index": true,
