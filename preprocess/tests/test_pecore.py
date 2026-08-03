@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from preprocess.pecore.embedding import (
+    EmbeddingDataLoaderConfig,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
     VisualEmbeddingEncoder,
@@ -30,6 +31,33 @@ class FakeVisualEncoder(VisualEmbeddingEncoder):
             value /= np.linalg.norm(value)
             values.append(value)
         return np.stack(values).astype(np.float32)
+
+
+def fake_image_transform(image):
+    """Pickle-friendly transform used to exercise the DataLoader path."""
+    import torch
+
+    pixel = image.convert("RGB").getpixel((0, 0))
+    return torch.tensor([float(pixel[0])], dtype=torch.float32)
+
+
+class PreparedFakeVisualEncoder(VisualEmbeddingEncoder):
+    dimension = 4
+
+    def __init__(self) -> None:
+        self.prepared_calls = 0
+
+    def embed(self, image_paths: list[Path]) -> np.ndarray:
+        raise AssertionError("the prepared DataLoader path should be used")
+
+    def image_transform(self):
+        return fake_image_transform
+
+    def embed_prepared_batch(self, batch, *, non_blocking: bool = False) -> np.ndarray:
+        del non_blocking
+        self.prepared_calls += 1
+        values = np.ones((len(batch), self.dimension), dtype=np.float32)
+        return values / np.linalg.norm(values, axis=1, keepdims=True)
 
 
 class PECoreEmbeddingTests(unittest.TestCase):
@@ -89,6 +117,41 @@ class PECoreEmbeddingTests(unittest.TestCase):
         self.assertEqual(config.model_id, "hf-hub:timm/PE-Core-bigG-14-448")
         self.assertEqual(config.expected_dim, 1280)
         self.assertEqual(config.features_dir_name, "PECore-features")
+
+    def test_dataloader_config_is_nested_and_validated(self) -> None:
+        config = PECoreEmbeddingConfig(
+            dataloader={
+                "num_workers": 2,
+                "pin_memory": True,
+                "persistent_workers": True,
+                "prefetch_factor": 4,
+            }
+        )
+        self.assertIsInstance(config.dataloader, EmbeddingDataLoaderConfig)
+        self.assertEqual(config.dataloader.num_workers, 2)
+        self.assertTrue(config.dataloader.pin_memory)
+        with self.assertRaises(ValueError):
+            EmbeddingDataLoaderConfig(persistent_workers=True)
+
+    def test_prepared_encoder_uses_configured_dataloader_path(self) -> None:
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            keyframes = root / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            for frame_id, pixel in (("000001", 10), ("000002", 20), ("000003", 30)):
+                Image.new("RGB", (2, 2), (pixel, 0, 0)).save(keyframes / f"{frame_id}.png")
+
+            encoder = PreparedFakeVisualEncoder()
+            result = PECoreEmbeddingPipeline(
+                encoder,
+                batch_size=2,
+                dataloader=EmbeddingDataLoaderConfig(num_workers=0, pin_memory=False),
+            ).embed_all(root / "keyframes", root / "PECore-features")
+
+        self.assertEqual(result.embedded_count, 3)
+        self.assertEqual(encoder.prepared_calls, 2)
 
     def test_batch_strategy_uses_configured_profile_and_feature_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

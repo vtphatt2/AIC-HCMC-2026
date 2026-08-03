@@ -48,6 +48,7 @@ class PECoreEmbeddingStrategy(BatchEmbeddingStrategy):
         self.pipeline = PECoreEmbeddingPipeline(
             encoder,
             batch_size=config.batch_size,
+            dataloader=config.dataloader,
             image_extensions=config.image_extensions,
             overwrite=config.overwrite,
             progress=progress,

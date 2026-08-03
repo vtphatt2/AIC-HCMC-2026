@@ -489,10 +489,17 @@ cleanup artifact tạm
 | Selection strategy | `VideoInfo` + candidates | `SelectedFrame[]` | `interval_ms`, `start_ms`, `end_ms` dùng milliseconds; số frame là `int`. |
 | FFmpeg renderer | Video + selected frames | JPG/PNG + rendered manifest | Mặc định `target_short_edge_px=null`: giữ nguyên kích thước decoded; nếu đặt giá trị thì resize cạnh ngắn; frame ID là chuỗi sáu chữ số. |
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
-| `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
+| `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
 | `KaggleStagingStrategy` | Keyframes, features, metadata, manifests | `kaggle-staging/` | Chỉ là file allowlist; không chứa archive, source hoặc video. |
 | `KaggleCliUploader` | `StagingResult` | `UploadResult` | `verified: bool`; upload dạng `create` hoặc `version`. |
 | `CleanupManager` | UploadResult đã verify | `CleanupResult` | Xóa các directory được bật trong config; metadata độc lập, reports, receipts và state vẫn giữ lại. |
+
+Nếu FFmpeg render nhanh trả về ít PNG hơn số frame được chọn (thường do VFR,
+timestamp không hợp lệ hoặc decoder ordinal khác ffprobe), extractor không bỏ
+qua phần thiếu. Nó đọc lại timeline `frame n + PTS` bằng chính FFmpeg decoder,
+ánh xạ lại theo PTS và render lần hai; `FrameRef`/frame ID trong selection
+manifest vẫn được giữ nguyên. Nếu PTS không thể ánh xạ hoặc lần hai vẫn thiếu
+frame, pipeline dừng để validation không nhận một dataset không đầy đủ.
 
 Các thông số chính được cấu hình trong `config.json`:
 
@@ -504,8 +511,12 @@ processing.target_short_edge_px       = null # preserve decoded dimensions
 processing.decode_checkpoints          = [0, 0.5, 1] # normalized position
 embedding.expected_dim                = 1280 # vector values
 embedding.batch_size                  = 8    # images/encoder call
+embedding.dataloader.num_workers     = 0    # CPU image preprocessing workers
+embedding.dataloader.pin_memory      = false # host→CUDA transfer hint
+embedding.dataloader.persistent_workers = false
+embedding.dataloader.prefetch_factor = 2    # only when num_workers > 0
 progress.enabled                      = true # terminal/tmux progress bars
-progress.leave                        = true # retain completed bars
+progress.leave                        = false # clear completed bars; less terminal noise
 shot_boundary.enabled                 = true # auto-run when selector needs scenes
 shot_boundary.backend                 = transnetv2
 shot_boundary.device                  = auto # auto/cpu/cuda/mps
@@ -516,7 +527,13 @@ shot_boundary.overwrite               = false # reuse valid manifests
 Progress bar dùng `tqdm` và hiển thị số lot, video, frame scan, frame render
 và embedding batch. Khi bật, progress native của aria2c cũng được stream ra
 terminal/tmux thay vì bị capture. Có thể tắt bằng `progress.enabled=false`;
-mặc định bật để quan sát được tiến độ khi chạy trong `tmux`.
+mặc định bật để quan sát được tiến độ khi chạy trong `tmux`. `leave=false`
+giữ full-pipeline bar và stage bar đang chạy nhưng xóa bar con đã hoàn tất,
+tránh để lại hàng trăm dòng trong terminal. Khi output đi qua `tee`, pipeline
+tự chuyển sang một dòng ASCII duy nhất, không dùng cursor escape code, nhưng
+vẫn giữ full-pipeline, stage hiện tại và CPU/GPU/disk metrics. Warning CUDA không gây lỗi pipeline;
+TransNetV2 chỉ lọc warning lặp lại về `CUBLAS_WORKSPACE_CONFIG`. Nếu cần tái lập
+bit-level, export biến này trước khi khởi động Python theo hướng dẫn của PyTorch.
 
 Rule `linear-rulebase` dùng milliseconds và số frame:
 
@@ -829,6 +846,22 @@ Khi selector cần scene, checkpoint sẽ đi qua `shot_boundaries` rồi
 ở `data/scene-segments/<video_id>.json`; nếu stage bị ngắt, file hợp lệ sẽ
 được dùng lại ở lần chạy sau khi `shot_boundary.overwrite=false`.
 
+Mỗi lot còn có `state.json.stages` với các stage `running` hoặc `completed`.
+Checkpoint được ghi trước và sau từng stage; nếu SSH bị mất hoặc nhấn
+`Ctrl-C`, lần chạy `run` tiếp theo sẽ:
+
+```text
+stage đã completed + artifact còn hợp lệ  → restore/skip
+stage đang running hoặc artifact hỏng      → chạy lại stage đó
+```
+
+Các artifact được kiểm tra lại trước khi skip: ZIP, source video, scene
+manifest, discovery report, rendered/validation manifest, `.npy` feature và
+upload/cleanup receipt. Fingerprint theo stage và dependency chain cũng cho
+phép đổi riêng `embedding.dataloader` mà vẫn giữ lại download, extraction,
+TransNetV2 và processing hợp lệ; embedding và các stage phụ thuộc nó sẽ chạy
+lại. Không xóa `state.json` để resume.
+
 #### 9. Kiểm tra sau khi hoàn thành
 
 Khi `run` đã kết thúc:
@@ -891,11 +924,15 @@ preprocess/.venv/bin/python -m preprocess.pecore \
   --output-root data/L29_a/dataset/PECore-features \
   --video-id L21_V030 \
   --device cpu \
-  --batch-size 4
+  --batch-size 4 \
+  --num-workers 2 \
+  --prefetch-factor 2
 ```
 
 Embed tất cả thư mục video dưới `--input-root` thì bỏ các cờ `--video-id`.
-Dùng `--overwrite` khi muốn tính lại các feature đã tồn tại.
+Dùng `--overwrite` khi muốn tính lại các feature đã tồn tại. `--pin-memory`
+và `--persistent-workers` tương ứng với các cờ trong `embedding.dataloader`;
+`--persistent-workers` yêu cầu `--num-workers` lớn hơn 0.
 
 Để chạy tự động sau bước validate trong batch pipeline, bật:
 
@@ -908,6 +945,12 @@ Dùng `--overwrite` khi muốn tính lại các feature đã tồn tại.
     "precision": "fp32",
     "expected_dim": 1280,
     "batch_size": 8,
+    "dataloader": {
+      "num_workers": 0,
+      "pin_memory": false,
+      "persistent_workers": false,
+      "prefetch_factor": 2
+    },
     "overwrite": false,
     "features_dir_name": "PECore-features"
   }

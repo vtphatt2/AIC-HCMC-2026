@@ -1,10 +1,13 @@
 """Dependency-injected orchestration for one or more archive-derived lots."""
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from pathlib import PurePosixPath
+from typing import Any, Callable, Mapping, Sequence
 
 from preprocess.batch.archive_extractor import ArchiveExtractor, ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
@@ -48,8 +51,9 @@ from preprocess.batch.shot_boundaries import (
     ShotBoundaryDetector,
     ShotBoundaryPipeline,
     default_shot_boundary_registry,
+    load_scene_segments,
 )
-from preprocess.pecore.embedding import EmbeddingBatchResult
+from preprocess.pecore.embedding import EmbeddingBatchResult, EmbeddingVideoResult, NpyFeatureWriter
 from preprocess.progress import ProgressReporter, TqdmProgressReporter
 from preprocess.batch.validators import (
     VideoValidationContext,
@@ -104,15 +108,36 @@ class BatchOrchestrator:
 
     def run_all(self, requests: Sequence[ArchiveInput]) -> list[LotRunResult]:
         PreflightChecker(self.config).run()
+        stage_names = self._pipeline_stage_names()
+        self.progress.start_pipeline(
+            total_units=len(requests) * len(stage_names),
+            total_lots=len(requests),
+            stage_names=stage_names,
+        )
         results: list[LotRunResult] = []
-        for request in self.progress.iterate(
-            requests,
-            total=len(requests),
-            desc="lots",
-            unit="lot",
-        ):
-            results.append(self.run_lot(request))
+        try:
+            for lot_index, request in enumerate(requests, start=1):
+                self.progress.set_lot_context(
+                    lot_index=lot_index,
+                    total_lots=len(requests),
+                    lot_id=request.lot_id,
+                )
+                results.append(self.run_lot(request))
+        finally:
+            self.progress.finish_pipeline()
         return results
+
+    def _pipeline_stage_names(self) -> tuple[str, ...]:
+        stages = ["download", "archive_validate", "extract", "discover"]
+        if self.shot_boundary_detector is not None:
+            stages.append("shot_boundaries")
+        stages.append("process_validate")
+        if self.embedding is not None:
+            stages.append("embedding")
+        if self.config.upload.enabled:
+            stages.append("stage_upload")
+            stages.append("cleanup")
+        return tuple(stages)
 
     def run_lot(self, request: ArchiveInput) -> LotRunResult:
         layout = LotLayout(self.config.data_root, request.lot_id)
@@ -120,16 +145,80 @@ class BatchOrchestrator:
         checkpoints = CheckpointStore(layout.state_path)
         self._initialize_state(checkpoints, request)
         try:
-            archive_path = self._download(request, layout, checkpoints)
-            inspection = self._validate_archive(archive_path, layout, checkpoints)
-            self._extract(inspection, request, layout, checkpoints)
-            assets = self._discover(layout, request, checkpoints)
-            self._detect_shot_boundaries(assets, layout, checkpoints)
-            processed = self._process_and_validate(assets, layout, checkpoints)
-            embedding = self._embed(assets, processed, layout, checkpoints)
-            upload = self._stage_and_upload(assets, processed, layout, checkpoints)
-            if upload is not None:
-                self._cleanup(layout, upload, checkpoints)
+            archive_path = self._execute_stage(
+                checkpoints,
+                request,
+                "download",
+                action=lambda: self._download(request, layout, checkpoints),
+                restore=lambda: self._restore_archive(request, layout),
+            )
+            inspection = self._execute_stage(
+                checkpoints,
+                request,
+                "archive_validate",
+                action=lambda: self._validate_archive(archive_path, layout, checkpoints),
+                restore=lambda: self._restore_archive_inspection(archive_path),
+            )
+            self._execute_stage(
+                checkpoints,
+                request,
+                "extract",
+                action=lambda: self._extract(inspection, request, layout, checkpoints),
+                restore=lambda: self._restore_extraction(inspection, layout),
+            )
+            assets = self._execute_stage(
+                checkpoints,
+                request,
+                "discover",
+                action=lambda: self._discover(layout, request, checkpoints),
+                restore=lambda: self._restore_assets(layout, request),
+            )
+
+            if self.shot_boundary_detector is not None:
+                self._execute_stage(
+                    checkpoints,
+                    request,
+                    "shot_boundaries",
+                    action=lambda: self._detect_shot_boundaries(assets, layout, checkpoints),
+                    restore=lambda: self._restore_shot_boundaries(assets),
+                )
+
+            processed = self._execute_stage(
+                checkpoints,
+                request,
+                "process_validate",
+                action=lambda: self._process_and_validate(assets, layout, checkpoints),
+                restore=lambda: self._restore_processed(assets, layout),
+            )
+
+            if self.embedding is not None:
+                embedding = self._execute_stage(
+                    checkpoints,
+                    request,
+                    "embedding",
+                    action=lambda: self._embed(assets, processed, layout, checkpoints),
+                    restore=lambda: self._restore_embedding(layout),
+                )
+            else:
+                embedding = None
+
+            if self.config.upload.enabled:
+                upload = self._execute_stage(
+                    checkpoints,
+                    request,
+                    "stage_upload",
+                    action=lambda: self._stage_and_upload(assets, processed, layout, checkpoints),
+                    restore=lambda: self._restore_upload(layout),
+                )
+                self._execute_stage(
+                    checkpoints,
+                    request,
+                    "cleanup",
+                    action=lambda: self._cleanup(layout, upload, checkpoints),
+                    restore=lambda: self._restore_cleanup(layout),
+                )
+            else:
+                upload = None
             checkpoints.transition(BatchState.COMPLETED, payload={"finished_at": utc_now()})
             return LotRunResult(request.lot_id, tuple(assets), tuple(processed), upload, embedding)
         except Exception as exc:
@@ -144,17 +233,369 @@ class BatchOrchestrator:
         if state.get("state") == BatchState.COMPLETED.value:
             raise RuntimeError(f"Lot is already completed: {request.lot_id}")
         if not state.get("initialized"):
-            checkpoints.write(
-                {
-                    "state": BatchState.NEW.value,
-                    "initialized": True,
-                    "lot_id": request.lot_id,
-                    "request": request.to_dict(),
-                    "config": self.config.to_dict(),
-                    "created_at": utc_now(),
-                    "events": [],
-                }
+            state = {
+                "state": BatchState.NEW.value,
+                "initialized": True,
+                "resume_version": 1,
+                "lot_id": request.lot_id,
+                "request": request.to_dict(),
+                "config": self.config.to_dict(),
+                "config_fingerprint": self._config_fingerprint(),
+                "request_fingerprint": self._request_fingerprint(request),
+                "created_at": utc_now(),
+                "events": [],
+                "stages": {},
+            }
+            checkpoints.write(state)
+            return
+
+        previous_request = state.get("request")
+        if previous_request is not None and previous_request != request.to_dict():
+            raise RuntimeError(
+                f"Archive request changed after this lot started: {request.lot_id}. "
+                "Use a new lot directory for a different URL or archive name."
             )
+
+        # Checkpoints written by the pre-stage-resume version remain usable;
+        # their artifact caches are still validated by each restore method.
+        state["resume_version"] = 1
+        state["config_fingerprint"] = self._config_fingerprint()
+        state["request_fingerprint"] = self._request_fingerprint(request)
+        state.setdefault("request", request.to_dict())
+        state.setdefault("stages", {})
+        checkpoints.write(state)
+
+    def _config_fingerprint(self) -> str:
+        encoded = json.dumps(
+            self.config.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _request_fingerprint(request: ArchiveInput) -> str:
+        encoded = json.dumps(
+            request.to_dict(),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _stage_fingerprint(self, request: ArchiveInput, name: str) -> str:
+        config = self.config.to_dict()
+        stage_config: dict[str, Any]
+        if name == "download":
+            stage_config = {
+                "tools": config["tools"],
+                "download": config["download"],
+                "archive": config["archive"],
+                "minimum_free_bytes": config["minimum_free_bytes"],
+            }
+        elif name == "archive_validate":
+            stage_config = {"archive": config["archive"]}
+        elif name == "extract":
+            stage_config = {"archive": config["archive"]}
+        elif name == "discover":
+            stage_config = {"archive": config["archive"]}
+        elif name == "shot_boundaries":
+            stage_config = {
+                "shot_boundary": config["shot_boundary"],
+                "scene_segments_dir": config["processing"]["scene_segments_dir"],
+            }
+        elif name == "process_validate":
+            stage_config = {
+                "archive": config["archive"],
+                "processing": config["processing"],
+                "metadata_root": config["metadata_root"],
+                "scene_boundaries": config["shot_boundary"],
+            }
+        elif name == "embedding":
+            stage_config = {
+                "embedding": config["embedding"],
+                "profile_id": config["processing"]["profile_id"],
+            }
+        elif name == "stage_upload":
+            stage_config = {
+                "upload": config["upload"],
+                "profile_id": config["processing"]["profile_id"],
+            }
+        elif name == "cleanup":
+            stage_config = {
+                "cleanup": config["cleanup"],
+                "profile_id": config["processing"]["profile_id"],
+            }
+        else:
+            raise ValueError(f"Unknown pipeline stage: {name}")
+
+        dependencies: list[str] = []
+        if name == "archive_validate":
+            dependencies.append("download")
+        elif name == "extract":
+            dependencies.append("archive_validate")
+        elif name == "discover":
+            dependencies.append("extract")
+        elif name == "shot_boundaries":
+            dependencies.append("discover")
+        elif name == "process_validate":
+            dependencies.append("shot_boundaries" if self.shot_boundary_detector is not None else "discover")
+        elif name == "embedding":
+            dependencies.append("process_validate")
+        elif name == "stage_upload":
+            dependencies.append("embedding" if self.embedding is not None else "process_validate")
+        elif name == "cleanup":
+            dependencies.append("stage_upload")
+
+        payload = {
+            "request": request.to_dict(),
+            "stage": name,
+            "config": stage_config,
+            "dependencies": [self._stage_fingerprint(request, dependency) for dependency in dependencies],
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _execute_stage(
+        self,
+        checkpoints: CheckpointStore,
+        request: ArchiveInput,
+        name: str,
+        *,
+        action: Callable[[], Any],
+        restore: Callable[[], Any],
+    ) -> Any:
+        self.progress.start_stage(name=name, lot_id=request.lot_id)
+        fingerprint = self._stage_fingerprint(request, name)
+        if checkpoints.stage_is_complete(name, fingerprint):
+            try:
+                value = restore()
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                checkpoints.invalidate_stage(name, reason=f"artifact restore failed: {exc}")
+            else:
+                self.progress.complete_stage(name=name, lot_id=request.lot_id)
+                return value
+
+        checkpoints.start_stage(name, fingerprint=fingerprint)
+        value = action()
+        checkpoints.complete_stage(name, fingerprint=fingerprint)
+        self.progress.complete_stage(name=name, lot_id=request.lot_id)
+        return value
+
+    def _restore_archive(self, request: ArchiveInput, layout: LotLayout) -> Path:
+        path = layout.archive_dir / request.archive_name
+        self.archive_validator.validate(path)
+        return path
+
+    def _restore_archive_inspection(self, archive_path: Path) -> ArchiveInspection:
+        return self.archive_validator.validate(archive_path)
+
+    def _restore_extraction(self, inspection: ArchiveInspection, layout: LotLayout) -> Path:
+        source_root = layout.source_root
+        if not source_root.is_dir():
+            raise FileNotFoundError(f"Extracted source root not found: {source_root}")
+        for member in inspection.video_members:
+            parts = PurePosixPath(member.replace("\\", "/")).parts
+            if not parts or parts[0] != inspection.root_name:
+                raise ValueError(f"Archive member is outside expected root: {member}")
+            extracted = source_root.joinpath(*parts[1:])
+            if not extracted.is_file() or extracted.stat().st_size <= 0:
+                raise FileNotFoundError(f"Extracted video is missing or empty: {extracted}")
+        return source_root
+
+    def _restore_assets(self, layout: LotLayout, request: ArchiveInput) -> list[VideoAsset]:
+        report_path = layout.reports_dir / "videos.json"
+        payload = self._read_json(report_path)
+        records = payload.get("videos")
+        if not isinstance(records, list) or not records:
+            raise ValueError(f"Video discovery report is empty or invalid: {report_path}")
+        assets: list[VideoAsset] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValueError(f"Invalid video discovery record: {report_path}")
+            asset = VideoAsset(
+                video_id=str(record["video_id"]),
+                path=Path(str(record["path"])),
+                lot_id=str(record["lot_id"]),
+                source_name=str(record["source_name"]),
+            )
+            if asset.lot_id != request.lot_id or not asset.path.is_file():
+                raise FileNotFoundError(f"Discovered source video is no longer available: {asset.path}")
+            try:
+                asset.path.resolve().relative_to(layout.source_root.resolve())
+            except ValueError as exc:
+                raise ValueError(
+                    f"Discovered video is outside the lot source root: {asset.path}"
+                ) from exc
+            assets.append(asset)
+        if len({asset.video_id for asset in assets}) != len(assets):
+            raise ValueError(f"Duplicate video IDs in discovery report: {report_path}")
+        return assets
+
+    def _restore_shot_boundaries(self, assets: Sequence[VideoAsset]) -> tuple[ShotBoundaryArtifact, ...]:
+        if self.shot_boundary_detector is None:
+            return ()
+        output_dir = self.config.processing.scene_segments_dir
+        if output_dir is None:
+            raise ValueError("Scene-boundary output directory is not configured")
+        restored: list[ShotBoundaryArtifact] = []
+        for asset in assets:
+            path = output_dir / f"{asset.video_id}.json"
+            payload = self._read_json(path)
+            if str(payload.get("backend", "")) != self.shot_boundary_detector.name:
+                raise ValueError(f"Shot-boundary backend changed for {asset.video_id}: {path}")
+            expected_threshold = getattr(getattr(self.shot_boundary_detector, "config", None), "threshold", None)
+            if expected_threshold is not None and float(payload.get("threshold")) != float(expected_threshold):
+                raise ValueError(f"Shot-boundary threshold changed for {asset.video_id}: {path}")
+            source = payload.get("source")
+            if isinstance(source, Mapping) and isinstance(source.get("fingerprint"), Mapping):
+                fingerprint = source["fingerprint"]
+                stat = asset.path.stat()
+                if (
+                    int(fingerprint.get("size_bytes")) != stat.st_size
+                    or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
+                ):
+                    raise ValueError(f"Source video changed for shot-boundary artifact: {asset.video_id}")
+            segments = load_scene_segments(path)
+            restored.append(
+                ShotBoundaryArtifact(
+                    video_id=asset.video_id,
+                    path=path,
+                    backend=self.shot_boundary_detector.name,
+                    scene_count=len(segments),
+                    cached=True,
+                )
+            )
+        return tuple(restored)
+
+    def _restore_processed(
+        self,
+        assets: Sequence[VideoAsset],
+        layout: LotLayout,
+    ) -> list[ProcessingResult]:
+        report_path = layout.reports_dir / "processing.json"
+        payload = self._read_json(report_path)
+        records = payload.get("videos")
+        if not isinstance(records, list):
+            raise ValueError(f"Processing report is invalid: {report_path}")
+        asset_by_id = {asset.video_id: asset for asset in assets}
+        restored: dict[str, ProcessingResult] = {}
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValueError(f"Invalid processing record: {report_path}")
+            raw_asset = record.get("asset")
+            if not isinstance(raw_asset, Mapping):
+                raise ValueError(f"Processing record has no asset: {report_path}")
+            video_id = str(raw_asset.get("video_id", ""))
+            asset = asset_by_id.get(video_id)
+            if asset is None:
+                raise ValueError(f"Processing report contains an unknown video: {video_id}")
+            selection_path = Path(str(record["selection_manifest_path"]))
+            rendered_path = Path(str(record["rendered_manifest_path"]))
+            validation_path = layout.reports_dir / "validation" / f"{video_id}.json"
+            if not selection_path.is_file() or not rendered_path.is_file() or not validation_path.is_file():
+                raise FileNotFoundError(f"Processing artifacts are incomplete for {video_id}")
+            selection = self._read_json(selection_path)
+            source = selection.get("source")
+            fingerprint = source.get("fingerprint") if isinstance(source, Mapping) else None
+            if isinstance(fingerprint, Mapping):
+                stat = asset.path.stat()
+                if (
+                    int(fingerprint.get("size_bytes")) != stat.st_size
+                    or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
+                ):
+                    raise ValueError(f"Source video changed after processing: {video_id}")
+            validation = self._read_json(validation_path)
+            if validation.get("passed") is not True:
+                raise ValueError(f"Validation report is not passing for {video_id}")
+            rendered = self._read_json(rendered_path)
+            frames = rendered.get("frames")
+            if not isinstance(frames, list):
+                raise ValueError(f"Rendered manifest is invalid for {video_id}")
+            for frame in frames:
+                if not isinstance(frame, Mapping) or not frame.get("path"):
+                    raise ValueError(f"Rendered frame record is invalid for {video_id}")
+                frame_path = Path(str(frame["path"]))
+                candidates = [frame_path]
+                if not frame_path.is_absolute():
+                    candidates.append(rendered_path.parent / frame_path.name)
+                if not any(candidate.is_file() for candidate in candidates):
+                    raise FileNotFoundError(f"Rendered frame is missing for {video_id}: {frame_path}")
+            restored[video_id] = ProcessingResult(
+                asset=asset,
+                video_info=dict(record.get("video_info", {})),
+                selected_count=int(record["selected_count"]),
+                selection_manifest_path=selection_path,
+                rendered_manifest_path=rendered_path,
+            )
+        if set(restored) != set(asset_by_id):
+            raise ValueError(f"Processing report does not cover all videos: {report_path}")
+        return [restored[asset.video_id] for asset in assets]
+
+    def _restore_embedding(self, layout: LotLayout) -> EmbeddingBatchResult:
+        report_path = layout.reports_dir / "embedding.json"
+        payload = self._read_json(report_path)
+        dimension = int(payload["dimension"])
+        writer = NpyFeatureWriter(dimension)
+        records = payload.get("videos")
+        if not isinstance(records, list):
+            raise ValueError(f"Embedding report is invalid: {report_path}")
+        restored: list[EmbeddingVideoResult] = []
+        for record in records:
+            if not isinstance(record, Mapping):
+                raise ValueError(f"Invalid embedding record: {report_path}")
+            feature_files = tuple(Path(str(path)) for path in record.get("feature_files", []))
+            image_count = int(record["image_count"])
+            if len(feature_files) != image_count:
+                raise ValueError(f"Embedding report has incomplete feature list: {report_path}")
+            for feature_file in feature_files:
+                writer.validate_file(feature_file)
+            restored.append(
+                EmbeddingVideoResult(
+                    video_id=str(record["video_id"]),
+                    source_dir=Path(str(record["source_dir"])),
+                    output_dir=Path(str(record["output_dir"])),
+                    image_count=image_count,
+                    embedded_count=int(record["embedded_count"]),
+                    skipped_count=int(record["skipped_count"]),
+                    dimension=int(record["dimension"]),
+                    feature_files=feature_files,
+                )
+            )
+        result = EmbeddingBatchResult(videos=tuple(restored), dimension=dimension)
+        if result.embedded_count + result.skipped_count != result.image_count:
+            raise ValueError(f"Embedding report counts are inconsistent: {report_path}")
+        return result
+
+    def _restore_upload(self, layout: LotLayout) -> UploadResult:
+        path = layout.receipts_dir / "upload.json"
+        payload = self._read_json(path)
+        result = UploadResult(
+            dataset_ref=str(payload["dataset_ref"]),
+            mode=str(payload["mode"]),
+            verified=bool(payload["verified"]),
+            command=tuple(str(item) for item in payload.get("command", [])),
+            output_tail=str(payload.get("output_tail", "")),
+            verified_output_tail=str(payload.get("verified_output_tail", "")),
+        )
+        if not result.verified:
+            raise ValueError(f"Upload receipt is not verified: {path}")
+        return result
+
+    def _restore_cleanup(self, layout: LotLayout) -> None:
+        result_path = layout.receipts_dir / "cleanup-result.json"
+        manager_path = layout.receipts_dir / "cleanup.json"
+        if not result_path.is_file() and not manager_path.is_file():
+            raise FileNotFoundError(f"Cleanup receipt not found: {result_path}")
+        self._read_json(result_path if result_path.is_file() else manager_path)
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, Any]:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Expected a JSON object: {path}")
+        return payload
 
     def _download(self, request: ArchiveInput, layout: LotLayout, checkpoints: CheckpointStore) -> Path:
         archive_path = layout.archive_dir / request.archive_name
@@ -190,8 +631,18 @@ class BatchOrchestrator:
         checkpoints: CheckpointStore,
     ) -> Path:
         if layout.source_root.is_dir():
-            checkpoints.transition(BatchState.EXTRACTED, payload={"source_root": str(layout.source_root)})
-            return layout.source_root
+            try:
+                source_root = self._restore_extraction(inspection, layout)
+            except (OSError, ValueError) as exc:
+                # The normal extractor publishes the root atomically.  This
+                # fallback handles an older/externally interrupted extraction
+                # by deleting only the lot-owned incomplete source root.
+                if not layout.is_owned_path(layout.source_root):
+                    raise RuntimeError(f"Refusing to replace source root: {layout.source_root}") from exc
+                shutil.rmtree(layout.source_root)
+            else:
+                checkpoints.transition(BatchState.EXTRACTED, payload={"source_root": str(source_root)})
+                return source_root
         source_root = self.archive_extractor.extract(inspection, layout.source_dir, request.lot_id)
         checkpoints.transition(BatchState.EXTRACTED, payload={"source_root": str(source_root)})
         return source_root
@@ -318,7 +769,16 @@ class BatchOrchestrator:
 
 def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
     """Build the default implementation graph; callers may inject custom parts."""
-    progress = TqdmProgressReporter(config.progress)
+    device_hint = "auto"
+    if config.shot_boundary.enabled and selector_requires_scene_boundaries(config.processing.selector):
+        device_hint = config.shot_boundary.device
+    elif config.embedding.enabled:
+        device_hint = config.embedding.device
+    progress = TqdmProgressReporter(
+        config.progress,
+        disk_root=config.data_root,
+        device_hint=device_hint,
+    )
     selection_registry: SelectionStrategyRegistry = default_selection_registry()
     selection_strategy = selection_registry.create(config.processing.selector, config.processing)
     processing_registry: ProcessingStrategyRegistry = default_processing_registry()

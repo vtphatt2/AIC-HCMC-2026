@@ -38,6 +38,94 @@ class CheckpointStore:
             os.fsync(handle.fileno())
         os.replace(temporary_path, self.path)
 
+    def stage_is_complete(self, name: str, fingerprint: str) -> bool:
+        """Return true only when a stage marker matches this run's inputs."""
+        stage = self.load().get("stages", {}).get(name, {})
+        return stage.get("status") == "completed" and stage.get("fingerprint") == fingerprint
+
+    def start_stage(self, name: str, *, fingerprint: str) -> dict[str, Any]:
+        """Atomically mark a stage as running before invoking external work."""
+        current = self.load()
+        stages = dict(current.get("stages", {}))
+        previous = stages.get(name, {})
+        attempt = int(previous.get("attempt", 0)) + 1
+        timestamp = utc_now()
+        stages[name] = {
+            "status": "running",
+            "fingerprint": fingerprint,
+            "attempt": attempt,
+            "started_at": timestamp,
+        }
+        current["stages"] = stages
+        current["current_stage"] = name
+        self._append_stage_event(current, name, "started", timestamp)
+        self.write(current)
+        return current
+
+    def complete_stage(
+        self,
+        name: str,
+        *,
+        fingerprint: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Atomically publish a successful stage marker after its artifacts exist."""
+        current = self.load()
+        stages = dict(current.get("stages", {}))
+        previous = dict(stages.get(name, {}))
+        timestamp = utc_now()
+        previous.update(
+            {
+                "status": "completed",
+                "fingerprint": fingerprint,
+                "completed_at": timestamp,
+            }
+        )
+        if payload:
+            previous["payload"] = dict(payload)
+        stages[name] = previous
+        current["stages"] = stages
+        if current.get("current_stage") == name:
+            current["current_stage"] = None
+        self._append_stage_event(current, name, "completed", timestamp, payload=payload)
+        self.write(current)
+        return current
+
+    def invalidate_stage(self, name: str, *, reason: str) -> dict[str, Any]:
+        """Mark a stale completion so the next attempt executes the stage again."""
+        current = self.load()
+        stages = dict(current.get("stages", {}))
+        previous = dict(stages.get(name, {}))
+        timestamp = utc_now()
+        previous.update({"status": "stale", "invalidated_at": timestamp, "reason": reason})
+        stages[name] = previous
+        current["stages"] = stages
+        self._append_stage_event(current, name, "invalidated", timestamp, payload={"reason": reason})
+        self.write(current)
+        return current
+
+    @staticmethod
+    def _append_stage_event(
+        current: dict[str, Any],
+        name: str,
+        status: str,
+        timestamp: str,
+        *,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        events = list(current.get("events", []))
+        event: dict[str, Any] = {
+            "state": current.get("state", BatchState.NEW.value),
+            "stage": name,
+            "status": status,
+            "at": timestamp,
+        }
+        if payload:
+            event["payload"] = dict(payload)
+        events.append(event)
+        current["events"] = events
+        current["updated_at"] = timestamp
+
     def transition(
         self,
         state: BatchState,

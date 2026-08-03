@@ -10,9 +10,10 @@ from __future__ import annotations
 import os
 import tempfile
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Protocol, Sequence
 
 import numpy as np
 
@@ -26,6 +27,32 @@ class PECoreEmbeddingUnavailable(RuntimeError):
 def _validate_safe_directory_name(value: str, field_name: str) -> None:
     if not value or value in {".", ".."} or Path(value).name != value:
         raise ValueError(f"{field_name} must be one safe directory name")
+
+
+@dataclass(frozen=True)
+class EmbeddingDataLoaderConfig:
+    """Torch DataLoader settings for image preprocessing workers.
+
+    ``shuffle`` and ``drop_last`` are deliberately fixed by the pipeline:
+    frame-to-vector filenames must remain in source order and no frame may be
+    silently discarded.  ``batch_size`` remains on
+    :class:`PECoreEmbeddingConfig` because it is also the encoder batch size.
+    """
+
+    num_workers: int = 0
+    pin_memory: bool = False
+    persistent_workers: bool = False
+    prefetch_factor: int = 2
+
+    def __post_init__(self) -> None:
+        if self.num_workers < 0:
+            raise ValueError("embedding.dataloader.num_workers must be >= 0")
+        if self.prefetch_factor <= 0:
+            raise ValueError("embedding.dataloader.prefetch_factor must be positive")
+        if self.num_workers == 0 and self.persistent_workers:
+            raise ValueError(
+                "embedding.dataloader.persistent_workers requires num_workers > 0"
+            )
 
 
 @dataclass(frozen=True)
@@ -44,6 +71,7 @@ class PECoreEmbeddingConfig:
     precision: str = "fp32"
     expected_dim: int = 1_280
     batch_size: int = 8
+    dataloader: EmbeddingDataLoaderConfig = field(default_factory=EmbeddingDataLoaderConfig)
     overwrite: bool = False
     features_dir_name: str = "PECore-features"
     image_extensions: tuple[str, ...] = (".jpg", ".jpeg", ".png")
@@ -60,6 +88,14 @@ class PECoreEmbeddingConfig:
         object.__setattr__(self, "device", device)
         object.__setattr__(self, "precision", precision)
         object.__setattr__(self, "image_extensions", extensions)
+        if isinstance(self.dataloader, Mapping):
+            object.__setattr__(
+                self,
+                "dataloader",
+                EmbeddingDataLoaderConfig(**dict(self.dataloader)),
+            )
+        elif not isinstance(self.dataloader, EmbeddingDataLoaderConfig):
+            raise TypeError("dataloader must be an EmbeddingDataLoaderConfig or mapping")
 
         if not model_id:
             raise ValueError("model_id must not be empty")
@@ -93,6 +129,49 @@ class VisualEmbeddingEncoder(ABC):
         raise NotImplementedError
 
 
+class PreparedBatchEmbeddingEncoder(Protocol):
+    """Optional protocol for encoders that can use the image DataLoader.
+
+    Existing strategies only need ``VisualEmbeddingEncoder.embed`` and remain
+    valid.  An encoder can implement this protocol to move image decoding and
+    preprocessing into DataLoader workers while keeping model inference in the
+    main process.
+    """
+
+    def image_transform(self) -> Any:
+        """Return a serializable image transform used by worker processes."""
+
+    def embed_prepared_batch(self, batch: Any, *, non_blocking: bool = False) -> np.ndarray:
+        """Encode one already-transformed tensor batch."""
+
+
+class _ImageTransformDataset:
+    """Small torch-compatible dataset that keeps the model out of workers."""
+
+    def __init__(self, image_paths: Sequence[Path], transform: Any) -> None:
+        self.image_paths = tuple(image_paths)
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(self, index: int) -> Any:
+        try:
+            from PIL import Image
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise PECoreEmbeddingUnavailable(
+                "Pillow is required for PE-Core image embedding. "
+                "Install preprocess/requirements.txt in the preprocess venv."
+            ) from exc
+
+        path = self.image_paths[index]
+        try:
+            with Image.open(path) as image:
+                return self.transform(image.convert("RGB"))
+        except Exception as exc:
+            raise ValueError(f"Could not read keyframe image: {path}") from exc
+
+
 class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
     """Lazy full-image PE-Core encoder backed by ``open_clip_torch``."""
 
@@ -117,6 +196,8 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             return np.empty((0, self.dimension), dtype=np.float32)
         self._ensure_loaded()
 
+        transform = self.image_transform()
+        tensors = []
         try:
             from PIL import Image
         except ImportError as exc:  # pragma: no cover - dependency guard
@@ -124,22 +205,32 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
                 "Pillow is required for PE-Core image embedding. "
                 "Install preprocess/requirements.txt in the preprocess venv."
             ) from exc
-
-        tensors = []
         for path in image_paths:
             try:
                 with Image.open(path) as image:
-                    tensors.append(self._preprocess(image.convert("RGB")))
+                    tensors.append(transform(image.convert("RGB")))
             except Exception as exc:
                 raise ValueError(f"Could not read keyframe image: {path}") from exc
+        return self.embed_prepared_batch(tensors)
 
+    def image_transform(self) -> Any:
+        """Return the OpenCLIP preprocessing callable for DataLoader workers."""
+        self._ensure_loaded()
+        return self._preprocess
+
+    def embed_prepared_batch(self, batch: Any, *, non_blocking: bool = False) -> np.ndarray:
+        """Encode tensors produced by :class:`_ImageTransformDataset`."""
+        self._ensure_loaded()
         torch = self._torch
-        batch = torch.stack(tensors).to(self._resolved_device)
+        if not hasattr(batch, "to"):
+            batch = torch.stack(tuple(batch))
+        expected_count = int(batch.shape[0])
+        batch = batch.to(self._resolved_device, non_blocking=non_blocking)
         batch = self._input_dtype(batch)
         with torch.inference_mode():
             features = self._model.encode_image(batch, normalize=True)
         vectors = features.detach().float().cpu().numpy()
-        return self._normalize_and_validate(vectors, len(image_paths))
+        return self._normalize_and_validate(vectors, expected_count)
 
     def _ensure_loaded(self) -> None:
         if self._model is not None:
@@ -356,6 +447,7 @@ class PECoreEmbeddingPipeline:
         *,
         batch_size: int = 8,
         image_extensions: Sequence[str] = (".jpg", ".jpeg", ".png"),
+        dataloader: EmbeddingDataLoaderConfig | Mapping[str, Any] | None = None,
         overwrite: bool = False,
         writer: NpyFeatureWriter | None = None,
         progress: ProgressReporter | None = None,
@@ -370,6 +462,14 @@ class PECoreEmbeddingPipeline:
             raise ValueError("image_extensions must not be empty")
         self.encoder = encoder
         self.batch_size = batch_size
+        if dataloader is None:
+            self.dataloader = EmbeddingDataLoaderConfig()
+        elif isinstance(dataloader, Mapping):
+            self.dataloader = EmbeddingDataLoaderConfig(**dict(dataloader))
+        elif isinstance(dataloader, EmbeddingDataLoaderConfig):
+            self.dataloader = dataloader
+        else:
+            raise TypeError("dataloader must be an EmbeddingDataLoaderConfig or mapping")
         self.image_extensions = frozenset(extensions)
         self.overwrite = overwrite
         self.writer = writer or NpyFeatureWriter(encoder.dimension)
@@ -415,16 +515,8 @@ class PECoreEmbeddingPipeline:
 
         embedded_count = 0
         if pending:
-            batch_starts = range(0, len(pending), self.batch_size)
-            batch_count = (len(pending) + self.batch_size - 1) // self.batch_size
-            for start in self.progress.iterate(
-                batch_starts,
-                total=batch_count,
-                desc=f"{video_id}: embedding",
-                unit="batch",
-            ):
+            for start, vectors in self._embed_pending(video_id, pending):
                 chunk = pending[start : start + self.batch_size]
-                vectors = np.asarray(self.encoder.embed([image for image, _ in chunk]))
                 if vectors.shape != (len(chunk), self.encoder.dimension):
                     raise ValueError(
                         "Embedding strategy returned shape "
@@ -450,6 +542,73 @@ class PECoreEmbeddingPipeline:
             skipped_count=skipped_count,
             dimension=self.encoder.dimension,
             feature_files=tuple(sorted(feature_files)),
+        )
+
+    def _embed_pending(
+        self,
+        video_id: str,
+        pending: Sequence[tuple[Path, Path]],
+    ):
+        if self._supports_prepared_batches():
+            yield from self._embed_pending_with_dataloader(video_id, pending)
+            return
+
+        batch_starts = range(0, len(pending), self.batch_size)
+        batch_count = (len(pending) + self.batch_size - 1) // self.batch_size
+        for start in self.progress.iterate(
+            batch_starts,
+            total=batch_count,
+            desc=f"{video_id}: embedding",
+            unit="batch",
+        ):
+            chunk = pending[start : start + self.batch_size]
+            yield start, np.asarray(self.encoder.embed([image for image, _ in chunk]))
+
+    def _embed_pending_with_dataloader(
+        self,
+        video_id: str,
+        pending: Sequence[tuple[Path, Path]],
+    ):
+        try:
+            from torch.utils.data import DataLoader
+        except ImportError as exc:  # pragma: no cover - dependency guard
+            raise PECoreEmbeddingUnavailable(
+                "PyTorch is required for the configured embedding DataLoader. "
+                "Install preprocess/requirements.txt in the preprocess venv."
+            ) from exc
+
+        image_paths = [image for image, _ in pending]
+        transform = getattr(self.encoder, "image_transform")()
+        dataset = _ImageTransformDataset(image_paths, transform)
+        loader_kwargs: dict[str, Any] = {
+            "batch_size": self.batch_size,
+            "shuffle": False,
+            "num_workers": self.dataloader.num_workers,
+            "pin_memory": self.dataloader.pin_memory,
+        }
+        if self.dataloader.num_workers > 0:
+            loader_kwargs["persistent_workers"] = self.dataloader.persistent_workers
+            loader_kwargs["prefetch_factor"] = self.dataloader.prefetch_factor
+        loader = DataLoader(dataset, **loader_kwargs)
+        embed_batch = getattr(self.encoder, "embed_prepared_batch")
+        for batch_index, prepared_batch in self.progress.iterate(
+            enumerate(loader),
+            total=len(loader),
+            desc=f"{video_id}: embedding",
+            unit="batch",
+        ):
+            start = batch_index * self.batch_size
+            vectors = np.asarray(
+                embed_batch(
+                    prepared_batch,
+                    non_blocking=self.dataloader.pin_memory,
+                )
+            )
+            yield start, vectors
+
+    def _supports_prepared_batches(self) -> bool:
+        return callable(getattr(self.encoder, "image_transform", None)) and callable(
+            getattr(self.encoder, "embed_prepared_batch", None)
         )
 
     def embed_all(

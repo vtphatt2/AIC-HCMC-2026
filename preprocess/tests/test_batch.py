@@ -201,6 +201,67 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(loaded["size"], 42)
         self.assertEqual(len(loaded["events"]), 2)
 
+    def test_stage_checkpoint_resumes_only_the_interrupted_stage(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping({"data_root": str(root / "data")}, base_dir=root)
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.progress = TqdmProgressReporter(ProgressConfig(enabled=False))
+            orchestrator.shot_boundary_detector = None
+            orchestrator.embedding = None
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            checkpoints = CheckpointStore(layout.state_path)
+            orchestrator._initialize_state(checkpoints, request)
+
+            calls: list[str] = []
+            orchestrator._execute_stage(
+                checkpoints,
+                request,
+                "download",
+                action=lambda: calls.append("download") or "downloaded",
+                restore=lambda: calls.append("restore-download") or "downloaded",
+            )
+            with self.assertRaises(RuntimeError):
+                orchestrator._execute_stage(
+                    checkpoints,
+                    request,
+                    "process_validate",
+                    action=lambda: (_ for _ in ()).throw(RuntimeError("interrupted")),
+                    restore=lambda: (_ for _ in ()).throw(FileNotFoundError("not complete")),
+                )
+
+            resumed = orchestrator._execute_stage(
+                checkpoints,
+                request,
+                "process_validate",
+                action=lambda: calls.append("process-retry") or "processed",
+                restore=lambda: (_ for _ in ()).throw(FileNotFoundError("not complete")),
+            )
+            orchestrator._execute_stage(
+                checkpoints,
+                request,
+                "download",
+                action=lambda: calls.append("download-again") or "wrong",
+                restore=lambda: calls.append("restore-download") or "downloaded",
+            )
+            state = checkpoints.load()
+
+        self.assertEqual(resumed, "processed")
+        self.assertEqual(calls, ["download", "process-retry", "restore-download"])
+        self.assertEqual(state["stages"]["download"]["status"], "completed")
+        self.assertEqual(state["stages"]["process_validate"]["status"], "completed")
+        self.assertEqual(state["stages"]["process_validate"]["attempt"], 2)
+
     def test_staging_excludes_source_video(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
