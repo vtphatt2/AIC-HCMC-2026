@@ -86,27 +86,20 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
         )
 
     def scan(self, source: VideoSource, video: VideoInfo) -> Iterable[FrameCandidate]:
-        """Yield each decoded presentation frame using ffprobe's best-effort PTS."""
-        result = self._run([
-            self.ffprobe_bin, "-v", "error", "-select_streams", "v:0",
-            "-show_entries", "frame=best_effort_timestamp_time",
-            "-of", "csv=p=0", str(source.path),
-        ])
-        lines = result.stdout.splitlines()
-        for frame_number, raw_timestamp in enumerate(
-            self.progress.iterate(
-                lines,
-                total=video.frame_count,
-                desc=f"{source.video_id}: scan",
-                unit="frame",
-            )
+        """Yield the same decoder frame indexes used by FFmpeg materialization.
+
+        Stream metadata such as ``nb_frames`` and ffprobe's frame inventory can
+        disagree on VFR or damaged files.  ``showinfo`` gives both the filter
+        ``n`` value and PTS from the decoder that later evaluates ``select``.
+        """
+        del video  # The authoritative FFmpeg timeline supplies its own count.
+        timeline = self._authoritative_decoder_timeline(source)
+        for frame_number, timestamp_seconds in self.progress.iterate(
+            timeline,
+            total=len(timeline),
+            desc=f"{source.video_id}: scan",
+            unit="frame",
         ):
-            # ``-of csv=p=0`` may emit a trailing delimiter for a single field
-            # on some FFmpeg builds, hence the explicit delimiter removal.
-            raw_timestamp = raw_timestamp.strip().rstrip(",")
-            if not raw_timestamp or raw_timestamp == "N/A":
-                continue
-            timestamp_seconds = float(raw_timestamp)
             yield FrameCandidate(
                 ref=FrameRef(
                     video_id=source.video_id,
@@ -209,7 +202,11 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             timestamp_index.setdefault(round(timestamp_seconds, 6), []).append(
                 (frame_number, timestamp_seconds)
             )
-        ordered_timestamps = [timestamp for _, timestamp in timeline]
+        # PTS is normally monotonic, but malformed streams can contain a
+        # discontinuity.  Sort the lookup view before using bisect; decoder
+        # frame numbers remain untouched in the mapped result.
+        timeline_by_timestamp = sorted(timeline, key=lambda item: item[1])
+        ordered_timestamps = [timestamp for _, timestamp in timeline_by_timestamp]
         mapped: list[int] = []
         used: set[int] = set()
 
@@ -224,12 +221,12 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                 insertion = bisect.bisect_left(ordered_timestamps, target)
                 nearby_indexes = range(
                     max(0, insertion - 2),
-                    min(len(timeline), insertion + 3),
+                    min(len(timeline_by_timestamp), insertion + 3),
                 )
                 candidates = [
-                    timeline[index]
+                    timeline_by_timestamp[index]
                     for index in nearby_indexes
-                    if timeline[index][0] not in used
+                    if timeline_by_timestamp[index][0] not in used
                 ]
 
             best = min(

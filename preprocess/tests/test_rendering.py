@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -29,6 +30,7 @@ class RenderingAndProgressTests(unittest.TestCase):
         self.assertEqual(profile.image_format, "png")
         self.assertEqual(profile.jpeg_quality, 100)
         self.assertFalse(config.progress.leave)
+        self.assertEqual(config.progress.bar_width, 24)
         self.assertEqual(config.embedding.dataloader.prefetch_factor, 2)
 
     def test_render_profile_preserves_dimensions_by_default(self) -> None:
@@ -45,6 +47,23 @@ class RenderingAndProgressTests(unittest.TestCase):
         reporter = TqdmProgressReporter(ProgressConfig(enabled=False))
         values = list(reporter.iterate([1, 2, 3], total=3, desc="test", unit="item"))
         self.assertEqual(values, [1, 2, 3])
+
+    def test_progress_plain_mode_reuses_one_line_for_nested_operations(self) -> None:
+        output = io.StringIO()
+        with patch("preprocess.progress.sys.stderr", output):
+            reporter = TqdmProgressReporter(
+                ProgressConfig(show_system_metrics=False, min_interval_seconds=0.001)
+            )
+            reporter.start_pipeline(total_units=2, total_lots=1, stage_names=("process",))
+            reporter.set_lot_context(lot_index=1, total_lots=1, lot_id="L21_a")
+            reporter.start_stage(name="process_validate", lot_id="L21_a")
+            for _ in reporter.iterate([1], total=1, desc="videos", unit="video"):
+                list(reporter.iterate([1, 2], total=2, desc="L21_V001: scan", unit="frame"))
+            reporter.finish_pipeline()
+
+        self.assertEqual(output.getvalue().count("\n"), 1)
+        self.assertIn("pipeline", output.getvalue())
+        self.assertIn("L21_V001: scan", output.getvalue())
 
     def test_ffmpeg_renderer_remaps_frame_indexes_after_count_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -133,6 +152,23 @@ class RenderingAndProgressTests(unittest.TestCase):
                 VideoSource("L21_V001", Path("video.mp4"))
             )
         self.assertEqual(timeline, [(0, 0.0), (12, 0.5)])
+
+    def test_ffmpeg_scan_uses_authoritative_decoder_indexes(self) -> None:
+        extractor = FFmpegKeyframeExtractor(
+            progress=TqdmProgressReporter(ProgressConfig(enabled=False))
+        )
+        source = VideoSource("L21_V001", Path("video.mp4"))
+        video = VideoInfo("L21_V001", 2_000, None, 4, 4, 99, "h264")
+        with patch.object(
+            extractor,
+            "_authoritative_decoder_timeline",
+            return_value=[(0, 0.0), (4, 0.5)],
+        ):
+            candidates = list(extractor.scan(source, video))
+        self.assertEqual(
+            [candidate.ref.source_frame_number for candidate in candidates],
+            [0, 4],
+        )
 
 
 if __name__ == "__main__":
