@@ -28,6 +28,14 @@
     "leave": true,
     "min_interval_seconds": 0.2
   },
+  "shot_boundary": {
+    "enabled": true,
+    "backend": "transnetv2",
+    "output_dir": null,
+    "device": "auto",
+    "threshold": 0.5,
+    "overwrite": false
+  },
   "processing": {
     "strategy": "keyframes",
     "selector": "uniform",

@@ -302,7 +302,7 @@ quyết định; các mốc không nằm trong code selector:
 {
   "processing": {
     "selector": "linear-rulebase",
-    "scene_segments_dir": "data/scene-segments",
+    "scene_segments_dir": "../../data/scene-segments",
     "linear_rule": {
       "short_duration_ms": 1000,
       "short_frame_count": 1,
@@ -321,6 +321,13 @@ frame; shot dài hơn 3 giây tăng `increment_frame_count` sau mỗi
 1s → 1 frame, 3s → 2 frame, 6s → 3 frame, 9s → 4 frame. Strategy nhận cả
 manifest dạng `start_ms/end_ms` và JSON trực tiếp do `transnetv2-pytorch` xuất
 với `start_time/end_time`.
+
+Khi `selector` là `linear-rulebase` hoặc `scene-segments`, batch pipeline tự
+chạy stage TransNetV2 trước khi chọn keyframe. Nếu không khai báo đường dẫn,
+stage dùng mặc định `data_root/scene-segments`; mỗi video được ghi thành
+`<video_id>.json`. Nếu manifest đã có và `shot_boundary.overwrite=false`, stage
+chỉ validate rồi dùng lại file đó. Muốn dùng manifest tạo sẵn, đặt
+`shot_boundary.enabled=false` và khai báo `processing.scene_segments_dir`.
 
 Kiểm tra media và selection mà không ghi gì:
 
@@ -386,6 +393,7 @@ repository-root/
 └── data/
     ├── input/links.txt
     ├── metadata/<video_id>.json
+    ├── scene-segments/<video_id>.json
     └── <lot_id>/
         ├── archive/
         ├── source/<lot_id>/
@@ -449,6 +457,8 @@ unzip video/ → source/<lot_id>/
         ↓
 video discovery
         ↓
+TransNetV2 shot-boundary detection (khi selector cần scene)
+        ↓
 selection strategy
         ↓
 FFmpeg render keyframes
@@ -467,11 +477,12 @@ cleanup artifact tạm
 | Stage | Input | Output | Kiểu/chiều và đơn vị quan trọng |
 | --- | --- | --- | --- |
 | `LinkListParser` | `data/input/links.txt` | `ArchiveInput[]` | Mỗi dòng là `str`; output gồm `url`, `archive_name`, `lot_id`, `line_number`. |
-| `PreflightChecker` | `BatchConfig` | `PreflightResult` | `tools: dict[str, str]`, `free_bytes: int`; kiểm tra `aria2c`, `ffmpeg`, `ffprobe`, `kaggle` nếu upload bật. |
+| `PreflightChecker` | `BatchConfig` | `PreflightResult` | `tools: dict[str, str]`, `free_bytes: int`; kiểm tra `aria2c`, `ffmpeg`, `ffprobe`, TransNetV2 khi selector cần scene và `kaggle` nếu upload bật. |
 | `Aria2ArchiveDownloader` | `ArchiveInput` + thư mục đích | ZIP + `DownloadResult` | `--split 16`, `--max-connection-per-server 16`; retry/timeout tính bằng giây; dung lượng file tính bằng bytes. |
 | `ZipArchiveValidator` | `Path` tới `.zip` | `ArchiveInspection` | `members: tuple[str, ...]`, `video_members: tuple[str, ...]`, kích thước nén/giải nén bằng bytes; root phải là `video/`. |
 | `ZipArchiveExtractor` | `ArchiveInspection` + `lot_id` | `Path` source root | `video/` đổi thành `source/<lot_id>/`; không đổi tên video gốc. |
 | `VideoDiscovery` | Source root + extension tuple | `VideoAsset[]` | `video_id` lấy từ filename stem, ví dụ `L21_V030.mp4` → `L21_V030`. |
+| `ShotBoundaryPipeline` | `VideoAsset[]` + `ShotBoundaryConfig` | `scene-segments/<video_id>.json` + report | TransNetV2 chạy theo từng video; output gồm `segments`, `start_time/end_time`, threshold và backend; manifest hợp lệ được cache để resume. |
 | `MetadataProvider` | `metadata/<video_id>.json` | JSON `Mapping` | `fps` là `float` tùy chọn; metadata nằm ngoài ZIP. |
 | FFmpeg probe | File video | `VideoInfo` | `duration_ms: int`, `fps: float \| None`, `width/height: int`, `frame_count: int \| None`, `codec: str \| None`. Không có resolution/FPS cố định. |
 | Frame scanner | Video + `VideoInfo` | `FrameCandidate[]` | Mỗi candidate có `source_frame_number: int`, `timestamp_ms: int`, `pts_time_seconds: float`; timestamp lấy từ PTS. |
@@ -495,6 +506,11 @@ embedding.expected_dim                = 1280 # vector values
 embedding.batch_size                  = 8    # images/encoder call
 progress.enabled                      = true # terminal/tmux progress bars
 progress.leave                        = true # retain completed bars
+shot_boundary.enabled                 = true # auto-run when selector needs scenes
+shot_boundary.backend                 = transnetv2
+shot_boundary.device                  = auto # auto/cpu/cuda/mps
+shot_boundary.threshold               = 0.5
+shot_boundary.overwrite               = false # reuse valid manifests
 ```
 
 Progress bar dùng `tqdm` và hiển thị số lot, video, frame scan, frame render
@@ -578,7 +594,8 @@ python -m preprocess.batch --config preprocess/batch/config.json run
 
 Nếu virtual environment không nằm trong `PATH`, thay `python` bằng Python của
 environment đó. `preflight` kiểm tra `aria2c`, `ffmpeg`, `ffprobe`, thêm
-`kaggle` khi upload được bật, và kiểm tra dung lượng trống trước khi tải.
+TransNetV2 khi selector cần scene, thêm `kaggle` khi upload được bật, và kiểm
+tra dung lượng trống trước khi tải.
 
 Khi bật `upload.enabled`, tạo file metadata Kaggle tại path cấu hình bởi
 `upload.metadata_template` (mặc định trong config mẫu là
@@ -672,6 +689,17 @@ Trong config, kiểm tra tối thiểu:
     "max_concurrent_connections": 16,
     "split_count": 16
   },
+  "shot_boundary": {
+    "enabled": true,
+    "backend": "transnetv2",
+    "device": "auto",
+    "threshold": 0.5,
+    "overwrite": false
+  },
+  "processing": {
+    "selector": "linear-rulebase",
+    "scene_segments_dir": "../../data/scene-segments"
+  },
   "embedding": {
     "enabled": true
   },
@@ -745,7 +773,7 @@ Một lot sẽ đi theo thứ tự:
 
 ```text
 download → archive validate → unzip → discover video
-→ select/render keyframe → validate
+→ TransNetV2 shot boundaries → select/render keyframe → validate
 → PECore embedding nếu bật
 → Kaggle staging → upload/status verify
 → cleanup nếu upload đã verify
@@ -795,6 +823,11 @@ Kiểm tra checkpoint của một lot:
 grep -n '"state"' data/L29_a/state.json
 tail -n 40 data/L29_a/state.json
 ```
+
+Khi selector cần scene, checkpoint sẽ đi qua `shot_boundaries` rồi
+`shot_boundaries_ready` trước `processing`. File boundary được lưu ngoài lot
+ở `data/scene-segments/<video_id>.json`; nếu stage bị ngắt, file hợp lệ sẽ
+được dùng lại ở lần chạy sau khi `shot_boundary.overwrite=false`.
 
 #### 9. Kiểm tra sau khi hoàn thành
 

@@ -35,6 +35,14 @@ class ToolConfig:
     kaggle: str = "kaggle"
 
 
+SCENE_BOUNDARY_SELECTORS = frozenset({"scene-segments", "linear-rulebase", "linear"})
+
+
+def selector_requires_scene_boundaries(selector: str) -> bool:
+    """Return whether a selector consumes detector-produced shot boundaries."""
+    return selector.strip().lower() in SCENE_BOUNDARY_SELECTORS
+
+
 @dataclass(frozen=True)
 class DownloadConfig:
     continue_download: bool = True
@@ -125,6 +133,26 @@ class LinearSelectionConfig:
             duration_ms - self.base_duration_ms + self.increment_duration_ms - 1
         ) // self.increment_duration_ms
         return self.base_frame_count + increments * self.increment_frame_count
+
+
+@dataclass(frozen=True)
+class ShotBoundaryConfig:
+    """Automatic detector settings for selectors that operate per shot/scene."""
+
+    enabled: bool = True
+    backend: str = "transnetv2"
+    output_dir: Path | None = None
+    device: str = "auto"
+    threshold: float = 0.5
+    overwrite: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.backend.strip():
+            raise ValueError("shot boundary backend must not be empty")
+        if not self.device.strip():
+            raise ValueError("shot boundary device must not be empty")
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError("shot boundary threshold must be between 0 and 1")
 
 
 @dataclass(frozen=True)
@@ -220,6 +248,7 @@ class BatchConfig:
     tools: ToolConfig = field(default_factory=ToolConfig)
     download: DownloadConfig = field(default_factory=DownloadConfig)
     progress: ProgressConfig = field(default_factory=ProgressConfig)
+    shot_boundary: ShotBoundaryConfig = field(default_factory=ShotBoundaryConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
     processing: ProcessingConfig = field(default_factory=ProcessingConfig)
     embedding: PECoreEmbeddingConfig = field(default_factory=PECoreEmbeddingConfig)
@@ -244,6 +273,8 @@ class BatchConfig:
         progress = ProgressConfig(**dict(payload.get("progress", {})))
         archive = ArchiveConfig(**dict(payload.get("archive", {})))
 
+        data_root = _resolve_path(payload.get("data_root"), base_dir, Path("data")) or Path("data")
+
         processing_payload = dict(payload.get("processing", {}))
         processing_payload["scene_segments_dir"] = _resolve_path(
             processing_payload.get("scene_segments_dir"), base_dir
@@ -251,6 +282,28 @@ class BatchConfig:
         processing_payload["linear_rule"] = LinearSelectionConfig(
             **dict(processing_payload.get("linear_rule", {}))
         )
+
+        shot_boundary_payload = dict(payload.get("shot_boundary", {}))
+        shot_boundary_payload["output_dir"] = _resolve_path(
+            shot_boundary_payload.get("output_dir"), base_dir
+        )
+        shot_boundary = ShotBoundaryConfig(**shot_boundary_payload)
+        selector = str(processing_payload.get("selector", "uniform"))
+        if shot_boundary.enabled and selector_requires_scene_boundaries(selector):
+            output_dir = (
+                shot_boundary.output_dir
+                or processing_payload["scene_segments_dir"]
+                or (data_root / "scene-segments")
+            )
+            configured_scene_dir = processing_payload["scene_segments_dir"]
+            if configured_scene_dir is not None and configured_scene_dir != output_dir:
+                raise ValueError(
+                    "processing.scene_segments_dir and shot_boundary.output_dir must match"
+                )
+            shot_boundary_payload["output_dir"] = output_dir
+            processing_payload["scene_segments_dir"] = output_dir
+            shot_boundary = ShotBoundaryConfig(**shot_boundary_payload)
+
         processing = ProcessingConfig(**processing_payload)
         embedding = PECoreEmbeddingConfig(**dict(payload.get("embedding", {})))
 
@@ -260,7 +313,6 @@ class BatchConfig:
         )
         upload = UploadConfig(**upload_payload)
 
-        data_root = _resolve_path(payload.get("data_root"), base_dir, Path("data"))
         links_file = _resolve_path(
             payload.get("links_file"), base_dir, (data_root or Path("data")) / "input" / "links.txt"
         )
@@ -274,6 +326,7 @@ class BatchConfig:
             tools=tools,
             download=download,
             progress=progress,
+            shot_boundary=shot_boundary,
             archive=archive,
             processing=processing,
             embedding=embedding,
@@ -290,6 +343,11 @@ class BatchConfig:
         value["processing"]["scene_segments_dir"] = (
             str(value["processing"]["scene_segments_dir"])
             if value["processing"]["scene_segments_dir"] is not None
+            else None
+        )
+        value["shot_boundary"]["output_dir"] = (
+            str(value["shot_boundary"]["output_dir"])
+            if value["shot_boundary"]["output_dir"] is not None
             else None
         )
         value["upload"]["metadata_template"] = (

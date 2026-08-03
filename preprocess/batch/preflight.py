@@ -1,11 +1,12 @@
 """Environment and disk checks performed before any download."""
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from preprocess.batch.config import BatchConfig
+from preprocess.batch.config import BatchConfig, selector_requires_scene_boundaries
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,17 @@ class PreflightChecker:
             if resolved is None:
                 raise RuntimeError(f"Kaggle executable not found: {self.config.tools.kaggle}")
             tool_paths["kaggle"] = resolved
+
+        if (
+            self.config.shot_boundary.enabled
+            and selector_requires_scene_boundaries(self.config.processing.selector)
+            and self.config.shot_boundary.backend in {"transnetv2", "transnet"}
+        ):
+            if importlib.util.find_spec("transnetv2_pytorch") is None:
+                raise RuntimeError(
+                    "TransNetV2 Python package is not installed in the preprocess environment"
+                )
+            tool_paths["transnetv2"] = "python:transnetv2_pytorch"
 
         root = self.config.data_root.expanduser()
         root.mkdir(parents=True, exist_ok=True)
