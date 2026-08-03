@@ -25,8 +25,10 @@
   },
   "progress": {
     "enabled": true,
-    "leave": true,
-    "min_interval_seconds": 0.2
+    "leave": false,
+    "min_interval_seconds": 0.2,
+    "show_system_metrics": true,
+    "metrics_interval_seconds": 1.0
   },
   "shot_boundary": {
     "enabled": true,
@@ -62,6 +64,12 @@
     "precision": "fp32",
     "expected_dim": 1280,
     "batch_size": 8,
+    "dataloader": {
+      "num_workers": 0,
+      "pin_memory": false,
+      "persistent_workers": false,
+      "prefetch_factor": 2
+    },
     "overwrite": false,
     "features_dir_name": "PECore-features",
     "image_extensions": [".jpg", ".jpeg", ".png"]

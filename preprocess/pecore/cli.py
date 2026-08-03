@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from preprocess.pecore.embedding import (
+    EmbeddingDataLoaderConfig,
     OpenClipPECoreEncoder,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
     parser.add_argument("--expected-dim", type=int, default=1_280)
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--pin-memory", action="store_true")
+    parser.add_argument("--persistent-workers", action="store_true")
+    parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument(
         "--overwrite",
         action="store_true",
@@ -51,12 +56,19 @@ def main(argv: list[str] | None = None) -> int:
             precision=args.precision,
             expected_dim=args.expected_dim,
             batch_size=args.batch_size,
+            dataloader=EmbeddingDataLoaderConfig(
+                num_workers=args.num_workers,
+                pin_memory=args.pin_memory,
+                persistent_workers=args.persistent_workers,
+                prefetch_factor=args.prefetch_factor,
+            ),
             overwrite=args.overwrite,
         )
         encoder = OpenClipPECoreEncoder(config)
         pipeline = PECoreEmbeddingPipeline(
             encoder,
             batch_size=config.batch_size,
+            dataloader=config.dataloader,
             image_extensions=config.image_extensions,
             overwrite=config.overwrite,
         )

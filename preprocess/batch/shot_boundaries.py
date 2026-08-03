@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -108,8 +109,20 @@ class TransNetV2ShotBoundaryDetector(ShotBoundaryDetector):
         if not asset.path.is_file():
             raise FileNotFoundError(f"Video file not found for shot detection: {asset.path}")
 
-        model = self._get_model()
-        scenes = model.detect_scenes(str(asset.path), threshold=self.config.threshold)
+        # TransNetV2 enables deterministic algorithms, while CUDA CuBLAS still
+        # emits a non-fatal warning unless CUBLAS_WORKSPACE_CONFIG is exported
+        # before Python starts.  We keep the behavior unchanged and suppress
+        # only this repetitive warning so it does not corrupt tqdm's terminal
+        # region; users who require strict reproducibility can still set the
+        # documented CUDA variable in the shell.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r"Deterministic behavior was enabled with either.*",
+                category=UserWarning,
+            )
+            model = self._get_model()
+            scenes = model.detect_scenes(str(asset.path), threshold=self.config.threshold)
         if not isinstance(scenes, list):
             raise RuntimeError(
                 f"TransNetV2 returned an unsupported scene result for {asset.video_id}: "
@@ -238,9 +251,21 @@ def _read_manifest(path: Path) -> tuple[dict[str, Any], list[SceneSegment]]:
     return metadata, segments
 
 
-def write_scene_boundary_manifest(path: Path, detection: ShotBoundaryDetection) -> None:
+def write_scene_boundary_manifest(
+    path: Path,
+    detection: ShotBoundaryDetection,
+    *,
+    source: VideoAsset | None = None,
+) -> None:
     """Atomically persist one detector result so a killed SSH session is safe."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = detection.to_manifest()
+    if source is not None:
+        stat = source.path.stat()
+        payload["source"] = {
+            "path": str(source.path),
+            "fingerprint": {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+        }
     with tempfile.NamedTemporaryFile(
         mode="w",
         encoding="utf-8",
@@ -249,7 +274,7 @@ def write_scene_boundary_manifest(path: Path, detection: ShotBoundaryDetection) 
         suffix=".tmp",
         delete=False,
     ) as handle:
-        json.dump(detection.to_manifest(), handle, ensure_ascii=False, indent=2, default=str)
+        json.dump(payload, handle, ensure_ascii=False, indent=2, default=str)
         handle.write("\n")
         temporary_path = Path(handle.name)
         handle.flush()
@@ -283,20 +308,32 @@ class ShotBoundaryPipeline:
             unit="video",
         ):
             output_path = self.output_dir / f"{asset.video_id}.json"
-            cached = output_path.is_file() and not self.overwrite
-            if cached:
-                payload, segments = _read_manifest(output_path)
-                backend = str(payload.get("backend", self.detector.name))
-            else:
+            cached = False
+            payload: dict[str, Any] | None = None
+            segments: list[SceneSegment] = []
+            if output_path.is_file() and not self.overwrite:
+                try:
+                    candidate, candidate_segments = _read_manifest(output_path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    candidate = None
+                    candidate_segments = []
+                if candidate is not None and self._cache_matches(candidate, asset):
+                    payload = candidate
+                    segments = candidate_segments
+                    cached = bool(segments)
+
+            if not cached:
                 detection = self.detector.detect(asset)
                 if detection.video_id != asset.video_id:
                     raise ValueError(
                         f"Shot detector returned video_id {detection.video_id!r} "
                         f"for {asset.video_id!r}"
                     )
-                write_scene_boundary_manifest(output_path, detection)
+                write_scene_boundary_manifest(output_path, detection, source=asset)
                 _, segments = _read_manifest(output_path)
                 backend = detection.backend
+            else:
+                backend = str(payload.get("backend", self.detector.name))
             if not segments:
                 raise ValueError(f"Shot-boundary manifest has no scenes: {output_path}")
             artifacts.append(
@@ -309,3 +346,32 @@ class ShotBoundaryPipeline:
                 )
             )
         return tuple(artifacts)
+
+    def _cache_matches(self, payload: Mapping[str, Any], asset: VideoAsset) -> bool:
+        if str(payload.get("backend", "")) != self.detector.name:
+            return False
+        expected_threshold = getattr(getattr(self.detector, "config", None), "threshold", None)
+        if expected_threshold is not None:
+            try:
+                if float(payload.get("threshold")) != float(expected_threshold):
+                    return False
+            except (TypeError, ValueError):
+                return False
+
+        source = payload.get("source")
+        if not isinstance(source, Mapping):
+            # Manifests from the first implementation have no source
+            # fingerprint.  Recompute them once so a changed source cannot be
+            # mistaken for a valid cache.
+            return False
+        fingerprint = source.get("fingerprint")
+        if not isinstance(fingerprint, Mapping):
+            return False
+        try:
+            stat = asset.path.stat()
+            return (
+                int(fingerprint.get("size_bytes")) == stat.st_size
+                and int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
+            )
+        except (OSError, TypeError, ValueError):
+            return False

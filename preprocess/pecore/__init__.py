@@ -2,9 +2,11 @@
 
 from preprocess.pecore.embedding import (
     EmbeddingBatchResult,
+    EmbeddingDataLoaderConfig,
     EmbeddingVideoResult,
     NpyFeatureWriter,
     OpenClipPECoreEncoder,
+    PreparedBatchEmbeddingEncoder,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
     PECoreEmbeddingUnavailable,
@@ -13,9 +15,11 @@ from preprocess.pecore.embedding import (
 
 __all__ = [
     "EmbeddingBatchResult",
+    "EmbeddingDataLoaderConfig",
     "EmbeddingVideoResult",
     "NpyFeatureWriter",
     "OpenClipPECoreEncoder",
+    "PreparedBatchEmbeddingEncoder",
     "PECoreEmbeddingConfig",
     "PECoreEmbeddingPipeline",
     "PECoreEmbeddingUnavailable",
