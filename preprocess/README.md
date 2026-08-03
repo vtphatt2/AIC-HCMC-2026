@@ -485,7 +485,7 @@ cleanup artifact tạm
 | `ShotBoundaryPipeline` | `VideoAsset[]` + `ShotBoundaryConfig` | `scene-segments/<video_id>.json` + report | TransNetV2 chạy theo từng video; output gồm `segments`, `start_time/end_time`, threshold và backend; manifest hợp lệ được cache để resume. |
 | `MetadataProvider` | `metadata/<video_id>.json` | JSON `Mapping` | `fps` là `float` tùy chọn; metadata nằm ngoài ZIP. |
 | FFmpeg probe | File video | `VideoInfo` | `duration_ms: int`, `fps: float \| None`, `width/height: int`, `frame_count: int \| None`, `codec: str \| None`. Không có resolution/FPS cố định. |
-| Frame scanner | Video + `VideoInfo` | `FrameCandidate[]` | Mỗi candidate có `source_frame_number: int`, `timestamp_ms: int`, `pts_time_seconds: float`; timestamp lấy từ PTS. |
+| Frame scanner | Video + `VideoInfo` | `FrameCandidate[]` | Mỗi candidate có `source_frame_number: int`, `timestamp_ms: int`, `pts_time_seconds: float`; `source_frame_number` và PTS lấy từ `showinfo` của chính FFmpeg decoder, không suy ra từ `nb_frames`/FPS. |
 | Selection strategy | `VideoInfo` + candidates | `SelectedFrame[]` | `interval_ms`, `start_ms`, `end_ms` dùng milliseconds; số frame là `int`. |
 | FFmpeg renderer | Video + selected frames | JPG/PNG + rendered manifest | Mặc định `target_short_edge_px=null`: giữ nguyên kích thước decoded; nếu đặt giá trị thì resize cạnh ngắn; frame ID là chuỗi sáu chữ số. |
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
@@ -517,6 +517,7 @@ embedding.dataloader.persistent_workers = false
 embedding.dataloader.prefetch_factor = 2    # only when num_workers > 0
 progress.enabled                      = true # terminal/tmux progress bars
 progress.leave                        = false # clear completed bars; less terminal noise
+progress.bar_width                    = 24   # fixed width of each bar
 shot_boundary.enabled                 = true # auto-run when selector needs scenes
 shot_boundary.backend                 = transnetv2
 shot_boundary.device                  = auto # auto/cpu/cuda/mps
@@ -524,14 +525,13 @@ shot_boundary.threshold               = 0.5
 shot_boundary.overwrite               = false # reuse valid manifests
 ```
 
-Progress bar dùng `tqdm` và hiển thị số lot, video, frame scan, frame render
-và embedding batch. Khi bật, progress native của aria2c cũng được stream ra
-terminal/tmux thay vì bị capture. Có thể tắt bằng `progress.enabled=false`;
-mặc định bật để quan sát được tiến độ khi chạy trong `tmux`. `leave=false`
-giữ full-pipeline bar và stage bar đang chạy nhưng xóa bar con đã hoàn tất,
-tránh để lại hàng trăm dòng trong terminal. Khi output đi qua `tee`, pipeline
-tự chuyển sang một dòng ASCII duy nhất, không dùng cursor escape code, nhưng
-vẫn giữ full-pipeline, stage hiện tại và CPU/GPU/disk metrics. Warning CUDA không gây lỗi pipeline;
+Progress bar dùng `tqdm` và hiển thị đúng ba dòng cố định trong terminal/tmux:
+metrics ở trên, full-pipeline bar và detail bar của operation hiện tại. Các
+operation lồng nhau dùng lại detail bar nên không tạo thêm hàng. `bar_width`
+giới hạn chiều dài phần bar; `leave=false` xóa hai bar khi pipeline kết thúc.
+Khi output đi qua `tee`, pipeline tự chuyển sang một dòng ASCII duy nhất để
+không ghi cursor escape code vào log, nhưng vẫn giữ full-pipeline, operation
+hiện tại và CPU/GPU/disk metrics. Warning CUDA không gây lỗi pipeline;
 TransNetV2 chỉ lọc warning lặp lại về `CUBLAS_WORKSPACE_CONFIG`. Nếu cần tái lập
 bit-level, export biến này trước khi khởi động Python theo hướng dẫn của PyTorch.
 
@@ -610,7 +610,7 @@ python -m preprocess.batch --config preprocess/batch/config.json run
 ```
 
 Nếu virtual environment không nằm trong `PATH`, thay `python` bằng Python của
-environment đó. `preflight` kiểm tra `aria2c`, `ffmpeg`, `ffprobe`, thêm
+environment đó. `preflight` kiểm tra `aria2c`, `ffmpeg`/filter `showinfo`, `ffprobe`, thêm
 TransNetV2 khi selector cần scene, thêm `kaggle` khi upload được bật, và kiểm
 tra dung lượng trống trước khi tải.
 

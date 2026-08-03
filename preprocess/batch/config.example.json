@@ -27,6 +27,7 @@
     "enabled": true,
     "leave": false,
     "min_interval_seconds": 0.2,
+    "bar_width": 24,
     "show_system_metrics": true,
     "metrics_interval_seconds": 1.0
   },
