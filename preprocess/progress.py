@@ -82,6 +82,14 @@ class ResourceSnapshot:
             disk = "disk=--"
         return f"{cpu} {gpu} {disk}"
 
+    def format_lines(self) -> tuple[str, str]:
+        """Split compact telemetry into CPU/GPU and disk rows."""
+        compact = self.format_compact()
+        if " disk=" not in compact:
+            return compact, "disk=--"
+        cpu_gpu, disk = compact.rsplit(" disk=", 1)
+        return cpu_gpu, f"disk={disk}"
+
 
 class SystemResourceMonitor:
     """Read CPU, CUDA/NVIDIA and filesystem metrics without hard dependencies."""
@@ -273,6 +281,9 @@ class SystemResourceMonitor:
     def format_compact(self) -> str:
         return self.snapshot().format_compact()
 
+    def format_lines(self) -> tuple[str, str]:
+        return self.snapshot().format_lines()
+
 
 class ProgressReporter(ABC):
     """Replaceable progress boundary for CLI, logs or another UI."""
@@ -314,14 +325,16 @@ class _DetailState:
     total: int | None
     current: int
     unit: str
+    started_at: float
 
 
 class TqdmProgressReporter(ProgressReporter):
-    """Render one status line and two reusable progress bars.
+    """Render three metric rows and two reusable progress bars.
 
-    Interactive terminals always keep the same three rows: resource/lot
-    status, full-pipeline progress, and the currently active operation. Nested
-    iterators reuse the operation row and restore their parent afterwards.
+    Interactive terminals always keep the same five rows: lot/stage context,
+    CPU/GPU metrics, disk metrics, full-pipeline progress, and the currently
+    active operation. Nested iterators reuse the operation row and restore
+    their parent afterwards.
     """
 
     _DESCRIPTION_WIDTH = 24
@@ -338,7 +351,7 @@ class TqdmProgressReporter(ProgressReporter):
         self.config = config or ProgressConfig()
         self._detail_stack: list[_DetailState] = []
         self._plain_detail_stack: list[_DetailState] = []
-        self._status_bar: object | None = None
+        self._status_bars: list[object] = []
         self._pipeline_bar: object | None = None
         self._detail_bar: object | None = None
         self._pipeline_completed = 0
@@ -347,7 +360,8 @@ class TqdmProgressReporter(ProgressReporter):
         self._tqdm = None
         self._tqdm_loaded = False
         # ``2>&1 | tee`` makes stderr non-interactive even inside tmux.  Keep
-        # one carriage-returned line there; direct SSH/tmux gets three rows.
+        # one carriage-returned line there; direct SSH/tmux gets five fixed
+        # rows (three metrics and two progress bars).
         self._plain_mode = not sys.stderr.isatty()
         self._plain_line_active = False
         self._plain_last_render_at = 0.0
@@ -355,7 +369,9 @@ class TqdmProgressReporter(ProgressReporter):
         self._plain_stage_desc = "idle"
         self._plain_stage_current = 0
         self._plain_stage_total: int | None = None
+        self._plain_stage_started_at: float | None = None
         self._plain_pipeline_total = 0
+        self._plain_pipeline_started_at: float | None = None
         self._plain_pipeline_started = False
         if self.config.show_system_metrics:
             self.resource_monitor = resource_monitor or SystemResourceMonitor(
@@ -386,27 +402,37 @@ class TqdmProgressReporter(ProgressReporter):
             return value[:max_length]
         return value[: max_length - 3] + "..."
 
-    def _status(self) -> str:
-        parts = [self._lot_context, self._stage_context]
-        if self.resource_monitor is not None:
-            parts.append(self.resource_monitor.format_compact())
-        status = " | ".join(parts)
+    def _status_lines(self) -> tuple[str, str, str]:
+        if self.resource_monitor is None:
+            cpu_gpu, disk = "cpu/gpu=disabled", "disk=disabled"
+        else:
+            cpu_gpu, disk = self.resource_monitor.format_lines()
         terminal_width = shutil.get_terminal_size(fallback=(120, 24)).columns
-        max_width = max(40, min(self._MAX_STATUS_WIDTH, terminal_width - 1))
-        return self._compact_text(status, max_width)
+        max_width = max(32, min(self._MAX_STATUS_WIDTH, terminal_width - 1))
+        lines = (
+            f"{self._lot_context} | {self._stage_context}",
+            cpu_gpu,
+            disk,
+        )
+        return (
+            self._compact_text(lines[0], max_width),
+            self._compact_text(lines[1], max_width),
+            self._compact_text(lines[2], max_width),
+        )
 
     def _bar_format(self) -> str:
         return (
             f"{{desc:<{self._DESCRIPTION_WIDTH}}} "
             f"|{{bar:{self.config.bar_width}}}| "
-            "{n_fmt}/{total_fmt} {unit}"
+            "{n_fmt}/{total_fmt} {unit} eta={remaining}"
         )
 
     def _refresh_status(self) -> None:
-        if self._status_bar is None:
+        if not self._status_bars:
             return
-        self._status_bar.set_description_str(self._status(), refresh=False)
-        self._status_bar.refresh()
+        for bar, line in zip(self._status_bars, self._status_lines(), strict=True):
+            bar.set_description_str(line, refresh=False)
+            bar.refresh()
 
     def _refresh_bars(self) -> None:
         self._refresh_status()
@@ -421,22 +447,25 @@ class TqdmProgressReporter(ProgressReporter):
         if self._detail_bar is not None:
             self._detail_bar.refresh()
 
-    def _ensure_status_bar(self, tqdm):
-        if self._status_bar is None:
-            self._status_bar = tqdm(
-                total=0,
-                desc=self._status(),
-                bar_format="{desc}",
-                position=0,
-                leave=False,
-                mininterval=self.config.min_interval_seconds,
-                dynamic_ncols=True,
+    def _ensure_status_bars(self, tqdm) -> None:
+        if self._status_bars:
+            return
+        for position, line in enumerate(self._status_lines()):
+            self._status_bars.append(
+                tqdm(
+                    total=0,
+                    desc=line,
+                    bar_format="{desc}",
+                    position=position,
+                    leave=False,
+                    mininterval=self.config.min_interval_seconds,
+                    dynamic_ncols=True,
+                )
             )
-        return self._status_bar
 
     def _ensure_detail_bar(self, tqdm, state: _DetailState) -> None:
-        self._ensure_status_bar(tqdm)
-        position = 2 if self._pipeline_bar is not None else 1
+        self._ensure_status_bars(tqdm)
+        position = 4 if self._pipeline_bar is not None else 3
         if self._detail_bar is None:
             self._detail_bar = tqdm(
                 total=state.total,
@@ -469,6 +498,30 @@ class TqdmProgressReporter(ProgressReporter):
         filled = round(width * fraction)
         return "[" + "#" * filled + "." * (width - filled) + "]"
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        rounded = max(0, round(seconds))
+        hours, remainder = divmod(rounded, 3600)
+        minutes, seconds_value = divmod(remainder, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds_value:02d}"
+        return f"{minutes:02d}:{seconds_value:02d}"
+
+    @classmethod
+    def _format_eta(
+        cls,
+        current: int,
+        total: int | None,
+        started_at: float | None,
+    ) -> str:
+        if total is None or total <= 0 or started_at is None or current <= 0:
+            return "--"
+        if current >= total:
+            return "00:00"
+        elapsed = max(0.0, time.monotonic() - started_at)
+        remaining = elapsed * (total - current) / current
+        return cls._format_duration(remaining)
+
     def _render_plain(self, *, force: bool = False) -> None:
         if not self.config.enabled or not self._plain_mode:
             return
@@ -481,17 +534,32 @@ class TqdmProgressReporter(ProgressReporter):
             parts.append(self.resource_monitor.format_compact())
         parts.append(self._lot_context)
         if self._plain_pipeline_started:
+            pipeline_eta = self._format_eta(
+                self._pipeline_completed,
+                self._plain_pipeline_total,
+                self._plain_pipeline_started_at,
+            )
             parts.append(
                 f"pipeline {self._ascii_bar(self._pipeline_completed, self._plain_pipeline_total, self.config.bar_width)} "
-                f"{self._pipeline_completed}/{self._plain_pipeline_total}"
+                f"{self._pipeline_completed}/{self._plain_pipeline_total} eta={pipeline_eta}"
             )
         if self._plain_stage_total is None:
-            stage = f"{self._plain_stage_desc} {self._ascii_bar(0, None, self.config.bar_width)}"
+            stage_eta = "--"
+            stage = (
+                f"{self._plain_stage_desc} "
+                f"{self._ascii_bar(0, None, self.config.bar_width)} "
+                f"eta={stage_eta}"
+            )
         else:
+            stage_eta = self._format_eta(
+                self._plain_stage_current,
+                self._plain_stage_total,
+                self._plain_stage_started_at,
+            )
             stage = (
                 f"{self._plain_stage_desc} "
                 f"{self._ascii_bar(self._plain_stage_current, self._plain_stage_total, self.config.bar_width)} "
-                f"{self._plain_stage_current}/{self._plain_stage_total}"
+                f"{self._plain_stage_current}/{self._plain_stage_total} eta={stage_eta}"
             )
         parts.append(stage)
         line = " | ".join(parts)
@@ -508,6 +576,7 @@ class TqdmProgressReporter(ProgressReporter):
             return
         self._pipeline_completed = 0
         self._plain_pipeline_total = total_units
+        self._plain_pipeline_started_at = time.monotonic()
         self._plain_pipeline_started = True
         self._lot_context = f"lots=0/{total_lots}"
         self._stage_context = "stage=starting"
@@ -517,12 +586,12 @@ class TqdmProgressReporter(ProgressReporter):
         tqdm = self._load_tqdm()
         if tqdm is None:
             return
-        self._ensure_status_bar(tqdm)
+        self._ensure_status_bars(tqdm)
         self._pipeline_bar = tqdm(
             total=total_units,
             desc="pipeline",
             unit="stage",
-            position=1,
+            position=3,
             leave=self.config.leave,
             mininterval=self.config.min_interval_seconds,
             dynamic_ncols=True,
@@ -539,10 +608,11 @@ class TqdmProgressReporter(ProgressReporter):
 
     def start_stage(self, *, name: str, lot_id: str) -> None:
         self._stage_context = f"stage={name}({lot_id})"
-        state = _DetailState(f"stage={name}({lot_id})", None, 0, "item")
+        state = _DetailState(f"stage={name}({lot_id})", None, 0, "item", time.monotonic())
         self._plain_stage_desc = state.desc
         self._plain_stage_current = state.current
         self._plain_stage_total = state.total
+        self._plain_stage_started_at = state.started_at
         if self._plain_mode:
             self._render_plain(force=True)
             return
@@ -571,15 +641,16 @@ class TqdmProgressReporter(ProgressReporter):
         if self._pipeline_bar is not None:
             self._pipeline_bar.close()
             self._pipeline_bar = None
-        if self._status_bar is not None:
-            self._status_bar.close()
-            self._status_bar = None
+        for bar in reversed(self._status_bars):
+            bar.close()
+        self._status_bars.clear()
         self._detail_stack.clear()
         if self._plain_line_active:
             sys.stderr.write("\n")
             sys.stderr.flush()
             self._plain_line_active = False
         self._plain_last_line_length = 0
+        self._plain_pipeline_started_at = None
         self._plain_pipeline_started = False
 
     def iterate(
@@ -602,11 +673,12 @@ class TqdmProgressReporter(ProgressReporter):
             return
 
         if self._plain_mode:
-            state = _DetailState(desc, total, 0, unit)
+            state = _DetailState(desc, total, 0, unit, time.monotonic())
             self._plain_detail_stack.append(state)
             self._plain_stage_desc = desc
             self._plain_stage_current = 0
             self._plain_stage_total = total
+            self._plain_stage_started_at = state.started_at
             self._render_plain(force=True)
             try:
                 for item in iterable:
@@ -621,8 +693,11 @@ class TqdmProgressReporter(ProgressReporter):
                     self._plain_stage_desc = parent.desc
                     self._plain_stage_current = parent.current
                     self._plain_stage_total = parent.total
+                    self._plain_stage_started_at = parent.started_at
                 else:
                     self._plain_stage_current = state.current
+                    self._plain_stage_total = state.total
+                    self._plain_stage_started_at = state.started_at
                 self._render_plain(force=True)
                 if not self._plain_detail_stack and not self._plain_pipeline_started:
                     sys.stderr.write("\n")
@@ -630,7 +705,7 @@ class TqdmProgressReporter(ProgressReporter):
                     self._plain_line_active = False
             return
 
-        state = _DetailState(desc, total, 0, unit)
+        state = _DetailState(desc, total, 0, unit, time.monotonic())
         self._detail_stack.append(state)
         self._ensure_detail_bar(tqdm, state)
         self._refresh_bars()
