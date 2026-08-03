@@ -22,6 +22,8 @@ class BatchState(str, Enum):
     ARCHIVE_VALIDATED = "archive_validated"
     EXTRACTED = "extracted"
     VIDEOS_DISCOVERED = "videos_discovered"
+    SHOT_BOUNDARIES = "shot_boundaries"
+    SHOT_BOUNDARIES_READY = "shot_boundaries_ready"
     PROCESSING = "processing"
     PROCESSED = "processed"
     VALIDATED = "validated"

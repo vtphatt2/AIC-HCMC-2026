@@ -10,7 +10,13 @@ from preprocess.batch.archive_extractor import ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
 from preprocess.batch.checkpoints import CheckpointStore
 from preprocess.batch.cleanup import CleanupManager
-from preprocess.batch.config import DownloadConfig, CleanupConfig, LinearSelectionConfig, UploadConfig
+from preprocess.batch.config import (
+    BatchConfig,
+    CleanupConfig,
+    DownloadConfig,
+    LinearSelectionConfig,
+    UploadConfig,
+)
 from preprocess.batch.downloader import Aria2ArchiveDownloader
 from preprocess.batch.kaggle_uploader import KaggleStagingStrategy
 from preprocess.batch.layout import LotLayout
@@ -24,12 +30,72 @@ from preprocess.batch.models import (
     UploadResult,
     VideoAsset,
 )
+from preprocess.batch.shot_boundaries import (
+    ShotBoundaryDetection,
+    ShotBoundaryDetector,
+    ShotBoundaryPipeline,
+    load_scene_segments,
+)
 from preprocess.batch.video_discovery import VideoDiscovery
 from preprocess.keyframes.contracts import FrameCandidate, FrameRef, SceneSegment, VideoInfo
 from preprocess.keyframes.selectors.linear_rulebase import LinearRuleBasedSelector
+from preprocess.progress import ProgressConfig, TqdmProgressReporter
 
 
 class BatchModuleTests(unittest.TestCase):
+    def test_linear_selector_auto_configures_transnet_output_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "processing": {"selector": "linear-rulebase"},
+                },
+                base_dir=root,
+            )
+        self.assertTrue(config.shot_boundary.enabled)
+        self.assertEqual(config.processing.scene_segments_dir, root / "data" / "scene-segments")
+        self.assertEqual(config.shot_boundary.output_dir, root / "data" / "scene-segments")
+
+    def test_shot_boundary_pipeline_writes_and_reuses_manifest(self) -> None:
+        class FakeDetector(ShotBoundaryDetector):
+            name = "fake"
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def detect(self, asset: VideoAsset) -> ShotBoundaryDetection:
+                self.calls += 1
+                return ShotBoundaryDetection(
+                    video_id=asset.video_id,
+                    backend=self.name,
+                    threshold=0.5,
+                    fps=25.0,
+                    segments=({"start_ms": 0, "end_ms": 1000},),
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video = root / "L21_V030.mp4"
+            video.write_bytes(b"video")
+            asset = VideoAsset("L21_V030", video, "L29_a", video.name)
+            detector = FakeDetector()
+            pipeline = ShotBoundaryPipeline(
+                detector,
+                root / "scene-segments",
+                progress=TqdmProgressReporter(ProgressConfig(enabled=False)),
+            )
+
+            first = pipeline.run([asset])
+            second = pipeline.run([asset])
+            segments = load_scene_segments(root / "scene-segments" / "L21_V030.json")
+
+        self.assertEqual(detector.calls, 1)
+        self.assertFalse(first[0].cached)
+        self.assertTrue(second[0].cached)
+        self.assertEqual(first[0].scene_count, 1)
+        self.assertEqual(segments, [SceneSegment(0, 1000)])
+
     def test_aria2_command_uses_sixteen_connections_and_splits(self) -> None:
         request = ArchiveInput(
             url="https://aic-data.example/Videos_L29_a.zip",

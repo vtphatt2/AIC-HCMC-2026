@@ -1,15 +1,15 @@
 """Strategy-driven video processing built on the existing keyframe pipeline."""
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 
 from preprocess.batch.config import LinearSelectionConfig, ProcessingConfig, ToolConfig
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.models import ProcessingResult, VideoAsset
+from preprocess.batch.shot_boundaries import load_scene_segments
 from preprocess.keyframes.contracts import (
     ExtractionOutput,
     KeyframeSelector,
@@ -45,36 +45,8 @@ class UniformSelectionStrategy(SelectionStrategy):
         return UniformIntervalSelector(interval_ms=self.interval_ms)
 
 
-def _parse_seconds_to_ms(value: object, *, path: Path) -> int:
-    try:
-        return round(float(value) * 1000)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid scene timestamp in {path}: {value!r}") from exc
-
-
 def _load_scene_segments(path: Path) -> list[SceneSegment]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    records: object = payload.get("segments") if isinstance(payload, dict) else payload
-    if not isinstance(records, list):
-        raise ValueError(f"Scene-segment manifest must contain a list: {path}")
-
-    segments: list[SceneSegment] = []
-    for item in records:
-        if not isinstance(item, Mapping):
-            raise ValueError(f"Scene segment must be an object: {path}")
-        if "start_ms" in item and "end_ms" in item:
-            start_ms = int(item["start_ms"])
-            end_ms = int(item["end_ms"])
-        elif "start_time" in item and "end_time" in item:
-            # This is the JSON shape emitted by transnetv2-pytorch.
-            start_ms = _parse_seconds_to_ms(item["start_time"], path=path)
-            end_ms = _parse_seconds_to_ms(item["end_time"], path=path)
-        else:
-            raise ValueError(
-                f"Scene segment needs start_ms/end_ms or start_time/end_time: {path}"
-            )
-        segments.append(SceneSegment(start_ms=start_ms, end_ms=end_ms))
-    return segments
+    return load_scene_segments(path)
 
 
 class SceneSegmentsSelectionStrategy(SelectionStrategy):

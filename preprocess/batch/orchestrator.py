@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 from preprocess.batch.archive_extractor import ArchiveExtractor, ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
 from preprocess.batch.checkpoints import CheckpointStore
-from preprocess.batch.config import BatchConfig
+from preprocess.batch.config import BatchConfig, selector_requires_scene_boundaries
 from preprocess.batch.cleanup import CleanupManager
 from preprocess.batch.downloader import Aria2ArchiveDownloader, ArchiveDownloader
 from preprocess.batch.embedding import (
@@ -42,6 +42,12 @@ from preprocess.batch.processor import (
     SelectionStrategyRegistry,
     default_processing_registry,
     default_selection_registry,
+)
+from preprocess.batch.shot_boundaries import (
+    ShotBoundaryArtifact,
+    ShotBoundaryDetector,
+    ShotBoundaryPipeline,
+    default_shot_boundary_registry,
 )
 from preprocess.pecore.embedding import EmbeddingBatchResult
 from preprocess.progress import ProgressReporter, TqdmProgressReporter
@@ -78,6 +84,7 @@ class BatchOrchestrator:
         stager: StagingStrategy | None,
         uploader: DatasetUploader | None,
         cleanup: CleanupManager,
+        shot_boundary_detector: ShotBoundaryDetector | None = None,
         embedding: BatchEmbeddingStrategy | None = None,
         progress: ProgressReporter | None = None,
     ) -> None:
@@ -91,6 +98,7 @@ class BatchOrchestrator:
         self.stager = stager
         self.uploader = uploader
         self.cleanup = cleanup
+        self.shot_boundary_detector = shot_boundary_detector
         self.embedding = embedding
         self.progress = progress or TqdmProgressReporter(config.progress)
 
@@ -116,6 +124,7 @@ class BatchOrchestrator:
             inspection = self._validate_archive(archive_path, layout, checkpoints)
             self._extract(inspection, request, layout, checkpoints)
             assets = self._discover(layout, request, checkpoints)
+            self._detect_shot_boundaries(assets, layout, checkpoints)
             processed = self._process_and_validate(assets, layout, checkpoints)
             embedding = self._embed(assets, processed, layout, checkpoints)
             upload = self._stage_and_upload(assets, processed, layout, checkpoints)
@@ -202,6 +211,32 @@ class BatchOrchestrator:
             payload={"videos": [asset.to_dict() for asset in assets]},
         )
         return assets
+
+    def _detect_shot_boundaries(
+        self,
+        assets: Sequence[VideoAsset],
+        layout: LotLayout,
+        checkpoints: CheckpointStore,
+    ) -> tuple[ShotBoundaryArtifact, ...]:
+        if self.shot_boundary_detector is None:
+            return ()
+        output_dir = self.config.processing.scene_segments_dir
+        if output_dir is None:
+            raise RuntimeError(
+                "A scene-boundary output directory is required when automatic shot detection is enabled"
+            )
+
+        checkpoints.transition(BatchState.SHOT_BOUNDARIES)
+        artifacts = ShotBoundaryPipeline(
+            self.shot_boundary_detector,
+            output_dir,
+            overwrite=self.config.shot_boundary.overwrite,
+            progress=self.progress,
+        ).run(assets)
+        payload = {"videos": [artifact.to_dict() for artifact in artifacts]}
+        self._write_json(layout.reports_dir / "shot-boundaries.json", payload)
+        checkpoints.transition(BatchState.SHOT_BOUNDARIES_READY, payload={"shot_boundaries": payload})
+        return artifacts
 
     def _process_and_validate(
         self,
@@ -294,6 +329,12 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
         processing_config=config.processing,
         progress=progress,
     )
+    shot_boundary_detector = None
+    if config.shot_boundary.enabled and selector_requires_scene_boundaries(config.processing.selector):
+        shot_boundary_detector = default_shot_boundary_registry().create(
+            config.shot_boundary.backend,
+            config.shot_boundary,
+        )
     embedding_strategy = (
         default_pecore_embedding_strategy(
             config.embedding,
@@ -327,6 +368,7 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
             config.cleanup,
             rendered_profile_id=config.processing.profile_id,
         ),
+        shot_boundary_detector=shot_boundary_detector,
         embedding=embedding_strategy,
         progress=progress,
     )
