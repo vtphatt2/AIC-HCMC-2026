@@ -246,8 +246,6 @@ class KaggleCliUploader(DatasetUploader):
             "datasets",
             "status",
             self.config.dataset_ref,
-            "--format",
-            "json",
         ]
         deadline = time.monotonic() + self.config.verify_timeout_seconds
         output = ""

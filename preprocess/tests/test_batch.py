@@ -870,6 +870,39 @@ class BatchModuleTests(unittest.TestCase):
             ],
         )
 
+    def test_kaggle_status_verify_uses_cli_compatible_command(self) -> None:
+        config = UploadConfig(
+            enabled=True,
+            dataset_ref="owner/test",
+            verify_timeout_seconds=1,
+            verify_poll_seconds=1,
+        )
+        uploader = KaggleCliUploader("kaggle", config)
+        completed = type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "ready\n", "stderr": ""},
+        )()
+
+        with patch(
+            "preprocess.batch.kaggle_uploader.subprocess.run",
+            return_value=completed,
+        ) as run:
+            with patch(
+                "preprocess.batch.kaggle_uploader.time.monotonic",
+                side_effect=[0.0, 0.1],
+            ):
+                verified, output = uploader._verify()
+
+        self.assertTrue(verified)
+        self.assertEqual(output, "ready\n")
+        run.assert_called_once_with(
+            ["kaggle", "datasets", "status", "owner/test"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
