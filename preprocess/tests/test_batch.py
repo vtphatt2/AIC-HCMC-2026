@@ -1086,6 +1086,7 @@ class BatchModuleTests(unittest.TestCase):
             "create",
             "-p",
         ])
+        self.assertNotIn("--private", run.call_args_list[1].args[0])
 
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
