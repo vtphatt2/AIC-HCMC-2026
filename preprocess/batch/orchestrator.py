@@ -108,8 +108,10 @@ class BatchOrchestrator:
         self.progress = progress or TqdmProgressReporter(config.progress)
 
     def run_all(self, requests: Sequence[ArchiveInput]) -> list[LotRunResult]:
-        PreflightChecker(self.config).run()
         stage_names = self._pipeline_stage_names()
+        completed_flags = [self._is_completed_lot(request) for request in requests]
+        if not requests or not all(completed_flags):
+            PreflightChecker(self.config).run()
         self.progress.start_pipeline(
             total_units=len(requests) * len(stage_names),
             total_lots=len(requests),
@@ -123,10 +125,30 @@ class BatchOrchestrator:
                     total_lots=len(requests),
                     lot_id=request.lot_id,
                 )
+                if completed_flags[lot_index - 1]:
+                    self.progress.skip_lot(
+                        lot_id=request.lot_id,
+                        stage_count=len(stage_names),
+                    )
+                    continue
                 results.append(self.run_lot(request))
         finally:
             self.progress.finish_pipeline()
         return results
+
+    def _is_completed_lot(self, request: ArchiveInput) -> bool:
+        """Return true when a lot is terminal and still represents this request."""
+        layout = LotLayout(self.config.data_root, request.lot_id)
+        state = CheckpointStore(layout.state_path).load()
+        if state.get("state") != BatchState.COMPLETED.value:
+            return False
+        previous_request = state.get("request")
+        if previous_request is not None and previous_request != request.to_dict():
+            raise RuntimeError(
+                f"Lot is already completed for a different archive request: {request.lot_id}. "
+                "Use a new lot directory for a different URL or archive name."
+            )
+        return True
 
     def _pipeline_stage_names(self) -> tuple[str, ...]:
         stages = ["download", "archive_validate", "extract", "discover"]

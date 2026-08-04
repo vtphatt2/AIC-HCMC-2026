@@ -313,6 +313,9 @@ class ProgressReporter(ABC):
     def complete_stage(self, *, name: str, lot_id: str) -> None:
         return None
 
+    def skip_lot(self, *, lot_id: str, stage_count: int) -> None:
+        return None
+
     def finish_pipeline(self) -> None:
         return None
 
@@ -680,6 +683,35 @@ class TqdmProgressReporter(ProgressReporter):
         if self._plain_mode:
             self._render_plain(force=True)
             return
+        self._refresh_bars()
+
+    def skip_lot(self, *, lot_id: str, stage_count: int) -> None:
+        """Advance the full-pipeline bar for a lot already marked completed."""
+        if stage_count <= 0:
+            return
+        if self._pipeline_bar is not None:
+            self._pipeline_bar.update(stage_count)
+            self._pipeline_completed += stage_count
+        elif self._plain_mode:
+            self._pipeline_completed += stage_count
+        self._stage_context = f"lot skipped({lot_id})"
+        self._plain_stage_desc = self._stage_context
+        self._plain_stage_current = stage_count
+        self._plain_stage_total = stage_count
+        self._plain_stage_unit = "stage"
+        self._plain_stage_started_at = time.monotonic()
+        if self._plain_mode:
+            self._render_plain(force=True)
+            return
+        if self._detail_bar is not None:
+            self._detail_bar.reset(total=stage_count)
+            self._detail_bar.n = stage_count
+            self._detail_bar.last_print_n = stage_count
+            self._detail_bar.unit = "stage"
+            self._detail_bar.set_description_str(
+                self._compact_text(self._stage_context, self._DESCRIPTION_WIDTH),
+                refresh=False,
+            )
         self._refresh_bars()
 
     def finish_pipeline(self) -> None:

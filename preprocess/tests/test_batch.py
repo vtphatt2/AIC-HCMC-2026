@@ -302,6 +302,106 @@ class BatchModuleTests(unittest.TestCase):
         self.assertTrue(main_state["upload_only"])
         self.assertTrue(upload_state["initialized"])
 
+    def test_run_all_skips_completed_lots_and_runs_pending_lots(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class RecordingProgress:
+            def __init__(self) -> None:
+                self.total_units = None
+                self.skipped: list[tuple[str, int]] = []
+
+            def start_pipeline(self, *, total_units, total_lots, stage_names) -> None:
+                del total_lots, stage_names
+                self.total_units = total_units
+
+            def set_lot_context(self, *, lot_index, total_lots, lot_id) -> None:
+                del lot_index, total_lots, lot_id
+
+            def skip_lot(self, *, lot_id, stage_count) -> None:
+                self.skipped.append((lot_id, stage_count))
+
+            def finish_pipeline(self) -> None:
+                return None
+
+        class FakeOrchestrator(BatchOrchestrator):
+            def run_lot(self, request):
+                self.run_calls.append(request.lot_id)
+                return None
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig(data_root=root / "data")
+            orchestrator = object.__new__(FakeOrchestrator)
+            orchestrator.config = config
+            orchestrator.shot_boundary_detector = None
+            orchestrator.embedding = None
+            orchestrator.progress = RecordingProgress()
+            orchestrator.run_calls = []
+            completed = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            pending = ArchiveInput(
+                url="https://example.test/Videos_L30_a.zip",
+                archive_name="Videos_L30_a.zip",
+                lot_id="L30_a",
+                line_number=2,
+            )
+            completed_layout = LotLayout(config.data_root, completed.lot_id)
+            completed_layout.create_runtime_dirs()
+            CheckpointStore(completed_layout.state_path).write(
+                {
+                    "state": BatchState.COMPLETED.value,
+                    "initialized": True,
+                    "request": completed.to_dict(),
+                    "events": [],
+                }
+            )
+
+            with patch("preprocess.batch.orchestrator.PreflightChecker.run"):
+                results = orchestrator.run_all([completed, pending])
+
+        self.assertEqual(results, [None])
+        self.assertEqual(orchestrator.run_calls, ["L30_a"])
+        self.assertEqual(orchestrator.progress.skipped, [("L29_a", 5)])
+        self.assertEqual(orchestrator.progress.total_units, 10)
+
+    def test_run_all_does_not_skip_completed_lot_for_changed_request(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig(data_root=root / "data")
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            changed_request = ArchiveInput(
+                url="https://example.test/Videos_L29_a-replacement.zip",
+                archive_name="Videos_L29_a-replacement.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            CheckpointStore(layout.state_path).write(
+                {
+                    "state": BatchState.COMPLETED.value,
+                    "initialized": True,
+                    "request": request.to_dict(),
+                    "events": [],
+                }
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "different archive request"):
+                orchestrator._is_completed_lot(changed_request)
+
     def test_completed_stage_records_elapsed_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             store = CheckpointStore(Path(temporary) / "state.json")

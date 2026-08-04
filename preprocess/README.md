@@ -884,6 +884,11 @@ video đã completed + artifact còn hợp lệ   → restore/skip video đó
 stage/video đang running hoặc artifact hỏng → chạy lại phần tương ứng
 ```
 
+Nếu một lot đã có `state.json` với trạng thái `completed`, lần chạy `run` sau
+sẽ tự động bỏ qua lot đó và tiếp tục lot kế tiếp trong `links.txt`. Request mới
+phải vẫn trùng URL/archive đã ghi trong checkpoint; nếu dùng cùng `lot_id` cho
+một archive khác, pipeline sẽ dừng để tránh ghi đè dữ liệu.
+
 Các artifact được kiểm tra lại trước khi skip: ZIP, source video, scene
 manifest, discovery report, rendered/validation manifest, `.npy` feature và
 upload/cleanup receipt. Fingerprint theo stage, video và dependency chain cũng
