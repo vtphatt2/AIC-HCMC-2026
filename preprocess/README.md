@@ -491,7 +491,7 @@ cleanup artifact tạm
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
 | `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
 | `KaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments | `kaggle-staging/` | Chỉ là file allowlist; không chứa archive, source hoặc video. Scene segment được thêm khi `upload.include_scene_segments=true`. |
-| `KaggleCliUploader` | `StagingResult` | `UploadResult` | `verified: bool`; upload dạng `create` hoặc `version`. |
+| `KaggleCliUploader` | `StagingResult` | `UploadResult` | `verified: bool`; upload dạng `create` hoặc `version`, `dir_mode` là `skip`, `zip` hoặc `tar`. |
 | `CleanupManager` | UploadResult đã verify | `CleanupResult` | Xóa các directory được bật trong config; metadata độc lập, reports, receipts và state vẫn giữ lại. |
 
 Nếu FFmpeg render nhanh trả về ít PNG hơn số frame được chọn (thường do VFR,
@@ -728,6 +728,7 @@ Trong config, kiểm tra tối thiểu:
   "upload": {
     "enabled": true,
     "mode": "version",
+    "dir_mode": "zip",
     "dataset_ref": "owner/dataset-slug",
     "metadata_template": "../../data/kaggle-dataset-metadata.json",
     "include_scene_segments": true
@@ -874,6 +875,13 @@ TransNetV2 và processing hợp lệ; embedding và các stage phụ thuộc nó
 lại. Khi stage hoặc video hoàn tất, `state.json` ghi `started_at`,
 `completed_at` và `elapsed_seconds`; event history cũng lưu thời lượng tương
 ứng. Không xóa `state.json` để resume.
+
+`CheckpointStore` ghi `state.json` atomically nên việc đọc file trong lúc pipeline
+đang chạy sẽ thấy bản cũ hoặc bản mới hoàn chỉnh, không thấy JSON dở dang. Tuy
+nhiên hiện chưa có inter-process lock: không chạy hai pipeline trên cùng lot,
+không chạy stage upload thủ công song song với `run`, và không chỉnh sửa
+`state.json` khi process đang hoạt động. Pipeline thực hiện upload tuần tự sau
+processing/embedding của từng lot.
 
 #### 9. Kiểm tra sau khi hoàn thành
 

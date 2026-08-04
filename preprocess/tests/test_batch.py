@@ -19,7 +19,7 @@ from preprocess.batch.config import (
     UploadConfig,
 )
 from preprocess.batch.downloader import Aria2ArchiveDownloader
-from preprocess.batch.kaggle_uploader import KaggleStagingStrategy
+from preprocess.batch.kaggle_uploader import KaggleCliUploader, KaggleStagingStrategy
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.links import LinkListParser
 from preprocess.batch.metadata import JsonMetadataProvider
@@ -516,6 +516,30 @@ class BatchModuleTests(unittest.TestCase):
                 ).stage(layout, [asset], [result])
 
             self.assertFalse(layout.staging_dir.exists())
+
+    def test_kaggle_upload_command_uses_configured_zip_dir_mode(self) -> None:
+        config = UploadConfig(
+            enabled=True,
+            dataset_ref="owner/test",
+            mode="version",
+            version_message="test upload",
+            dir_mode="zip",
+        )
+        command = KaggleCliUploader("kaggle", config)._upload_command(Path("staging"))
+        self.assertEqual(
+            command,
+            [
+                "kaggle",
+                "datasets",
+                "version",
+                "-p",
+                "staging",
+                "-m",
+                "test upload",
+                "--dir-mode",
+                "zip",
+            ],
+        )
 
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
