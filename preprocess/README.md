@@ -640,6 +640,13 @@ embedding. Nó đọc artifact đã validate, ghi trạng thái upload riêng v�
 `data/L29_a/upload-state.json`, và dùng `data/L29_a/upload.lock` để không cho
 hai tiến trình upload cùng lot chạy đồng thời.
 
+`upload --lot-id` là lệnh explicit nên không yêu cầu `upload.enabled=true`; cờ
+này chỉ quyết định `run` có tự động upload hay không. `dataset_ref`,
+`metadata_template` và các tham số Kaggle khác vẫn phải hợp lệ. Nếu
+`upload-state.json` đã ghi cả `stage_upload` và `cleanup` là `completed`, lệnh
+sẽ dùng receipt đã lưu, không đọc lại artifact local và không bị ảnh hưởng bởi
+việc đổi config sau đó.
+
 Có thể kiểm tra một ZIP đã tải mà không chạy cả pipeline:
 
 ```bash

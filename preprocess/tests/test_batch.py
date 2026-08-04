@@ -4,8 +4,9 @@ import json
 import tempfile
 import unittest
 import zipfile
+from argparse import Namespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from preprocess.batch.archive_extractor import ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
@@ -261,7 +262,17 @@ class BatchModuleTests(unittest.TestCase):
             def _restore_processed(self, assets, layout):
                 return []
 
-            def _run_upload_stages(self, request, assets, processed, layout, checkpoints):
+            def _run_upload_stages(
+                self,
+                request,
+                assets,
+                processed,
+                layout,
+                checkpoints,
+                *,
+                reuse_completed=False,
+            ):
+                del request, assets, processed, layout, reuse_completed
                 return UploadResult(
                     dataset_ref="owner/test",
                     mode="version",
@@ -301,6 +312,124 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(main_state["state"], BatchState.COMPLETED.value)
         self.assertTrue(main_state["upload_only"])
         self.assertTrue(upload_state["initialized"])
+
+    def test_explicit_upload_command_overrides_disabled_upload_flag(self) -> None:
+        from preprocess.batch import cli
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = root / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "data_root": str(root / "data"),
+                        "upload": {
+                            "enabled": False,
+                            "dataset_ref": "owner/test",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            fake_orchestrator = Mock()
+            fake_orchestrator.upload_lot.return_value = UploadResult(
+                dataset_ref="owner/test",
+                mode="version",
+                verified=True,
+                command=("kaggle",),
+                output_tail="ok",
+            )
+            with patch(
+                "preprocess.batch.cli.build_default_orchestrator",
+                return_value=fake_orchestrator,
+            ) as builder:
+                result = cli._upload_lot(
+                    Namespace(config=config_path, lot_id="L29_a")
+                )
+            effective_config = builder.call_args.args[0]
+
+        self.assertEqual(result, 0)
+        self.assertTrue(effective_config.upload.enabled)
+        fake_orchestrator.upload_lot.assert_called_once_with("L29_a")
+
+    def test_completed_upload_state_is_reused_without_local_artifacts(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FakeUploadOrchestrator(BatchOrchestrator):
+            def _restore_assets(self, layout, request):
+                self.restore_assets_calls += 1
+                if self.fail_restore:
+                    raise AssertionError("completed upload should not restore source artifacts")
+                return []
+
+            def _restore_processed(self, assets, layout):
+                return []
+
+            def _run_upload_stages(
+                self,
+                request,
+                assets,
+                processed,
+                layout,
+                checkpoints,
+                *,
+                reuse_completed=False,
+            ):
+                del request, assets, processed, reuse_completed
+                upload = UploadResult(
+                    dataset_ref="owner/test",
+                    mode="version",
+                    verified=True,
+                    command=("kaggle",),
+                    output_tail="ok",
+                )
+                for name in ("stage_upload", "cleanup"):
+                    checkpoints.start_stage(name, fingerprint="stored")
+                    checkpoints.complete_stage(name, fingerprint="stored")
+                layout.receipts_dir.mkdir(parents=True, exist_ok=True)
+                (layout.receipts_dir / "upload.json").write_text(
+                    json.dumps(upload.to_dict()),
+                    encoding="utf-8",
+                )
+                (layout.receipts_dir / "cleanup.json").write_text(
+                    "{}",
+                    encoding="utf-8",
+                )
+                checkpoints.transition(BatchState.COMPLETED)
+                return upload
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig(
+                data_root=root / "data",
+                upload=UploadConfig(enabled=True, dataset_ref="owner/test"),
+            )
+            orchestrator = object.__new__(FakeUploadOrchestrator)
+            orchestrator.config = config
+            orchestrator.embedding = None
+            orchestrator.progress = TqdmProgressReporter(ProgressConfig(enabled=False))
+            orchestrator.restore_assets_calls = 0
+            orchestrator.fail_restore = False
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            checkpoints = CheckpointStore(layout.state_path)
+            orchestrator._initialize_state(checkpoints, request)
+            checkpoints.start_stage("process_validate", fingerprint="process-fp")
+            checkpoints.complete_stage("process_validate", fingerprint="process-fp")
+
+            first_result = orchestrator.upload_lot(request.lot_id)
+            orchestrator.fail_restore = True
+            second_result = orchestrator.upload_lot(request.lot_id)
+
+        self.assertTrue(first_result.verified)
+        self.assertEqual(first_result, second_result)
+        self.assertEqual(orchestrator.restore_assets_calls, 1)
 
     def test_run_all_skips_completed_lots_and_runs_pending_lots(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator

@@ -257,9 +257,7 @@ class BatchOrchestrator:
             raise
 
     def upload_lot(self, lot_id: str) -> UploadResult:
-        """Upload one already-processed lot without running earlier stages."""
-        if not self.config.upload.enabled:
-            raise RuntimeError("Upload is disabled in configuration")
+        """Explicitly upload one lot, independently of the full-run flag."""
         layout = LotLayout(self.config.data_root, lot_id)
         if not layout.state_path.is_file():
             raise FileNotFoundError(f"Main checkpoint not found: {layout.state_path}")
@@ -267,14 +265,6 @@ class BatchOrchestrator:
         main_checkpoints = CheckpointStore(layout.state_path)
         main_state = main_checkpoints.load()
         request = self._request_from_state(main_state, lot_id)
-        assets = self._restore_assets(layout, request)
-        processed = self._restore_processed(assets, layout)
-        required_stage = "embedding" if self.embedding is not None else "process_validate"
-        stage_record = main_state.get("stages", {}).get(required_stage, {})
-        if not isinstance(stage_record, Mapping) or stage_record.get("status") != "completed":
-            raise RuntimeError(
-                f"Cannot upload {lot_id}: required stage {required_stage!r} is not completed"
-            )
 
         self.progress.start_pipeline(
             total_units=2,
@@ -290,13 +280,30 @@ class BatchOrchestrator:
                     request,
                     legacy_state=main_state,
                 )
-                result = self._run_upload_stages(
-                    request,
-                    assets,
-                    processed,
-                    layout,
-                    upload_checkpoints,
-                )
+                if self._upload_state_is_complete(upload_checkpoints):
+                    result = self._restore_upload(layout)
+                    if upload_checkpoints.load().get("state") != BatchState.COMPLETED.value:
+                        upload_checkpoints.transition(
+                            BatchState.COMPLETED,
+                            payload={"finished_at": utc_now(), "reused": True},
+                        )
+                else:
+                    assets = self._restore_assets(layout, request)
+                    processed = self._restore_processed(assets, layout)
+                    required_stage = "embedding" if self.embedding is not None else "process_validate"
+                    stage_record = main_state.get("stages", {}).get(required_stage, {})
+                    if not isinstance(stage_record, Mapping) or stage_record.get("status") != "completed":
+                        raise RuntimeError(
+                            f"Cannot upload {lot_id}: required stage {required_stage!r} is not completed"
+                        )
+                    result = self._run_upload_stages(
+                        request,
+                        assets,
+                        processed,
+                        layout,
+                        upload_checkpoints,
+                        reuse_completed=True,
+                    )
             main_checkpoints.transition(
                 BatchState.COMPLETED,
                 payload={"finished_at": utc_now(), "upload_only": True},
@@ -311,6 +318,18 @@ class BatchOrchestrator:
             raise
         finally:
             self.progress.finish_pipeline()
+
+    @staticmethod
+    def _upload_state_is_complete(checkpoints: CheckpointStore) -> bool:
+        state = checkpoints.load()
+        stages = state.get("stages", {})
+        if not isinstance(stages, Mapping):
+            return False
+        return all(
+            isinstance(stages.get(name), Mapping)
+            and stages[name].get("status") == "completed"
+            for name in ("stage_upload", "cleanup")
+        )
 
     def _initialize_upload_state(
         self,
@@ -531,10 +550,17 @@ class BatchOrchestrator:
         *,
         action: Callable[[], Any],
         restore: Callable[[], Any],
+        reuse_completed: bool = False,
     ) -> Any:
         self.progress.start_stage(name=name, lot_id=request.lot_id)
         fingerprint = self._stage_fingerprint(request, name)
-        if checkpoints.stage_is_complete(name, fingerprint):
+        stage_completed = checkpoints.stage_is_complete(name, fingerprint)
+        if reuse_completed:
+            stage = checkpoints.load().get("stages", {}).get(name, {})
+            stage_completed = stage_completed or (
+                isinstance(stage, Mapping) and stage.get("status") == "completed"
+            )
+        if stage_completed:
             try:
                 value = restore()
             except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
@@ -956,6 +982,8 @@ class BatchOrchestrator:
         processed: Sequence[ProcessingResult],
         layout: LotLayout,
         checkpoints: CheckpointStore,
+        *,
+        reuse_completed: bool = False,
     ) -> UploadResult:
         upload = self._execute_stage(
             checkpoints,
@@ -963,6 +991,7 @@ class BatchOrchestrator:
             "stage_upload",
             action=lambda: self._stage_and_upload(assets, processed, layout, checkpoints),
             restore=lambda: self._restore_upload(layout),
+            reuse_completed=reuse_completed,
         )
         self._execute_stage(
             checkpoints,
@@ -970,6 +999,7 @@ class BatchOrchestrator:
             "cleanup",
             action=lambda: self._cleanup(layout, upload, checkpoints),
             restore=lambda: self._restore_cleanup(layout),
+            reuse_completed=reuse_completed,
         )
         checkpoints.transition(BatchState.COMPLETED, payload={"finished_at": utc_now()})
         return upload

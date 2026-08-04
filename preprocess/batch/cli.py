@@ -92,6 +92,9 @@ def _run_pipeline(args: argparse.Namespace) -> int:
 
 def _upload_lot(args: argparse.Namespace) -> int:
     config = load_config(args)
+    # The explicit upload command is an opt-in override; the config flag only
+    # controls whether the full ``run`` command includes upload stages.
+    config = replace(config, upload=replace(config.upload, enabled=True))
     result = build_default_orchestrator(config).upload_lot(args.lot_id)
     print(
         json.dumps(
