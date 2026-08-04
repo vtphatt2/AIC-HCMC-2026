@@ -34,6 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--data-root", type=Path, help="Override config.data_root.")
     run.add_argument("--metadata-root", type=Path, help="Override config.metadata_root.")
     run.set_defaults(handler=_run_pipeline)
+
+    upload = subparsers.add_parser(
+        "upload",
+        help="Upload one already-processed lot without rerunning preprocessing.",
+    )
+    upload.add_argument("--lot-id", required=True, help="Lot directory to upload, e.g. L21_a.")
+    upload.set_defaults(handler=_upload_lot)
     return parser
 
 
@@ -80,6 +87,19 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     ).parse(config.links_file)
     results = build_default_orchestrator(config).run_all(requests)
     print(json.dumps({"completed_lots": [result.lot_id for result in results]}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _upload_lot(args: argparse.Namespace) -> int:
+    config = load_config(args)
+    result = build_default_orchestrator(config).upload_lot(args.lot_id)
+    print(
+        json.dumps(
+            {"lot_id": args.lot_id, "upload": result.to_dict()},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 

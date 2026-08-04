@@ -20,6 +20,7 @@ from preprocess.batch.embedding import (
     default_pecore_embedding_strategy,
 )
 from preprocess.batch.layout import LotLayout
+from preprocess.batch.locks import ExclusiveFileLock
 from preprocess.batch.links import LinkListParser
 from preprocess.batch.metadata import JsonMetadataProvider, MetadataProvider
 from preprocess.batch.models import (
@@ -144,6 +145,7 @@ class BatchOrchestrator:
         layout.create_runtime_dirs()
         checkpoints = CheckpointStore(layout.state_path)
         self._initialize_state(checkpoints, request)
+        upload_checkpoints: CheckpointStore | None = None
         try:
             archive_path = self._execute_stage(
                 checkpoints,
@@ -203,20 +205,19 @@ class BatchOrchestrator:
                 embedding = None
 
             if self.config.upload.enabled:
-                upload = self._execute_stage(
-                    checkpoints,
-                    request,
-                    "stage_upload",
-                    action=lambda: self._stage_and_upload(assets, processed, layout, checkpoints),
-                    restore=lambda: self._restore_upload(layout),
-                )
-                self._execute_stage(
-                    checkpoints,
-                    request,
-                    "cleanup",
-                    action=lambda: self._cleanup(layout, upload, checkpoints),
-                    restore=lambda: self._restore_cleanup(layout),
-                )
+                with ExclusiveFileLock(layout.upload_lock_path, purpose=f"upload for {request.lot_id}"):
+                    upload_checkpoints = self._initialize_upload_state(
+                        CheckpointStore(layout.upload_state_path),
+                        request,
+                        legacy_state=checkpoints.load(),
+                    )
+                    upload = self._run_upload_stages(
+                        request,
+                        assets,
+                        processed,
+                        layout,
+                        upload_checkpoints,
+                    )
             else:
                 upload = None
             checkpoints.transition(BatchState.COMPLETED, payload={"finished_at": utc_now()})
@@ -226,7 +227,136 @@ class BatchOrchestrator:
                 BatchState.FAILED,
                 payload={"error": f"{type(exc).__name__}: {exc}", "failed_at": utc_now()},
             )
+            if upload_checkpoints is not None:
+                upload_checkpoints.transition(
+                    BatchState.FAILED,
+                    payload={"error": f"{type(exc).__name__}: {exc}", "failed_at": utc_now()},
+                )
             raise
+
+    def upload_lot(self, lot_id: str) -> UploadResult:
+        """Upload one already-processed lot without running earlier stages."""
+        if not self.config.upload.enabled:
+            raise RuntimeError("Upload is disabled in configuration")
+        layout = LotLayout(self.config.data_root, lot_id)
+        if not layout.state_path.is_file():
+            raise FileNotFoundError(f"Main checkpoint not found: {layout.state_path}")
+
+        main_checkpoints = CheckpointStore(layout.state_path)
+        main_state = main_checkpoints.load()
+        request = self._request_from_state(main_state, lot_id)
+        assets = self._restore_assets(layout, request)
+        processed = self._restore_processed(assets, layout)
+        required_stage = "embedding" if self.embedding is not None else "process_validate"
+        stage_record = main_state.get("stages", {}).get(required_stage, {})
+        if not isinstance(stage_record, Mapping) or stage_record.get("status") != "completed":
+            raise RuntimeError(
+                f"Cannot upload {lot_id}: required stage {required_stage!r} is not completed"
+            )
+
+        self.progress.start_pipeline(
+            total_units=2,
+            total_lots=1,
+            stage_names=("stage_upload", "cleanup"),
+        )
+        self.progress.set_lot_context(lot_index=1, total_lots=1, lot_id=lot_id)
+        upload_checkpoints: CheckpointStore | None = None
+        try:
+            with ExclusiveFileLock(layout.upload_lock_path, purpose=f"upload for {lot_id}"):
+                upload_checkpoints = self._initialize_upload_state(
+                    CheckpointStore(layout.upload_state_path),
+                    request,
+                    legacy_state=main_state,
+                )
+                result = self._run_upload_stages(
+                    request,
+                    assets,
+                    processed,
+                    layout,
+                    upload_checkpoints,
+                )
+            main_checkpoints.transition(
+                BatchState.COMPLETED,
+                payload={"finished_at": utc_now(), "upload_only": True},
+            )
+            return result
+        except Exception as exc:
+            if upload_checkpoints is not None:
+                upload_checkpoints.transition(
+                    BatchState.FAILED,
+                    payload={"error": f"{type(exc).__name__}: {exc}", "failed_at": utc_now()},
+                )
+            raise
+        finally:
+            self.progress.finish_pipeline()
+
+    def _initialize_upload_state(
+        self,
+        checkpoints: CheckpointStore,
+        request: ArchiveInput,
+        *,
+        legacy_state: Mapping[str, Any] | None = None,
+    ) -> CheckpointStore:
+        state = checkpoints.load()
+        if not state.get("initialized"):
+            migrated_stages: dict[str, Any] = {}
+            if isinstance(legacy_state, Mapping):
+                legacy_stages = legacy_state.get("stages", {})
+                if isinstance(legacy_stages, Mapping):
+                    for name in ("stage_upload", "cleanup"):
+                        value = legacy_stages.get(name)
+                        if isinstance(value, Mapping):
+                            migrated_stages[name] = dict(value)
+            state = {
+                "state": BatchState.NEW.value,
+                "initialized": True,
+                "resume_version": 1,
+                "lot_id": request.lot_id,
+                "request": request.to_dict(),
+                "config": self.config.to_dict(),
+                "config_fingerprint": self._config_fingerprint(),
+                "request_fingerprint": self._request_fingerprint(request),
+                "created_at": utc_now(),
+                "events": [],
+                "stages": migrated_stages,
+            }
+            state["migrated_from_state"] = legacy_state is not None
+            checkpoints.write(state)
+            return checkpoints
+
+        previous_request = state.get("request")
+        if previous_request is not None and previous_request != request.to_dict():
+            raise RuntimeError(
+                f"Archive request changed after upload started: {request.lot_id}."
+            )
+        state["resume_version"] = 1
+        state["config"] = self.config.to_dict()
+        state["config_fingerprint"] = self._config_fingerprint()
+        state["request_fingerprint"] = self._request_fingerprint(request)
+        state.setdefault("request", request.to_dict())
+        state.setdefault("stages", {})
+        checkpoints.write(state)
+        return checkpoints
+
+    @staticmethod
+    def _request_from_state(state: Mapping[str, Any], lot_id: str) -> ArchiveInput:
+        raw_request = state.get("request")
+        if not isinstance(raw_request, Mapping):
+            raise ValueError(f"Main checkpoint has no archive request for {lot_id}")
+        try:
+            request = ArchiveInput(
+                url=str(raw_request["url"]),
+                archive_name=str(raw_request["archive_name"]),
+                lot_id=str(raw_request["lot_id"]),
+                line_number=int(raw_request["line_number"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"Main checkpoint has an invalid archive request for {lot_id}") from exc
+        if request.lot_id != lot_id:
+            raise ValueError(
+                f"Main checkpoint lot mismatch: expected {lot_id}, got {request.lot_id}"
+            )
+        return request
 
     def _initialize_state(self, checkpoints: CheckpointStore, request: ArchiveInput) -> None:
         state = checkpoints.load()
@@ -797,6 +927,31 @@ class BatchOrchestrator:
         checkpoints.transition(BatchState.EMBEDDED, payload={"embedding": result.to_dict()})
         return result
 
+    def _run_upload_stages(
+        self,
+        request: ArchiveInput,
+        assets: Sequence[VideoAsset],
+        processed: Sequence[ProcessingResult],
+        layout: LotLayout,
+        checkpoints: CheckpointStore,
+    ) -> UploadResult:
+        upload = self._execute_stage(
+            checkpoints,
+            request,
+            "stage_upload",
+            action=lambda: self._stage_and_upload(assets, processed, layout, checkpoints),
+            restore=lambda: self._restore_upload(layout),
+        )
+        self._execute_stage(
+            checkpoints,
+            request,
+            "cleanup",
+            action=lambda: self._cleanup(layout, upload, checkpoints),
+            restore=lambda: self._restore_cleanup(layout),
+        )
+        checkpoints.transition(BatchState.COMPLETED, payload={"finished_at": utc_now()})
+        return upload
+
     def _stage_and_upload(
         self,
         assets: Sequence[VideoAsset],
@@ -808,6 +963,10 @@ class BatchOrchestrator:
             return None
         if self.stager is None or self.uploader is None:
             raise RuntimeError("Upload is enabled but staging/uploader dependencies are missing")
+        if layout.staging_dir.exists():
+            if not layout.is_owned_path(layout.staging_dir):
+                raise RuntimeError(f"Refusing to replace staging path outside lot: {layout.staging_dir}")
+            shutil.rmtree(layout.staging_dir)
         staging = self.stager.stage(layout, assets, processed)
         self._write_json(layout.reports_dir / "staging.json", staging.to_dict())
         checkpoints.transition(BatchState.STAGED, payload=staging.to_dict())

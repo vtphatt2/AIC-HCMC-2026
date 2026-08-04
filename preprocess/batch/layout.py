@@ -54,6 +54,14 @@ class LotLayout:
     def state_path(self) -> Path:
         return self.root / "state.json"
 
+    @property
+    def upload_state_path(self) -> Path:
+        return self.root / "upload-state.json"
+
+    @property
+    def upload_lock_path(self) -> Path:
+        return self.root / "upload.lock"
+
     def create_runtime_dirs(self) -> None:
         """Create only the directories owned by this lot."""
         for directory in (

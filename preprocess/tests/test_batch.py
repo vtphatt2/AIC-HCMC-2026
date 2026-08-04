@@ -22,6 +22,7 @@ from preprocess.batch.downloader import Aria2ArchiveDownloader
 from preprocess.batch.kaggle_uploader import KaggleCliUploader, KaggleStagingStrategy
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.links import LinkListParser
+from preprocess.batch.locks import ExclusiveFileLock
 from preprocess.batch.metadata import JsonMetadataProvider
 from preprocess.batch.models import (
     ArchiveInput,
@@ -201,6 +202,105 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(state["state"], BatchState.DOWNLOADED.value)
         self.assertEqual(loaded["size"], 42)
         self.assertEqual(len(loaded["events"]), 2)
+
+    def test_upload_state_is_separate_and_migrates_legacy_upload_stages(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {"data_root": str(root / "data")},
+                base_dir=root,
+            )
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            store = CheckpointStore(layout.upload_state_path)
+            orchestrator._initialize_upload_state(
+                store,
+                request,
+                legacy_state={
+                    "stages": {
+                        "stage_upload": {"status": "completed", "fingerprint": "upload-fp"},
+                        "cleanup": {"status": "completed", "fingerprint": "cleanup-fp"},
+                    }
+                },
+            )
+            state = store.load()
+
+        self.assertNotEqual(layout.upload_state_path, layout.state_path)
+        self.assertTrue(state["migrated_from_state"])
+        self.assertEqual(
+            state["stages"]["stage_upload"]["fingerprint"],
+            "upload-fp",
+        )
+        self.assertEqual(state["stages"]["cleanup"]["fingerprint"], "cleanup-fp")
+
+    def test_upload_lock_is_exclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            lock_path = Path(temporary) / "upload.lock"
+            with ExclusiveFileLock(lock_path, purpose="test"):
+                with self.assertRaises(RuntimeError):
+                    with ExclusiveFileLock(lock_path, purpose="test"):
+                        pass
+
+    def test_upload_only_marks_main_checkpoint_completed(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FakeUploadOrchestrator(BatchOrchestrator):
+            def _restore_assets(self, layout, request):
+                return []
+
+            def _restore_processed(self, assets, layout):
+                return []
+
+            def _run_upload_stages(self, request, assets, processed, layout, checkpoints):
+                return UploadResult(
+                    dataset_ref="owner/test",
+                    mode="version",
+                    verified=True,
+                    command=("kaggle",),
+                    output_tail="ok",
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig(
+                data_root=root / "data",
+                upload=UploadConfig(enabled=True, dataset_ref="owner/test"),
+            )
+            orchestrator = object.__new__(FakeUploadOrchestrator)
+            orchestrator.config = config
+            orchestrator.embedding = None
+            orchestrator.progress = TqdmProgressReporter(ProgressConfig(enabled=False))
+            request = ArchiveInput(
+                url="https://example.test/Videos_L29_a.zip",
+                archive_name="Videos_L29_a.zip",
+                lot_id="L29_a",
+                line_number=1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            checkpoints = CheckpointStore(layout.state_path)
+            orchestrator._initialize_state(checkpoints, request)
+            checkpoints.start_stage("process_validate", fingerprint="process-fp")
+            checkpoints.complete_stage("process_validate", fingerprint="process-fp")
+
+            result = orchestrator.upload_lot(request.lot_id)
+            main_state = checkpoints.load()
+            upload_state = CheckpointStore(layout.upload_state_path).load()
+
+        self.assertTrue(result.verified)
+        self.assertEqual(main_state["state"], BatchState.COMPLETED.value)
+        self.assertTrue(main_state["upload_only"])
+        self.assertTrue(upload_state["initialized"])
 
     def test_completed_stage_records_elapsed_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
