@@ -427,7 +427,11 @@ class KaggleCliUploader(DatasetUploader):
                 "--dir-mode",
                 self.config.dir_mode,
             ]
-            command.append("--public" if self.config.public else "--private")
+            # Kaggle CLI defaults newly-created datasets to private.  Its
+            # supported visibility flag is --public; --private is rejected by
+            # the CLI versions commonly installed on SSH hosts.
+            if self.config.public:
+                command.append("--public")
             return command
         if effective_mode != "version":
             raise ValueError(
