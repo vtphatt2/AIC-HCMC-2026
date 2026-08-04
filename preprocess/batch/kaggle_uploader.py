@@ -202,7 +202,15 @@ class KaggleCliUploader(DatasetUploader):
 
     def _upload_command(self, staging_dir: Path) -> list[str]:
         if self.config.mode == "create":
-            command = [self.executable, "datasets", "create", "-p", str(staging_dir)]
+            command = [
+                self.executable,
+                "datasets",
+                "create",
+                "-p",
+                str(staging_dir),
+                "--dir-mode",
+                self.config.dir_mode,
+            ]
             command.append("--public" if self.config.public else "--private")
             return command
         if not self.config.dataset_ref:
@@ -215,6 +223,8 @@ class KaggleCliUploader(DatasetUploader):
             str(staging_dir),
             "-m",
             self.config.version_message,
+            "--dir-mode",
+            self.config.dir_mode,
         ]
 
     def _verify(self) -> tuple[bool, str]:

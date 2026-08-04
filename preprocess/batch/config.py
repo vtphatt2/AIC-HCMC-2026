@@ -207,6 +207,7 @@ class UploadConfig:
     enabled: bool = False
     dataset_ref: str | None = None
     mode: str = "version"
+    dir_mode: str = "zip"
     metadata_template: Path | None = None
     include_scene_segments: bool = False
     include_features: bool = True
@@ -220,6 +221,8 @@ class UploadConfig:
     def __post_init__(self) -> None:
         if self.mode not in {"create", "version"}:
             raise ValueError("upload mode must be 'create' or 'version'")
+        if self.dir_mode not in {"skip", "zip", "tar"}:
+            raise ValueError("upload dir_mode must be one of: skip, zip, tar")
         if self.enabled and not self.dataset_ref:
             raise ValueError("dataset_ref is required for a verifiable upload")
         if self.verify_timeout_seconds <= 0 or self.verify_poll_seconds <= 0:

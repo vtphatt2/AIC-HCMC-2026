@@ -78,6 +78,7 @@
   "upload": {
     "enabled": false,
     "mode": "version",
+    "dir_mode": "zip",
     "dataset_ref": "owner/dataset-slug",
     "metadata_template": "../../data/kaggle-dataset-metadata.json",
     "include_scene_segments": false,
