@@ -1,0 +1,12 @@
+# Top-level reproducibility lock for the preprocess SSH venv.
+# System tools (aria2c, ffmpeg, ffprobe) and the CUDA driver are recorded in
+# provenance.json but remain installed through the operating system/vendor.
+numpy==2.2.6
+Pillow==12.3.0
+tqdm==4.68.4
+kaggle==2.2.4
+transnetv2-pytorch==1.0.5
+open_clip_torch==3.3.0
+huggingface_hub==1.26.0
+torch==2.13.0
+torchvision==0.28.0

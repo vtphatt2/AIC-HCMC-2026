@@ -1,8 +1,9 @@
 # Preprocess
 
 Các công cụ trong thư mục này xử lý transcript, keyframe và feature visual của
-`AIC2026_sample`. Chúng là pipeline offline, không cần chạy FastAPI, và dùng
-virtual environment riêng tại `preprocess/.venv`.
+dataset. Chúng là pipeline offline, không cần chạy FastAPI, và dùng virtual
+environment riêng tại `preprocess/.venv`. Toàn bộ workflow SSH chỉ chạm vào
+`preprocess/` và `data/`; không phụ thuộc vào `app/`.
 
 ## Cấu trúc source
 
@@ -36,12 +37,15 @@ preprocess/.venv/bin/python \
 
 ## Dataset layout và quy ước ID
 
-Các script mặc định dùng `<repository-root>/AIC2026_sample`:
+Các script transcript hỗ trợ cả layout sample cũ và layout SSH dưới `data/`.
+`build_keyframe_index.py` mặc định dùng `<repository-root>/data`; banner
+renderer giữ mặc định sample cũ để tương thích và nhận `--data-root` alias.
+Layout tương ứng là:
 
 ```text
 AIC2026_sample/
 ├── transcripts/<video_id>_Transcript.txt
-├── metadata/<video_id>.json
+├── metadata/<video_id>.json       # fps có thể thiếu
 ├── PECore-features/<video_id>/<frame_id>.npy
 ├── keyframes/<video_id>/<frame_id>.jpg
 │   # local fallback supported: keyframes_org/<video_id>/<frame_id>.jpg
@@ -55,7 +59,8 @@ AIC2026_sample/
   Không ghép `video_id` vào `frame_id` trong index.
 - Nếu cả hai tên file đại diện cùng một `frame_id` cùng tồn tại, renderer chỉ
   xử lý một ảnh và ưu tiên tên chuẩn `000237.jpg`.
-- Timestamp của frame là `int(int(frame_id) / fps * 1000)`.
+- Nếu rendered manifest có `timestamp_ms`/PTS, đó là timestamp có thẩm quyền;
+  chỉ fallback sang `int(int(frame_id) / fps * 1000)` khi metadata có FPS.
 - File transcript có một fragment trên mỗi dòng:
 
   ```text
@@ -85,7 +90,7 @@ Script đọc trực tiếp TXT; **không đọc và không ghi**
 | Đường dẫn | Vai trò |
 | --- | --- |
 | `transcripts/<video_id>_Transcript.txt` | Nguồn transcript. |
-| `metadata/<video_id>.json` | Lấy `fps`; thiếu thì fallback trong data parser là `25.0`. |
+| `metadata/<video_id>.json` | Lấy `fps` nếu có; thiếu vẫn hợp lệ khi rendered manifest có PTS. |
 | `PECore-features/<video_id>/*.npy` | Danh sách keyframe ưu tiên để chọn anchor. |
 | `keyframes/<video_id>/*.jpg` | Chỉ dùng làm fallback nếu không có `.npy` cho video đó. |
 
@@ -136,7 +141,8 @@ sentence, nên text không bị lặp lại cho mọi keyframe:
 ```json
 {
   "video_id": "L01_V001",
-  "fps": 25.0,
+  "fps": null,
+  "timing_source": "rendered_manifest_pts",
   "keyframe_count": 663,
   "sentence_count": 175,
   "anchored_sentence_count": 172,
@@ -169,10 +175,12 @@ keyframe_transcript_index/<video_id>.json
 → subtitled_keyframes/<video_id>/<frame_id>.jpg
 ```
 
-Với mỗi frame, `timestamp_ms = int(int(frame_id) / fps * 1000)`. Nếu timestamp
-nằm trong `[start_ms, end_ms)` của một sentence, panel chứa `sentence.text`;
-nếu không, script vẫn tạo ảnh với panel trống. `anchor_frame_id` không được
-dùng bởi renderer này. Với frame có transcript, panel thêm prefix
+Với mỗi frame, script đọc PTS `timestamp_ms` từ
+`keyframes/<video_id>/manifest.json`; nếu PTS không có thì dùng
+`int(int(frame_id) / fps * 1000)`. Nếu timestamp nằm trong
+`[start_ms, end_ms)` của một sentence, panel chứa `sentence.text`; nếu không,
+script vẫn tạo ảnh với panel trống. `anchor_frame_id` không được dùng bởi
+renderer này. Với frame có transcript, panel thêm prefix
 `Audio content (in Vietnamese): ` trước text sentence.
 
 ### Input bắt buộc
@@ -191,7 +199,8 @@ lệch ngay lập tức.
 | Argument | Bắt buộc | Mặc định | Hành vi |
 | --- | --- | --- | --- |
 | `--video-id <id>` | Có | — | Video cần render. |
-| `--sample-root <path>` | Không | `<repo>/AIC2026_sample` | Root dataset thay thế; phải chứa `keyframes/` và `keyframe_transcript_index/`. |
+| `--sample-root <path>` | Không | `<repo>/AIC2026_sample` | Root dataset thay thế. |
+| `--data-root <path>` | Không | — | Alias của `--sample-root`, tiện dùng với `data/`. |
 | `--output-dir <path>` | Không | `<sample-root>/subtitled_keyframes` | Root output. Script tạo thêm thư mục `<video_id>/`. |
 | `--image-extension <ext>` | Không | `.jpg` | Extension của ảnh anchor, ví dụ `.png`. |
 | `--font-path <path>` | Không | Tự tìm DejaVu/Noto/Liberation | Font Unicode `.ttf`/`.otf`. |
@@ -350,7 +359,7 @@ Tất cả command trong thư mục này dùng environment riêng của `preproc
 
 ```bash
 source preprocess/.venv/bin/activate
-python -m pip install -r preprocess/requirements.txt
+python -m pip install -r preprocess/requirements.lock.txt
 ```
 
 ## Hướng dẫn mở rộng code
@@ -523,10 +532,15 @@ embedding.dataloader.num_workers     = 0    # CPU image preprocessing workers
 embedding.dataloader.pin_memory      = false # host→CUDA transfer hint
 embedding.dataloader.persistent_workers = false
 embedding.dataloader.prefetch_factor = 2    # only when num_workers > 0
+embedding.model_revision              = null # pin HF commit in strict mode
 upload.mode                           = auto # create lần đầu, version khi dataset đã có
 upload.staging_scope                  = lot  # một staging độc lập cho mỗi lot
 upload.dataset_ref_template           = owner/aic2026-hcmc-{lot_slug}
 upload.metadata_template              = data/kaggle-dataset-metadata.json
+upload.require_remote_inventory       = true # status + datasets files + provenance
+upload.missing_artifact_policy        = error # error hoặc skip artifact tùy chọn
+reproducibility.mode                  = best_effort # strict để pin seed/CUBLAS
+reproducibility.seed                  = 2026
 progress.enabled                      = true # terminal/tmux progress bars
 progress.leave                        = false # clear completed bars; less terminal noise
 progress.bar_width                    = 24   # fixed width of each bar
@@ -548,9 +562,12 @@ Khi output đi qua `tee`, pipeline tự chuyển sang một dòng ASCII duy nh�
 không ghi cursor escape code vào log, nhưng vẫn giữ full-pipeline, operation
 hiện tại, CPU/GPU/disk metrics và ETA. Để xem layout năm dòng cố định, chạy
 trực tiếp trong terminal/tmux không pipe output qua `tee`. Warning CUDA không
-gây lỗi pipeline;
-TransNetV2 chỉ lọc warning lặp lại về `CUBLAS_WORKSPACE_CONFIG`. Nếu cần tái lập
-bit-level, export biến này trước khi khởi động Python theo hướng dẫn của PyTorch.
+gây lỗi pipeline. Với `reproducibility.mode=best_effort`, pipeline lọc warning
+CUDA lặp lại để terminal không bị rác; chế độ này không cam kết kết quả
+bit-level. Với `reproducibility.mode=strict`, pipeline đặt
+`CUBLAS_WORKSPACE_CONFIG`, seed và deterministic mode trước khi load model.
+Muốn pin model Hugging Face trong strict mode, phải đặt
+`embedding.model_revision` thành commit/revision cụ thể.
 
 Rule `linear-rulebase` dùng milliseconds và số frame:
 
@@ -574,7 +591,7 @@ sudo apt-get install -y aria2 ffmpeg tmux python3 python3-venv python3-pip ca-ce
 python3 -m venv preprocess/.venv
 source preprocess/.venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r preprocess/requirements.txt
+python -m pip install -r preprocess/requirements.lock.txt
 ```
 
 Kiểm tra các executable trước khi chạy pipeline:
@@ -592,7 +609,10 @@ kaggle --help
 ```
 
 Nếu đã có virtual environment riêng cho `preprocess`, chỉ cần activate nó rồi
-chạy lại `python -m pip install -r preprocess/requirements.txt`. `aria2c`
+chạy lại `python -m pip install -r preprocess/requirements.lock.txt`.
+`requirements.txt` là bản cài đặt tương thích tương ứng; dùng
+`requirements.lock.txt` khi muốn giữ đúng các phiên bản top-level đã kiểm thử.
+`aria2c`
 không nằm trong Python requirements vì được cài từ APT. Cách quản lý package
 bằng APT theo tài liệu Ubuntu và cách cài/auth Kaggle CLI xem
 [Ubuntu package management](https://documentation.ubuntu.com/server/how-to/software/package-management/)
@@ -639,10 +659,19 @@ theo lot: `L22_a` trở thành ví dụ `owner/aic2026-hcmc-l22-a`. `mode=auto` 
 `kaggle datasets status`; nếu dataset chưa tồn tại pipeline chạy `datasets
 create`, nếu đã tồn tại pipeline chạy `datasets version`.
 
-`owner` trong template là username Kaggle của bạn. File metadata template chỉ
+Chỉ cấu hình **một** trong `upload.dataset_ref` và
+`upload.dataset_ref_template`. `owner` trong template là username Kaggle của
+bạn. File metadata template chỉ
 là mẫu; trước khi upload pipeline tự ghi `id` của lot vào
 `kaggle-staging/dataset-metadata.json`. Nếu dùng `upload.dataset_ref` cố định
 thay cho template, mọi lot sẽ dùng chung một dataset remote.
+
+Staging được dựng trong thư mục tạm rồi đổi tên atomically. Mỗi staging có
+`provenance.json` chứa config, revision code, phiên bản package/tool, model
+cache fingerprint và SHA-256 inventory của payload. Khi
+`require_remote_inventory=true`, upload chỉ được coi là verify sau khi status
+là `ready`, `datasets files` trả file và remote inventory có
+`provenance.json`; local payload cũng được hash lại trước cleanup.
 
 Không bật upload khi chưa kiểm tra credentials bằng `kaggle datasets list`.
 
@@ -667,6 +696,19 @@ phải hợp lệ. Nếu
 `upload-state.json` đã ghi cả `stage_upload` và `cleanup` là `completed`, lệnh
 sẽ dùng receipt đã lưu, không đọc lại artifact local và không bị ảnh hưởng bởi
 việc đổi config sau đó.
+
+Nếu upload đã verify nhưng cleanup bị ngắt hoặc bị tắt lúc đầu, chạy cleanup
+riêng; lệnh sẽ re-verify dataset remote trước khi xóa:
+
+```bash
+python -m preprocess.batch \
+  --config preprocess/batch/config.json \
+  cleanup --lot-id L29_a
+```
+
+Cleanup không bao giờ xóa chỉ vì có file `upload.json`; receipt phải là upload
+đã verify và remote phải còn ở trạng thái `ready`. Các stage upload/cleanup và
+receipt của chúng nằm trong `upload-state.json`, tách khỏi checkpoint xử lý.
 
 Ở cấu hình mặc định, lệnh trên tạo hoặc cập nhật **dataset riêng của lot**.
 Sau khi Kaggle trả trạng thái verify thành công, `kaggle-staging/` của lot được
@@ -722,7 +764,7 @@ sudo apt-get install -y aria2 ffmpeg tmux python3 python3-venv python3-pip ca-ce
 
 python3 -m venv preprocess/.venv
 preprocess/.venv/bin/python -m pip install --upgrade pip
-preprocess/.venv/bin/python -m pip install -r preprocess/requirements.txt
+preprocess/.venv/bin/python -m pip install -r preprocess/requirements.lock.txt
 ```
 
 Kiểm tra:
@@ -789,7 +831,9 @@ Trong config, kiểm tra tối thiểu:
     "staging_scope": "lot",
     "dataset_ref_template": "owner/aic2026-hcmc-{lot_slug}",
     "metadata_template": "../../data/kaggle-dataset-metadata.json",
-    "include_scene_segments": true
+    "include_scene_segments": true,
+    "require_remote_inventory": true,
+    "missing_artifact_policy": "error"
   }
 }
 ```
@@ -851,6 +895,10 @@ python -m preprocess.batch \
   --config preprocess/batch/config.json \
   run 2>&1 | tee data/logs/batch-run.log
 ```
+
+Nếu muốn các lot sau vẫn chạy khi một lot lỗi, thêm
+`run --continue-on-error`. Lệnh sẽ trả exit code `1` nếu còn lot lỗi và in
+`failed_lots` ở JSON cuối; checkpoint của lot lỗi vẫn giữ nguyên để retry.
 
 Một lot sẽ đi theo thứ tự:
 
@@ -949,6 +997,12 @@ process đang hoạt động. Các thao tác upload có lock riêng theo lot t�
 chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Pipeline chính
 thực hiện upload tuần tự sau processing/embedding của từng lot.
 
+`run.lock` bảo vệ pipeline chính; upload/cleanup dùng thêm `upload.lock`. Với
+legacy cumulative staging, `kaggle-dataset-upload.lock` bảo vệ dataset chung và
+`kaggle-dataset-transaction.json` cho phép khôi phục directory swap nếu SSH bị
+ngắt giữa lúc merge. Không dùng mtime làm fingerprint chính khi artifact có
+SHA-256; mtime chỉ còn là fallback cho checkpoint legacy cũ.
+
 Trạng thái hai stage `stage_upload` và `cleanup` nằm trong
 `data/<lot_id>/upload-state.json`; `data/<lot_id>/state.json` giữ pipeline
 chính và được chuyển sang `completed` sau khi upload độc lập thành công.
@@ -1034,6 +1088,7 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
   "embedding": {
     "enabled": true,
     "model_id": "hf-hub:timm/PE-Core-bigG-14-448",
+    "model_revision": "<immutable-hugging-face-commit>",
     "device": "auto",
     "precision": "fp32",
     "expected_dim": 1280,
@@ -1049,6 +1104,13 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
   }
 }
 ```
+
+`model_revision` là tùy chọn ở `best_effort`; ở `strict` với model
+`hf-hub:` nó là bắt buộc. Mỗi vector có file `.npy.meta.json` chứa SHA-256 của
+ảnh nguồn và fingerprint encoder, vì vậy đổi model/precision hoặc sửa ảnh sẽ
+không bị nhầm là cache hợp lệ. Với `embedding.dataloader.num_workers > 0`,
+`pin_memory=true` chỉ là tối ưu truyền host → CUDA, không thay đổi số lượng
+vector hay thứ tự frame.
 
 Khi `embedding.enabled=true`, pipeline thực hiện:
 
@@ -1090,7 +1152,8 @@ Kaggle staging là allowlist explicit, thường gồm:
 ├── scene-segments/<video_id>.json   # nếu upload.include_scene_segments=true
 ├── PECore-features/                    # nếu bật và đã tồn tại
 ├── transcripts/                        # nếu bật và đã tồn tại
-└── keyframe_transcript_index/          # nếu bật và đã tồn tại
+├── keyframe_transcript_index/          # nếu bật và đã tồn tại
+└── provenance.json                      # payload/config/runtime inventory
 ```
 
 Scene segment nguồn được đọc từ `processing.scene_segments_dir` và copy theo
@@ -1098,6 +1161,11 @@ từng video vào `kaggle-staging/scene-segments/`. Khi bật
 `upload.include_scene_segments`, manifest của mọi video trong lot phải tồn tại;
 thiếu một file sẽ làm staging dừng để tránh upload dataset không đầy đủ. Các
 file local trong `data/scene-segments/` vẫn được giữ lại.
+
+`upload.missing_artifact_policy=error` áp dụng cùng nguyên tắc cho features,
+transcript và transcript index: thiếu artifact của một video thì staging dừng.
+Đặt `skip` nếu các artifact đó là tùy chọn; khi đó chỉ những file hiện có mới
+được đưa vào staging.
 
 Staging **không chứa archive, source hoặc video**. Chỉ khi Kaggle CLI upload
 thành công và status được verify thì `CleanupManager` mới xóa artifact được bật

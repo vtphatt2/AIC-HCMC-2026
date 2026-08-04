@@ -8,6 +8,8 @@ full image-capable OpenCLIP model on its first non-empty encode call.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -18,6 +20,7 @@ from typing import Any, Protocol, Sequence
 import numpy as np
 
 from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
+from preprocess.batch.provenance import atomic_json_write, sha256_file
 
 
 class PECoreEmbeddingUnavailable(RuntimeError):
@@ -67,6 +70,7 @@ class PECoreEmbeddingConfig:
 
     enabled: bool = False
     model_id: str = "hf-hub:timm/PE-Core-bigG-14-448"
+    model_revision: str | None = None
     device: str = "auto"
     precision: str = "fp32"
     expected_dim: int = 1_280
@@ -78,6 +82,7 @@ class PECoreEmbeddingConfig:
 
     def __post_init__(self) -> None:
         model_id = self.model_id.strip()
+        model_revision = self.model_revision.strip() if self.model_revision else None
         device = self.device.strip().lower()
         precision = self.precision.strip().lower()
         extensions = tuple(
@@ -85,6 +90,7 @@ class PECoreEmbeddingConfig:
             for extension in self.image_extensions
         )
         object.__setattr__(self, "model_id", model_id)
+        object.__setattr__(self, "model_revision", model_revision)
         object.__setattr__(self, "device", device)
         object.__setattr__(self, "precision", precision)
         object.__setattr__(self, "image_extensions", extensions)
@@ -181,6 +187,7 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
         self._model = None
         self._preprocess = None
         self._resolved_device: str | None = None
+        self._resolved_model_revision: str | None = None
 
     @property
     def dimension(self) -> int:
@@ -190,6 +197,31 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
     def resolved_device(self) -> str | None:
         """Return the resolved device after model initialization, if loaded."""
         return self._resolved_device
+
+    @property
+    def cache_fingerprint(self) -> str:
+        payload = {
+            "encoder": type(self).__name__,
+            "model_id": self.config.model_id,
+            "model_revision": self.config.model_revision,
+            "precision": self.config.precision,
+            "expected_dim": self.config.expected_dim,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        return {
+            "model_id": self.config.model_id,
+            "model_revision": self.config.model_revision,
+            "precision": self.config.precision,
+            "requested_device": self.config.device,
+            "resolved_device": self._resolved_device,
+            "resolved_model_revision": self._resolved_model_revision,
+            "cache_fingerprint": self.cache_fingerprint,
+        }
 
     def embed(self, image_paths: Sequence[Path]) -> np.ndarray:
         if not image_paths:
@@ -244,15 +276,22 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
                 "preprocess/requirements.txt, including open_clip_torch."
             ) from exc
 
+        if os.environ.get("PREPROCESS_DETERMINISTIC") == "1":
+            torch.use_deterministic_algorithms(True)
+            seed = os.environ.get("PREPROCESS_SEED")
+            if seed is not None:
+                torch.manual_seed(int(seed))
+
         resolved_device = self._resolve_device(torch)
         if resolved_device == "cpu" and self.config.precision == "fp16":
             raise PECoreEmbeddingUnavailable(
                 "PECore precision fp16 requires CUDA; use --precision fp32 on CPU."
             )
 
+        model_id = self._resolve_model_source()
         try:
             model, _, preprocess = open_clip.create_model_and_transforms(
-                self.config.model_id,
+                model_id,
                 precision=self.config.precision,
                 device=resolved_device,
             )
@@ -268,6 +307,32 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
         self._model = model
         self._preprocess = preprocess
         self._resolved_device = resolved_device
+
+    def _resolve_model_source(self) -> str:
+        """Resolve an optional immutable Hugging Face revision to a local snapshot."""
+        revision = self.config.model_revision
+        if not revision:
+            return self.config.model_id
+        if not self.config.model_id.startswith("hf-hub:"):
+            raise PECoreEmbeddingUnavailable(
+                "embedding.model_revision is supported only for hf-hub model IDs"
+            )
+        try:
+            from huggingface_hub import snapshot_download
+
+            snapshot = Path(
+                snapshot_download(
+                    repo_id=self.config.model_id.removeprefix("hf-hub:"),
+                    revision=revision,
+                )
+            )
+        except Exception as exc:
+            raise PECoreEmbeddingUnavailable(
+                f"Could not resolve PE-Core revision {revision!r} for "
+                f"{self.config.model_id}; check Hugging Face access/cache"
+            ) from exc
+        self._resolved_model_revision = snapshot.name
+        return f"local-dir:{snapshot}"
 
     def _resolve_device(self, torch) -> str:
         requested = self.config.device
@@ -326,12 +391,25 @@ class NpyFeatureWriter:
             raise ValueError(f"Unsafe frame_id: {frame_id!r}")
         return output_dir / f"{frame_id}.npy"
 
-    def can_skip(self, path: Path) -> bool:
+    @staticmethod
+    def metadata_path(feature_path: Path) -> Path:
+        return feature_path.with_suffix(".npy.meta.json")
+
+    def can_skip(self, path: Path, *, metadata: Mapping[str, Any] | None = None) -> bool:
         """Return true only for an existing, valid sample-compatible vector."""
         if not path.is_file():
             return False
         self.validate_file(path)
-        return True
+        if metadata is None:
+            return True
+        metadata_path = self.metadata_path(path)
+        if not metadata_path.is_file():
+            return False
+        try:
+            actual = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return False
+        return actual == dict(metadata)
 
     def write(self, output_dir: Path, frame_id: str, vector: np.ndarray, *, overwrite: bool) -> tuple[Path, bool]:
         target = self.target_for(output_dir, frame_id)
@@ -366,6 +444,9 @@ class NpyFeatureWriter:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
         return target, True
+
+    def write_metadata(self, path: Path, metadata: Mapping[str, Any]) -> None:
+        atomic_json_write(self.metadata_path(path), metadata)
 
     def validate_file(self, path: Path) -> np.ndarray:
         try:
@@ -402,6 +483,7 @@ class EmbeddingVideoResult:
     skipped_count: int
     dimension: int
     feature_files: tuple[Path, ...]
+    cache_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -415,6 +497,8 @@ class EmbeddingVideoResult:
 class EmbeddingBatchResult:
     videos: tuple[EmbeddingVideoResult, ...]
     dimension: int
+    cache_fingerprint: str | None = None
+    encoder_provenance: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def image_count(self) -> int:
@@ -435,6 +519,8 @@ class EmbeddingBatchResult:
             "embedded_count": self.embedded_count,
             "skipped_count": self.skipped_count,
             "videos": [result.to_dict() for result in self.videos],
+            "cache_fingerprint": self.cache_fingerprint,
+            "encoder_provenance": dict(self.encoder_provenance),
         }
 
 
@@ -473,6 +559,13 @@ class PECoreEmbeddingPipeline:
         self.image_extensions = frozenset(extensions)
         self.overwrite = overwrite
         self.writer = writer or NpyFeatureWriter(encoder.dimension)
+        self.cache_fingerprint = str(
+            getattr(
+                encoder,
+                "cache_fingerprint",
+                f"{type(encoder).__module__}.{type(encoder).__qualname__}:{encoder.dimension}",
+            )
+        )
         self.progress = progress or TqdmProgressReporter(ProgressConfig())
         if self.writer.expected_dim != encoder.dimension:
             raise ValueError("Feature writer dimension must match encoder dimension")
@@ -495,21 +588,36 @@ class PECoreEmbeddingPipeline:
         pending: list[tuple[Path, Path]] = []
         feature_files: list[Path] = []
         skipped_count = 0
+        expected_feature_names = {image_path.stem for image_path in image_paths}
+        for stale_path in output_dir.glob("*.npy"):
+            if stale_path.stem not in expected_feature_names:
+                stale_path.unlink(missing_ok=True)
+                self.writer.metadata_path(stale_path).unlink(missing_ok=True)
+        for stale_metadata in output_dir.glob("*.npy.meta.json"):
+            frame_name = stale_metadata.name.removesuffix(".npy.meta.json")
+            if frame_name not in expected_feature_names:
+                stale_metadata.unlink(missing_ok=True)
         for image_path in image_paths:
             target = self.writer.target_for(output_dir, image_path.stem)
+            expected_metadata = {
+                "schema_version": 1,
+                "image_sha256": sha256_file(image_path),
+                "cache_fingerprint": self.cache_fingerprint,
+            }
             if not self.overwrite and target.exists():
                 try:
-                    valid_existing = self.writer.can_skip(target)
+                    self.writer.validate_file(target)
                 except ValueError as exc:
                     raise FileExistsError(
                         f"Existing feature is invalid: {target}; use overwrite to replace it"
                     ) from exc
-                if not valid_existing:
-                    raise FileExistsError(
-                        f"Existing feature is invalid: {target}; use overwrite to replace it"
-                    )
-                skipped_count += 1
-                feature_files.append(target)
+                if self.writer.can_skip(target, metadata=expected_metadata):
+                    skipped_count += 1
+                    feature_files.append(target)
+                else:
+                    target.unlink()
+                    self.writer.metadata_path(target).unlink(missing_ok=True)
+                    pending.append((image_path, target))
             else:
                 pending.append((image_path, target))
 
@@ -530,6 +638,14 @@ class PECoreEmbeddingPipeline:
                         overwrite=self.overwrite,
                     )
                     feature_files.append(target)
+                    self.writer.write_metadata(
+                        target,
+                        {
+                            "schema_version": 1,
+                            "image_sha256": sha256_file(image_path),
+                            "cache_fingerprint": self.cache_fingerprint,
+                        },
+                    )
                     if written:
                         embedded_count += 1
 
@@ -542,6 +658,7 @@ class PECoreEmbeddingPipeline:
             skipped_count=skipped_count,
             dimension=self.encoder.dimension,
             feature_files=tuple(sorted(feature_files)),
+            cache_fingerprint=self.cache_fingerprint,
         )
 
     def _embed_pending(
@@ -636,7 +753,12 @@ class PECoreEmbeddingPipeline:
         ):
             results_list.append(self.embed_video(video_id, keyframes_root / video_id, output_root))
         results = tuple(results_list)
-        return EmbeddingBatchResult(videos=results, dimension=self.encoder.dimension)
+        return EmbeddingBatchResult(
+            videos=results,
+            dimension=self.encoder.dimension,
+            cache_fingerprint=self.cache_fingerprint,
+            encoder_provenance=dict(getattr(self.encoder, "provenance", {})),
+        )
 
     def _discover_images(self, keyframe_dir: Path) -> list[Path]:
         images = [

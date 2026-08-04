@@ -10,7 +10,50 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 
-from app.services.transcript_index import Transcript, TranscriptSegment
+
+@dataclass
+class TranscriptSegment:
+    """One timestamped source fragment parsed without the application backend."""
+
+    start_ms: int
+    end_ms: int
+    text: str
+    speaker: str | None = None
+
+
+@dataclass
+class Transcript:
+    """Minimal self-contained transcript contract used by preprocessing."""
+
+    video_id: str
+    segments: list[TranscriptSegment]
+
+    @classmethod
+    def from_txt(cls, path, video_id: str | None = None) -> "Transcript":
+        line_re = re.compile(r"\[(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?\]\s*(.*)")
+        parsed: list[tuple[int, str, str | None]] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = line_re.match(line.strip())
+            if match is None:
+                continue
+            hours, minutes, seconds, milliseconds, text = match.groups()
+            fraction = (milliseconds or "0").ljust(3, "0")
+            start_ms = ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(fraction)
+            speaker = "speaker" if text.startswith(">>") else None
+            text = text[2:].strip() if speaker else text.strip()
+            if text:
+                parsed.append((start_ms, text, speaker))
+        segments = [
+            TranscriptSegment(
+                start_ms=start,
+                end_ms=max(next_start, start + 1) if next_start is not None else start + 5000,
+                text=text,
+                speaker=speaker,
+            )
+            for index, (start, text, speaker) in enumerate(parsed)
+            for next_start in [parsed[index + 1][0] if index + 1 < len(parsed) else None]
+        ]
+        return cls(video_id or path.stem.removesuffix("_Transcript"), segments)
 
 
 _SENTENCE_END_RE = re.compile(r"[.!?…]+[\"'”’»]*(?=\s|$)")

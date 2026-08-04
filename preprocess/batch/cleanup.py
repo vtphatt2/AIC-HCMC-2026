@@ -1,7 +1,6 @@
 """Manifest-driven cleanup that can only run after verified upload."""
 from __future__ import annotations
 
-import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,12 +9,26 @@ from typing import Any
 from preprocess.batch.config import CleanupConfig
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.models import UploadResult, utc_now
+from preprocess.batch.provenance import atomic_json_write
 
 
 @dataclass(frozen=True)
 class CleanupResult:
     deleted: tuple[str, ...]
     skipped: tuple[str, ...]
+
+    @classmethod
+    def from_mapping(cls, payload: Any) -> "CleanupResult":
+        if not isinstance(payload, dict):
+            raise ValueError("Cleanup receipt must be a JSON object")
+        deleted = payload.get("deleted", [])
+        skipped = payload.get("skipped", [])
+        if not isinstance(deleted, list) or not isinstance(skipped, list):
+            raise ValueError("Cleanup receipt has invalid deleted/skipped lists")
+        return cls(
+            deleted=tuple(str(item) for item in deleted),
+            skipped=tuple(str(item) for item in skipped),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {"deleted": list(self.deleted), "skipped": list(self.skipped)}
@@ -113,6 +126,5 @@ class CleanupManager:
     @staticmethod
     def _write_receipt(layout: LotLayout, result: CleanupResult) -> None:
         path = layout.receipts_dir / "cleanup.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"finished_at": utc_now(), **result.to_dict()}
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        atomic_json_write(path, payload)

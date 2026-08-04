@@ -34,7 +34,14 @@ TRANSCRIPT_PREFIX = "Audio content (in Vietnamese): "
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Render banners from keyframe transcript indexes.")
     parser.add_argument("--video-id", required=True, help="Dataset video ID, for example L03_V002.")
-    parser.add_argument("--sample-root", type=Path, default=DEFAULT_SAMPLE_ROOT)
+    parser.add_argument("--sample-root", type=Path)
+    parser.add_argument(
+        "--data-root",
+        dest="sample_root",
+        type=Path,
+        help="Alias for --sample-root, useful for the SSH batch data layout.",
+    )
+    parser.set_defaults(sample_root=DEFAULT_SAMPLE_ROOT)
     parser.add_argument("--output-dir", type=Path, help="Default: <sample-root>/subtitled_keyframes.")
     parser.add_argument("--image-extension", default=".jpg", help="Keyframe file extension.")
     parser.add_argument("--font-path", type=Path, help="Unicode TTF/OTF font path.")
@@ -50,7 +57,7 @@ def load_index(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(f"Keyframe transcript index not found: {path}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload.get("sentences"), list) or float(payload.get("fps") or 0) <= 0:
+    if not isinstance(payload, dict) or not isinstance(payload.get("sentences"), list):
         raise ValueError(f"Invalid sentence index: {path}")
     return payload
 
@@ -173,6 +180,40 @@ def sentence_for_timestamp(sentences: list[dict], timestamp_ms: int) -> dict | N
     return None
 
 
+def load_frame_timestamps(sample_root: Path, video_id: str) -> dict[str, int]:
+    for root_name in ("keyframes", "keyframes_org"):
+        manifest = sample_root / root_name / video_id / "manifest.json"
+        if not manifest.is_file():
+            continue
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            continue
+        timestamps: dict[str, int] = {}
+        for frame in payload.get("frames", []):
+            if not isinstance(frame, dict):
+                continue
+            raw = frame.get("frame", {})
+            frame_number = str(raw.get("frame_id") or raw.get("source_frame_number", ""))
+            if frame_number.isdigit() and raw.get("timestamp_ms") is not None:
+                timestamps[frame_number] = int(raw["timestamp_ms"])
+        return timestamps
+    return {}
+
+
+def optional_fps(payload: object) -> float | None:
+    """Return a usable positive FPS value, treating missing/invalid values as unavailable."""
+    if not isinstance(payload, dict):
+        return None
+    raw_fps = payload.get("fps")
+    if raw_fps in (None, ""):
+        return None
+    try:
+        fps = float(raw_fps)
+    except (TypeError, ValueError):
+        return None
+    return fps if fps > 0 else None
+
+
 def main() -> int:
     args = parse_args()
     sample_root = args.sample_root.resolve()
@@ -183,11 +224,14 @@ def main() -> int:
     extension = args.image_extension if args.image_extension.startswith(".") else f".{args.image_extension}"
     keyframe_dir = resolve_keyframe_dir(sample_root, args.video_id)
     output_dir = (args.output_dir or sample_root / "subtitled_keyframes") / args.video_id
-    fps = float(payload["fps"])
+    fps = optional_fps(payload)
+    frame_timestamps = load_frame_timestamps(sample_root, args.video_id)
+    if fps is None and not frame_timestamps:
+        raise ValueError("Index has no FPS and rendered keyframe PTS are unavailable")
     keyframes = collect_keyframes(keyframe_dir, extension)
     font = load_font(args.font_path, args.font_size)
 
-    print(f"video={args.video_id} fps={fps} keyframes={len(keyframes)} sentences={len(payload['sentences'])}")
+    print(f"video={args.video_id} fps={fps} timing_source={payload.get('timing_source')} keyframes={len(keyframes)} sentences={len(payload['sentences'])}")
     if args.dry_run:
         return 0
 
@@ -196,7 +240,10 @@ def main() -> int:
     with_transcript = 0
     for index, image_path in enumerate(keyframes, start=1):
         current_frame_id = frame_id(image_path)
-        timestamp_ms = int(int(current_frame_id) / fps * 1000)
+        timestamp_ms = frame_timestamps.get(
+            current_frame_id,
+            int(int(current_frame_id) / fps * 1000) if fps is not None else -1,
+        )
         sentence = sentence_for_timestamp(payload["sentences"], timestamp_ms)
         text = f"{TRANSCRIPT_PREFIX}{sentence['text']}" if sentence is not None else ""
         destination = output_path(output_dir, image_path, args.existing)

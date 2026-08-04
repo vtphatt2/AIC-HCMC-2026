@@ -62,6 +62,10 @@ class LotLayout:
     def upload_lock_path(self) -> Path:
         return self.root / "upload.lock"
 
+    @property
+    def run_lock_path(self) -> Path:
+        return self.root / "run.lock"
+
     def create_runtime_dirs(self) -> None:
         """Create only the directories owned by this lot."""
         for directory in (

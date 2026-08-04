@@ -77,6 +77,7 @@ class ArchiveInspection:
     members: tuple[str, ...]
     video_members: tuple[str, ...]
     uncompressed_size_bytes: int
+    archive_sha256: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
@@ -141,12 +142,16 @@ class StagingResult:
     staging_dir: Path
     files: tuple[Path, ...]
     target: DatasetTarget | None = None
+    payload_digest: str | None = None
+    provenance_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "staging_dir": str(self.staging_dir),
             "files": [str(path) for path in self.files],
             "target": self.target.to_dict() if self.target is not None else None,
+            "payload_digest": self.payload_digest,
+            "provenance_path": str(self.provenance_path) if self.provenance_path else None,
         }
 
 
@@ -160,10 +165,15 @@ class UploadResult:
     command: tuple[str, ...]
     output_tail: str
     verified_output_tail: str = ""
+    payload_digest: str | None = None
+    remote_status: str | None = None
+    remote_files: tuple[str, ...] = ()
+    verified_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["command"] = list(self.command)
+        value["remote_files"] = list(self.remote_files)
         return value
 
 

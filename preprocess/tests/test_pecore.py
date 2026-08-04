@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,39 @@ class PreparedFakeVisualEncoder(VisualEmbeddingEncoder):
 
 
 class PECoreEmbeddingTests(unittest.TestCase):
+    def test_feature_provenance_is_recorded_per_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            keyframes = root / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000001.jpg").write_bytes(b"first-image")
+            (keyframes / "000002.jpg").write_bytes(b"second-image")
+
+            PECoreEmbeddingPipeline(FakeVisualEncoder(), batch_size=2).embed_all(
+                root / "keyframes",
+                root / "PECore-features",
+            )
+            metadata = {
+                frame_id: json.loads(
+                    (
+                        root
+                        / "PECore-features"
+                        / "L21_V030"
+                        / f"{frame_id}.npy.meta.json"
+                    ).read_text(encoding="utf-8")
+                )
+                for frame_id in ("000001", "000002")
+            }
+
+        self.assertNotEqual(
+            metadata["000001"]["image_sha256"],
+            metadata["000002"]["image_sha256"],
+        )
+        self.assertEqual(
+            metadata["000001"]["cache_fingerprint"],
+            metadata["000002"]["cache_fingerprint"],
+        )
+
     def test_configurable_encoder_writes_sample_compatible_npy_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -19,6 +19,8 @@ def anchor_frame_id(
     frame_ids: list[str],
     fps: float,
     sentence: TranscriptSentence,
+    *,
+    frame_timestamps: dict[str, int] | None = None,
 ) -> str | None:
     """Return the keyframe nearest a sentence midpoint, without leaving it.
 
@@ -27,7 +29,10 @@ def anchor_frame_id(
     """
     candidates: list[tuple[str, int]] = []
     for frame_id in frame_ids:
-        _, timestamp_ms = frame_timestamp_ms(frame_id, fps)
+        if frame_timestamps and frame_id in frame_timestamps:
+            timestamp_ms = frame_timestamps[frame_id]
+        else:
+            _, timestamp_ms = frame_timestamp_ms(frame_id, fps)
         if sentence.start_ms <= timestamp_ms < sentence.end_ms:
             candidates.append((frame_id, timestamp_ms))
     if not candidates:

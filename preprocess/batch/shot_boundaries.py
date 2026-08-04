@@ -7,8 +7,6 @@ without changing orchestration or keyframe selection.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import warnings
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -17,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from preprocess.batch.config import ShotBoundaryConfig
 from preprocess.batch.models import VideoAsset
+from preprocess.batch.provenance import atomic_json_write, sha256_file
 from preprocess.keyframes.contracts import SceneSegment
 from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
 
@@ -263,23 +262,14 @@ def write_scene_boundary_manifest(
     if source is not None:
         stat = source.path.stat()
         payload["source"] = {
-            "path": str(source.path),
-            "fingerprint": {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns},
+            "path": source.path.name,
+            "fingerprint": {
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "sha256": sha256_file(source.path),
+            },
         }
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, default=str)
-        handle.write("\n")
-        temporary_path = Path(handle.name)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary_path, path)
+    atomic_json_write(path, payload)
 
 
 class ShotBoundaryPipeline:
@@ -369,9 +359,11 @@ class ShotBoundaryPipeline:
             return False
         try:
             stat = asset.path.stat()
-            return (
-                int(fingerprint.get("size_bytes")) == stat.st_size
-                and int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
-            )
+            if int(fingerprint.get("size_bytes")) != stat.st_size:
+                return False
+            expected_hash = fingerprint.get("sha256")
+            if expected_hash is not None:
+                return str(expected_hash) == sha256_file(asset.path)
+            return int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
         except (OSError, TypeError, ValueError):
             return False

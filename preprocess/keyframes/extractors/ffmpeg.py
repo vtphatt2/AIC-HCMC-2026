@@ -24,8 +24,9 @@ from preprocess.keyframes.contracts import (
     VideoInfo,
     VideoSource,
 )
-from preprocess.keyframes.manifest import write_rendered_manifest
+from preprocess.keyframes.manifest import source_fingerprint, write_rendered_manifest
 from preprocess.keyframes.rendering import render_image
+from preprocess.batch.provenance import sha256_file
 from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
 
 
@@ -198,6 +199,7 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             )
 
         timestamp_index: dict[float, list[tuple[int, float]]] = {}
+        frame_index = {frame_number: (frame_number, timestamp) for frame_number, timestamp in timeline}
         for frame_number, timestamp_seconds in timeline:
             timestamp_index.setdefault(round(timestamp_seconds, 6), []).append(
                 (frame_number, timestamp_seconds)
@@ -212,11 +214,21 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
 
         for selection in selected:
             target = selection.ref.pts_time_seconds
-            candidates = [
-                candidate
-                for candidate in timestamp_index.get(round(target, 6), [])
-                if candidate[0] not in used
-            ]
+            # The frame ordinal is the identity emitted by the same decoder
+            # used during scan. Prefer it when the second decode exposes it;
+            # PTS can differ by a few time-base ticks between two FFmpeg
+            # passes even though it is the same source frame.
+            ordinal_candidate = frame_index.get(selection.ref.source_frame_number)
+            if ordinal_candidate is not None and ordinal_candidate[0] not in used:
+                candidates = [ordinal_candidate]
+                matched_by_ordinal = True
+            else:
+                candidates = [
+                    candidate
+                    for candidate in timestamp_index.get(round(target, 6), [])
+                    if candidate[0] not in used
+                ]
+                matched_by_ordinal = False
             if not candidates:
                 insertion = bisect.bisect_left(ordered_timestamps, target)
                 nearby_indexes = range(
@@ -238,7 +250,10 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                 ),
                 default=None,
             )
-            if best is None or abs(best[1] - target) > self._TIMESTAMP_MATCH_TOLERANCE_SECONDS:
+            if best is None or (
+                not matched_by_ordinal
+                and abs(best[1] - target) > self._TIMESTAMP_MATCH_TOLERANCE_SECONDS
+            ):
                 raise RuntimeError(
                     f"FFmpeg timeline cannot map selected frame "
                     f"{selection.ref.source_frame_number} at {target:.6f}s "
@@ -269,12 +284,50 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
         rendered_manifest_path = destination_dir / "manifest.json"
         existing = [destination_dir / f"{item.ref.frame_id}{output.profile.file_extension}" for item in selected]
         if not output.overwrite and all(path.is_file() for path in existing) and rendered_manifest_path.is_file():
-            return ExtractionResult(
-                video_id=source.video_id,
-                written=[],
-                skipped=[item.ref for item in selected],
-                rendered_manifest_path=rendered_manifest_path,
-            )
+            try:
+                cached_manifest = json.loads(rendered_manifest_path.read_text(encoding="utf-8"))
+                cached_frames = cached_manifest.get("frames", [])
+                cached_names = {
+                    Path(str(frame.get("path", ""))).name
+                    for frame in cached_frames
+                    if isinstance(frame, dict)
+                }
+                cached_source = cached_manifest.get("source", {})
+                expected_names = {path.name for path in existing}
+                current_source_fingerprint = source_fingerprint(source)
+                cached_fingerprint = (
+                    cached_source.get("fingerprint")
+                    if isinstance(cached_source, dict)
+                    else None
+                )
+                cached_hashes_match = all(
+                    isinstance(frame, dict)
+                    and frame.get("sha256")
+                    and (destination_dir / Path(str(frame.get("path"))).name).is_file()
+                    and str(frame["sha256"])
+                    == sha256_file(destination_dir / Path(str(frame.get("path"))).name)
+                    for frame in cached_frames
+                )
+                cache_valid = (
+                    cached_manifest.get("profile") == asdict(output.profile)
+                    and isinstance(cached_source, dict)
+                    and self._source_fingerprints_match(
+                        cached_fingerprint,
+                        current_source_fingerprint,
+                    )
+                    and cached_names == expected_names
+                    and len(cached_frames) == len(existing)
+                    and cached_hashes_match
+                )
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                cache_valid = False
+            if cache_valid:
+                return ExtractionResult(
+                    video_id=source.video_id,
+                    written=[],
+                    skipped=[item.ref for item in selected],
+                    rendered_manifest_path=rendered_manifest_path,
+                )
         if destination_dir.is_dir() and any(destination_dir.iterdir()):
             # A killed FFmpeg/Pillow step can leave a partial profile.  The
             # directory is an output owned by this video/profile, so remove
@@ -339,9 +392,10 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                 written.append(extracted)
                 manifest_frames.append({
                     "frame": asdict(selection.ref),
-                    "path": str(destination),
+                    "path": destination.name,
                     "width": width,
                     "height": height,
+                    "sha256": sha256_file(destination),
                     "selection": {
                         "score": selection.score,
                         "reasons": list(selection.reasons),
@@ -363,3 +417,16 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             skipped=[],
             rendered_manifest_path=rendered_manifest_path,
         )
+
+    @staticmethod
+    def _source_fingerprints_match(
+        cached: object,
+        current: dict[str, int | str],
+    ) -> bool:
+        if not isinstance(cached, dict):
+            return False
+        if cached.get("size_bytes") != current.get("size_bytes"):
+            return False
+        if cached.get("sha256") is not None and current.get("sha256") is not None:
+            return str(cached["sha256"]) == str(current["sha256"])
+        return cached.get("mtime_ns") == current.get("mtime_ns")

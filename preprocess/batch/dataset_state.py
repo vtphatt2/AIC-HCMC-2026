@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from preprocess.batch.models import UploadResult, utc_now
+from preprocess.batch.provenance import PROVENANCE_FILE_NAME, atomic_json_write, digest_directory
 
 
 class DatasetUploadStateStore:
@@ -76,6 +75,28 @@ class DatasetUploadStateStore:
                 "Cumulative staging is missing while dataset state contains uploaded lots: "
                 f"{staging_dir}. Restore it or start a new dataset state before uploading."
             )
+        if not lots:
+            return
+        provenance_path = staging_dir / PROVENANCE_FILE_NAME
+        if not provenance_path.is_file():
+            raise RuntimeError(
+                "Cumulative staging has no provenance.json while dataset state contains lots: "
+                f"{staging_dir}"
+            )
+        try:
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            expected_digest = str(provenance["payload_digest"])
+            actual_digest, _ = digest_directory(
+                staging_dir,
+                exclude_names={PROVENANCE_FILE_NAME},
+            )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Cumulative staging provenance is invalid: {provenance_path}") from exc
+        if expected_digest != actual_digest:
+            raise RuntimeError(
+                "Cumulative staging payload digest does not match provenance; "
+                "refusing to merge into a corrupted snapshot"
+            )
 
     def record_staged(
         self,
@@ -83,6 +104,7 @@ class DatasetUploadStateStore:
         *,
         video_ids: Sequence[str],
         files: Sequence[str],
+        payload_digest: str | None = None,
     ) -> dict[str, Any]:
         state = self.load()
         lots = state.setdefault("lots", {})
@@ -94,6 +116,7 @@ class DatasetUploadStateStore:
             "status": "staged",
             "video_ids": sorted({str(video_id) for video_id in video_ids}),
             "files": sorted({str(file) for file in files}),
+            "payload_digest": payload_digest,
             "staged_at": utc_now(),
         }
         state["updated_at"] = utc_now()
@@ -122,21 +145,7 @@ class DatasetUploadStateStore:
         return state
 
     def write(self, payload: Mapping[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=self.path.parent,
-            prefix=f".{self.path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            json.dump(dict(payload), handle, ensure_ascii=False, indent=2, default=str)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary_path = Path(handle.name)
-        os.replace(temporary_path, self.path)
+        atomic_json_write(self.path, payload)
 
 
 def dataset_state_path(staging_dir: Path) -> Path:
