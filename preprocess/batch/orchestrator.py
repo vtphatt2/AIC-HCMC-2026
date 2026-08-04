@@ -4,16 +4,22 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from preprocess.batch.archive_extractor import ArchiveExtractor, ZipArchiveExtractor
 from preprocess.batch.archive_validator import ZipArchiveValidator
 from preprocess.batch.checkpoints import CheckpointStore
 from preprocess.batch.config import BatchConfig, selector_requires_scene_boundaries
 from preprocess.batch.cleanup import CleanupManager
+from preprocess.batch.dataset_state import (
+    DatasetUploadStateStore,
+    dataset_state_path,
+    dataset_upload_lock_path,
+)
 from preprocess.batch.downloader import Aria2ArchiveDownloader, ArchiveDownloader
 from preprocess.batch.embedding import (
     BatchEmbeddingStrategy,
@@ -35,6 +41,7 @@ from preprocess.batch.models import (
 from preprocess.batch.kaggle_uploader import (
     DatasetUploader,
     KaggleCliUploader,
+    CumulativeKaggleStagingStrategy,
     KaggleStagingStrategy,
     StagingStrategy,
 )
@@ -92,6 +99,8 @@ class BatchOrchestrator:
         shot_boundary_detector: ShotBoundaryDetector | None = None,
         embedding: BatchEmbeddingStrategy | None = None,
         progress: ProgressReporter | None = None,
+        dataset_upload_state: DatasetUploadStateStore | None = None,
+        dataset_upload_lock_path: Path | None = None,
     ) -> None:
         self.config = config
         self.downloader = downloader
@@ -106,6 +115,8 @@ class BatchOrchestrator:
         self.shot_boundary_detector = shot_boundary_detector
         self.embedding = embedding
         self.progress = progress or TqdmProgressReporter(config.progress)
+        self.dataset_upload_state = dataset_upload_state
+        self.dataset_upload_lock_path = dataset_upload_lock_path
 
     def run_all(self, requests: Sequence[ArchiveInput]) -> list[LotRunResult]:
         stage_names = self._pipeline_stage_names()
@@ -227,7 +238,7 @@ class BatchOrchestrator:
                 embedding = None
 
             if self.config.upload.enabled:
-                with ExclusiveFileLock(layout.upload_lock_path, purpose=f"upload for {request.lot_id}"):
+                with self._upload_locks(layout, request.lot_id):
                     upload_checkpoints = self._initialize_upload_state(
                         CheckpointStore(layout.upload_state_path),
                         request,
@@ -274,7 +285,7 @@ class BatchOrchestrator:
         self.progress.set_lot_context(lot_index=1, total_lots=1, lot_id=lot_id)
         upload_checkpoints: CheckpointStore | None = None
         try:
-            with ExclusiveFileLock(layout.upload_lock_path, purpose=f"upload for {lot_id}"):
+            with self._upload_locks(layout, lot_id):
                 upload_checkpoints = self._initialize_upload_state(
                     CheckpointStore(layout.upload_state_path),
                     request,
@@ -318,6 +329,26 @@ class BatchOrchestrator:
             raise
         finally:
             self.progress.finish_pipeline()
+
+    @contextmanager
+    def _upload_locks(self, layout: LotLayout, lot_id: str) -> Iterator[None]:
+        from contextlib import ExitStack
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                ExclusiveFileLock(layout.upload_lock_path, purpose=f"upload for {lot_id}")
+            )
+            if self.config.upload.staging_scope == "dataset":
+                dataset_lock_path = getattr(self, "dataset_upload_lock_path", None)
+                if dataset_lock_path is None:
+                    dataset_lock_path = self.config.data_root / "kaggle-dataset-upload.lock"
+                stack.enter_context(
+                    ExclusiveFileLock(
+                        dataset_lock_path,
+                        purpose="cumulative dataset upload",
+                    )
+                )
+            yield
 
     @staticmethod
     def _upload_state_is_complete(checkpoints: CheckpointStore) -> bool:
@@ -1025,6 +1056,9 @@ class BatchOrchestrator:
         checkpoints.transition(BatchState.UPLOADING)
         upload = self.uploader.upload_and_verify(staging)
         self._write_json(layout.receipts_dir / "upload.json", upload.to_dict())
+        dataset_upload_state = getattr(self, "dataset_upload_state", None)
+        if dataset_upload_state is not None:
+            dataset_upload_state.record_uploaded(layout.lot_id, upload)
         checkpoints.transition(BatchState.UPLOADED_VERIFIED, payload={"upload": upload.to_dict()})
         return upload
 
@@ -1077,15 +1111,30 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
         else None
     )
     metadata_provider = JsonMetadataProvider(config.metadata_root)
-    stager = (
-        KaggleStagingStrategy(
-            metadata_provider,
-            config.upload,
-            scene_segments_dir=config.processing.scene_segments_dir,
-        )
-        if config.upload.enabled
-        else None
-    )
+    dataset_upload_state = None
+    dataset_upload_lock = None
+    stager = None
+    if config.upload.enabled:
+        if config.upload.staging_scope == "dataset":
+            dataset_staging_dir = (
+                config.upload.dataset_staging_dir
+                or config.data_root / "kaggle-dataset-staging"
+            )
+            dataset_upload_state = DatasetUploadStateStore(dataset_state_path(dataset_staging_dir))
+            dataset_upload_lock = dataset_upload_lock_path(dataset_staging_dir)
+            stager = CumulativeKaggleStagingStrategy(
+                metadata_provider,
+                config.upload,
+                staging_dir=dataset_staging_dir,
+                state_store=dataset_upload_state,
+                scene_segments_dir=config.processing.scene_segments_dir,
+            )
+        else:
+            stager = KaggleStagingStrategy(
+                metadata_provider,
+                config.upload,
+                scene_segments_dir=config.processing.scene_segments_dir,
+            )
     uploader = KaggleCliUploader(config.tools.kaggle, config.upload) if config.upload.enabled else None
     return BatchOrchestrator(
         config,
@@ -1107,8 +1156,11 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
         cleanup=CleanupManager(
             config.cleanup,
             rendered_profile_id=config.processing.profile_id,
+            preserve_staging=config.upload.staging_scope == "dataset",
         ),
         shot_boundary_detector=shot_boundary_detector,
         embedding=embedding_strategy,
         progress=progress,
+        dataset_upload_state=dataset_upload_state,
+        dataset_upload_lock_path=dataset_upload_lock,
     )

@@ -19,8 +19,13 @@ from preprocess.batch.config import (
     LinearSelectionConfig,
     UploadConfig,
 )
+from preprocess.batch.dataset_state import DatasetUploadStateStore
 from preprocess.batch.downloader import Aria2ArchiveDownloader
-from preprocess.batch.kaggle_uploader import KaggleCliUploader, KaggleStagingStrategy
+from preprocess.batch.kaggle_uploader import (
+    CumulativeKaggleStagingStrategy,
+    KaggleCliUploader,
+    KaggleStagingStrategy,
+)
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.links import LinkListParser
 from preprocess.batch.locks import ExclusiveFileLock
@@ -59,6 +64,23 @@ class BatchModuleTests(unittest.TestCase):
         self.assertTrue(config.shot_boundary.enabled)
         self.assertEqual(config.processing.scene_segments_dir, root / "data" / "scene-segments")
         self.assertEqual(config.shot_boundary.output_dir, root / "data" / "scene-segments")
+
+    def test_upload_defaults_to_dataset_scoped_cumulative_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "upload": {"enabled": True, "dataset_ref": "owner/test"},
+                },
+                base_dir=root,
+            )
+
+        self.assertEqual(config.upload.staging_scope, "dataset")
+        self.assertEqual(
+            config.upload.dataset_staging_dir,
+            root / "data" / "kaggle-dataset-staging",
+        )
 
     def test_shot_boundary_pipeline_writes_and_reuses_manifest(self) -> None:
         class FakeDetector(ShotBoundaryDetector):
@@ -806,6 +828,98 @@ class BatchModuleTests(unittest.TestCase):
             }
 
         self.assertIn("scene-segments/L21_V030.json", staged_paths)
+
+    def test_cumulative_staging_keeps_previous_lot_and_replaces_only_same_video(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            metadata_root = root / "metadata"
+            metadata_root.mkdir()
+            template = root / "dataset-metadata.json"
+            template.write_text('{"id":"owner/test","title":"test"}\n', encoding="utf-8")
+
+            assets: list[VideoAsset] = []
+            results: list[ProcessingResult] = []
+            for lot_id, video_id in (("L21_a", "L21_V001"), ("L22_a", "L22_V001")):
+                (metadata_root / f"{video_id}.json").write_text(
+                    json.dumps({"video_id": video_id}) + "\n",
+                    encoding="utf-8",
+                )
+                layout = LotLayout(data_root, lot_id)
+                layout.create_runtime_dirs()
+                keyframes = layout.dataset_dir / "keyframes" / video_id
+                keyframes.mkdir(parents=True)
+                (keyframes / "000000.jpg").write_bytes(video_id.encode("utf-8"))
+                rendered = keyframes / "manifest.json"
+                rendered.write_text("{}\n", encoding="utf-8")
+                selection = layout.dataset_dir / "selection-manifests" / f"{video_id}.json"
+                selection.parent.mkdir(parents=True)
+                selection.write_text("{}\n", encoding="utf-8")
+                validation = layout.reports_dir / "validation" / f"{video_id}.json"
+                validation.parent.mkdir(parents=True)
+                validation.write_text("{}\n", encoding="utf-8")
+                source_video = layout.source_root / f"{video_id}.mp4"
+                source_video.parent.mkdir(parents=True)
+                source_video.write_bytes(b"placeholder-video")
+                asset = VideoAsset(video_id, source_video, lot_id, source_video.name)
+                assets.append(asset)
+                results.append(
+                    ProcessingResult(asset, {"fps": None}, 1, selection, rendered)
+                )
+
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                staging_scope="dataset",
+                metadata_template=template,
+            )
+            staging_dir = data_root / "kaggle-dataset-staging"
+            state_store = DatasetUploadStateStore(data_root / "kaggle-dataset-state.json")
+            strategy = CumulativeKaggleStagingStrategy(
+                JsonMetadataProvider(metadata_root),
+                config,
+                staging_dir=staging_dir,
+                state_store=state_store,
+            )
+            first_layout = LotLayout(data_root, "L21_a")
+            second_layout = LotLayout(data_root, "L22_a")
+            strategy.stage(first_layout, assets[:1], results[:1])
+            strategy.stage(second_layout, assets[1:], results[1:])
+            staged_paths = {
+                path.relative_to(staging_dir).as_posix()
+                for path in staging_dir.rglob("*")
+                if path.is_file()
+            }
+            state = state_store.load()
+
+        self.assertIn("keyframes/L21_V001/000000.jpg", staged_paths)
+        self.assertIn("keyframes/L22_V001/000000.jpg", staged_paths)
+        self.assertIn("metadata/L21_V001.json", staged_paths)
+        self.assertIn("metadata/L22_V001.json", staged_paths)
+        self.assertNotIn("source/L21_a/L21_V001.mp4", staged_paths)
+        self.assertEqual(set(state["lots"]), {"L21_a", "L22_a"})
+        self.assertEqual(state["lots"]["L22_a"]["status"], "staged")
+
+    def test_cumulative_cleanup_preserves_dataset_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            layout = LotLayout(root / "data", "L21_a")
+            layout.create_runtime_dirs()
+            cumulative_staging = root / "data" / "kaggle-dataset-staging"
+            cumulative_staging.mkdir(parents=True)
+            (cumulative_staging / "keyframes.zip").write_bytes(b"placeholder")
+            upload = UploadResult("owner/test", "version", True, ("kaggle",), "ok")
+            result = CleanupManager(
+                CleanupConfig(enabled=True, delete_staging=True),
+                preserve_staging=True,
+            ).cleanup(layout, upload)
+            staging_exists = cumulative_staging.is_dir()
+
+        self.assertTrue(staging_exists)
+        self.assertIn(
+            "kaggle-staging: preserved for cumulative dataset",
+            result.skipped,
+        )
 
     def test_staging_requires_scene_segment_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

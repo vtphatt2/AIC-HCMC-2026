@@ -79,6 +79,8 @@
     "enabled": false,
     "mode": "version",
     "dir_mode": "zip",
+    "staging_scope": "dataset",
+    "dataset_staging_dir": "../../data/kaggle-dataset-staging",
     "dataset_ref": "owner/dataset-slug",
     "metadata_template": "../../data/kaggle-dataset-metadata.json",
     "include_scene_segments": false,

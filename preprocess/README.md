@@ -394,11 +394,14 @@ repository-root/
     ├── input/links.txt
     ├── metadata/<video_id>.json
     ├── scene-segments/<video_id>.json
+    ├── kaggle-dataset-staging/       # khi upload.staging_scope=dataset
+    ├── kaggle-dataset-state.json
+    ├── kaggle-dataset-upload.lock
     └── <lot_id>/
         ├── archive/
         ├── source/<lot_id>/
         ├── dataset/
-        ├── kaggle-staging/
+        ├── kaggle-staging/            # chỉ khi staging_scope=lot
         ├── reports/
         ├── receipts/
         ├── upload-state.json
@@ -493,6 +496,7 @@ cleanup artifact tạm
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
 | `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
 | `KaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments | `kaggle-staging/` | Chỉ là file allowlist; không chứa archive, source hoặc video. Scene segment được thêm khi `upload.include_scene_segments=true`. |
+| `CumulativeKaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments của lot mới | `data/kaggle-dataset-staging/` | Merge idempotent theo `video_id`; giữ dữ liệu các lot trước và không chứa archive/source/video. |
 | `KaggleCliUploader` | `StagingResult` | `UploadResult` | `verified: bool`; upload dạng `create` hoặc `version`, `dir_mode` là `skip`, `zip` hoặc `tar`. |
 | `CleanupManager` | UploadResult đã verify | `CleanupResult` | Xóa các directory được bật trong config; metadata độc lập, reports, receipts và state vẫn giữ lại. |
 
@@ -517,6 +521,8 @@ embedding.dataloader.num_workers     = 0    # CPU image preprocessing workers
 embedding.dataloader.pin_memory      = false # host→CUDA transfer hint
 embedding.dataloader.persistent_workers = false
 embedding.dataloader.prefetch_factor = 2    # only when num_workers > 0
+upload.staging_scope                 = dataset # cumulative dataset hoặc lot
+upload.dataset_staging_dir           = data/kaggle-dataset-staging
 progress.enabled                      = true # terminal/tmux progress bars
 progress.leave                        = false # clear completed bars; less terminal noise
 progress.bar_width                    = 24   # fixed width of each bar
@@ -646,6 +652,20 @@ này chỉ quyết định `run` có tự động upload hay không. `dataset_re
 `upload-state.json` đã ghi cả `stage_upload` và `cleanup` là `completed`, lệnh
 sẽ dùng receipt đã lưu, không đọc lại artifact local và không bị ảnh hưởng bởi
 việc đổi config sau đó.
+
+Khi dùng staging cumulative, lệnh upload cho lot mới vẫn giữ nguyên:
+
+```bash
+python -m preprocess.batch \
+  --config preprocess/batch/config.json \
+  upload --lot-id L22_a
+```
+
+Lệnh này merge artifact của `L22_a` vào `data/kaggle-dataset-staging/` rồi
+upload toàn bộ snapshot đã tích lũy. Do `dir_mode=zip`, Kaggle nhận các archive
+cấp cao như `keyframes.zip`, `metadata.zip` và `manifests.zip`; mỗi archive
+chứa cả các lot đã staged. Không chạy đồng thời hai lệnh upload ở các lot khác
+nhau: dataset-level lock sẽ từ chối tiến trình thứ hai.
 
 Có thể kiểm tra một ZIP đã tải mà không chạy cả pipeline:
 
@@ -939,8 +959,9 @@ data/L29_a/receipts/upload.json
 ```
 
 Nếu upload được verify và cleanup bật, `archive/`, `source/`, keyframes,
-features, manifests và `kaggle-staging/` có thể đã bị xóa theo config. Nếu
-upload tắt, các artifact local vẫn được giữ lại.
+features và manifests của lot có thể đã bị xóa theo config. Với staging
+cumulative, `data/kaggle-dataset-staging/` được giữ lại để làm base cho version
+tiếp theo. Nếu upload tắt, các artifact local vẫn được giữ lại.
 
 #### 10. Kết thúc tmux và SSH session
 
@@ -1064,8 +1085,17 @@ file local trong `data/scene-segments/` vẫn được giữ lại.
 Staging **không chứa archive, source hoặc video**. Chỉ khi Kaggle CLI upload
 thành công và status được verify thì `CleanupManager` mới xóa artifact được bật
 trong `cleanup`; metadata độc lập trong `data/metadata/` không bao giờ bị xóa.
-Mặc định config mẫu xóa archive, source, keyframe, feature, manifest,
-transcript và staging sau khi verify. Nếu upload tắt, pipeline không tự cleanup.
+Với `upload.staging_scope=dataset` (mặc định), staging cumulative nằm ở
+`data/kaggle-dataset-staging/`, có state riêng ở
+`data/kaggle-dataset-state.json` và lock riêng ở
+`data/kaggle-dataset-upload.lock`. Mỗi lot mới được merge theo `video_id`;
+staging này không bị cleanup theo lot vì cần giữ toàn bộ snapshot cho version
+Kaggle kế tiếp. Archive, source, keyframe, feature và manifest làm việc của
+lot vẫn được cleanup theo config. Đặt `upload.staging_scope=lot` nếu muốn quay
+lại hành vi staging riêng từng lot.
+
+Mặc định config mẫu xóa archive, source, keyframe, feature, manifest và các
+artifact tạm của lot sau khi verify. Nếu upload tắt, pipeline không tự cleanup.
 
 ### Strategy thay thế
 
