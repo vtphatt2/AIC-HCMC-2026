@@ -8,10 +8,12 @@ normal Kaggle CLI environment/configuration.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+from preprocess.batch.models import DatasetTarget
 from preprocess.keyframes.contracts import RenderProfile
 from preprocess.pecore.embedding import PECoreEmbeddingConfig
 from preprocess.progress import ProgressConfig
@@ -209,9 +211,10 @@ class ProcessingConfig:
 class UploadConfig:
     enabled: bool = False
     dataset_ref: str | None = None
-    mode: str = "version"
+    dataset_ref_template: str | None = None
+    mode: str = "auto"
     dir_mode: str = "zip"
-    staging_scope: str = "dataset"
+    staging_scope: str = "lot"
     dataset_staging_dir: Path | None = None
     metadata_template: Path | None = None
     include_scene_segments: bool = False
@@ -224,16 +227,57 @@ class UploadConfig:
     verify_poll_seconds: int = 10
 
     def __post_init__(self) -> None:
-        if self.mode not in {"create", "version"}:
-            raise ValueError("upload mode must be 'create' or 'version'")
+        if self.mode not in {"auto", "create", "version"}:
+            raise ValueError("upload mode must be 'auto', 'create' or 'version'")
         if self.dir_mode not in {"skip", "zip", "tar"}:
             raise ValueError("upload dir_mode must be one of: skip, zip, tar")
         if self.staging_scope not in {"lot", "dataset"}:
             raise ValueError("upload staging_scope must be 'lot' or 'dataset'")
-        if self.enabled and not self.dataset_ref:
-            raise ValueError("dataset_ref is required for a verifiable upload")
+        if self.dataset_ref and self.dataset_ref_template:
+            raise ValueError("set either dataset_ref or dataset_ref_template, not both")
+        if self.staging_scope == "dataset" and self.dataset_ref_template:
+            raise ValueError(
+                "dataset_ref_template is only supported with lot-scoped staging"
+            )
+        if self.staging_scope == "lot" and self.dataset_ref_template:
+            if not any(
+                placeholder in self.dataset_ref_template
+                for placeholder in ("{lot_id}", "{lot_slug}")
+            ):
+                raise ValueError(
+                    "dataset_ref_template must contain {lot_id} or {lot_slug}"
+                )
+        if self.enabled and not self.dataset_ref and not self.dataset_ref_template:
+            raise ValueError(
+                "upload requires dataset_ref or dataset_ref_template"
+            )
         if self.verify_timeout_seconds <= 0 or self.verify_poll_seconds <= 0:
             raise ValueError("upload verification timings must be positive")
+
+    def target_for_lot(self, lot_id: str) -> DatasetTarget:
+        """Resolve the remote dataset target for one lot without hardcoding IDs."""
+        if not lot_id or lot_id in {".", ".."} or Path(lot_id).name != lot_id:
+            raise ValueError(f"Unsafe lot_id for dataset target: {lot_id!r}")
+        if self.dataset_ref_template:
+            lot_slug = re.sub(r"[^a-z0-9]+", "-", lot_id.lower()).strip("-")
+            dataset_ref = self.dataset_ref_template.format(
+                lot_id=lot_id,
+                lot_slug=lot_slug,
+            )
+        elif self.dataset_ref:
+            dataset_ref = self.dataset_ref
+        else:
+            raise ValueError(
+                "No dataset target configured; set upload.dataset_ref or "
+                "upload.dataset_ref_template"
+            )
+        owner, separator, slug = dataset_ref.partition("/")
+        if not separator or not owner or not slug:
+            raise ValueError(
+                "Resolved dataset_ref must have the form 'owner/dataset-slug': "
+                f"{dataset_ref!r}"
+            )
+        return DatasetTarget(dataset_ref=dataset_ref, mode=self.mode)
 
 
 @dataclass(frozen=True)
@@ -319,10 +363,16 @@ class BatchConfig:
         embedding = PECoreEmbeddingConfig(**dict(payload.get("embedding", {})))
 
         upload_payload = dict(payload.get("upload", {}))
+        staging_scope = str(upload_payload.get("staging_scope", "lot"))
+        default_dataset_staging_dir = (
+            (data_root or Path("data")) / DEFAULT_DATASET_STAGING_DIR_NAME
+            if staging_scope == "dataset"
+            else None
+        )
         upload_payload["dataset_staging_dir"] = _resolve_path(
             upload_payload.get("dataset_staging_dir"),
             base_dir,
-            (data_root or Path("data")) / DEFAULT_DATASET_STAGING_DIR_NAME,
+            default_dataset_staging_dir,
         )
         upload_payload["metadata_template"] = _resolve_path(
             upload_payload.get("metadata_template"), base_dir

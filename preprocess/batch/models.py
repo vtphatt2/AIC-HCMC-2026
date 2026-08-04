@@ -124,14 +124,30 @@ class ProcessingResult:
 
 
 @dataclass(frozen=True)
+class DatasetTarget:
+    """Resolved remote dataset target for one lot upload."""
+
+    dataset_ref: str
+    mode: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"dataset_ref": self.dataset_ref, "mode": self.mode}
+
+
+@dataclass(frozen=True)
 class StagingResult:
     """Manifest of the exact local payload prepared for an uploader."""
 
     staging_dir: Path
     files: tuple[Path, ...]
+    target: DatasetTarget | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"staging_dir": str(self.staging_dir), "files": [str(path) for path in self.files]}
+        return {
+            "staging_dir": str(self.staging_dir),
+            "files": [str(path) for path in self.files],
+            "target": self.target.to_dict() if self.target is not None else None,
+        }
 
 
 @dataclass(frozen=True)

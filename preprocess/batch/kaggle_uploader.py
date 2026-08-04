@@ -21,7 +21,13 @@ from preprocess.batch.config import UploadConfig
 from preprocess.batch.dataset_state import DatasetUploadStateStore
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.metadata import MetadataProvider
-from preprocess.batch.models import ProcessingResult, StagingResult, UploadResult, VideoAsset
+from preprocess.batch.models import (
+    DatasetTarget,
+    ProcessingResult,
+    StagingResult,
+    UploadResult,
+    VideoAsset,
+)
 
 
 class StagingStrategy(ABC):
@@ -58,6 +64,7 @@ class KaggleStagingStrategy(StagingStrategy):
     ) -> StagingResult:
         if layout.staging_dir.exists() and any(layout.staging_dir.iterdir()):
             raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
+        target = self.config.target_for_lot(layout.lot_id)
         staging_dir = self._build_payload(layout, assets, results, parent=layout.root)
         try:
             files = tuple(sorted(path for path in staging_dir.rglob("*") if path.is_file()))
@@ -69,7 +76,11 @@ class KaggleStagingStrategy(StagingStrategy):
             final_files = tuple(
                 layout.staging_dir / path.relative_to(staging_dir) for path in files
             )
-            return StagingResult(staging_dir=layout.staging_dir, files=final_files)
+            return StagingResult(
+                staging_dir=layout.staging_dir,
+                files=final_files,
+                target=target,
+            )
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise
@@ -107,7 +118,12 @@ class KaggleStagingStrategy(StagingStrategy):
         parent.mkdir(parents=True, exist_ok=True)
         staging_dir = Path(tempfile.mkdtemp(prefix=".kaggle-staging.", dir=parent))
         try:
-            self._copy_file(metadata_template, staging_dir / "dataset-metadata.json")
+            target = self.config.target_for_lot(layout.lot_id)
+            self._write_dataset_metadata(
+                metadata_template,
+                staging_dir / "dataset-metadata.json",
+                target,
+            )
 
             for asset, result in zip(assets, results, strict=True):
                 source_keyframes = result.rendered_manifest_path.parent
@@ -157,6 +173,28 @@ class KaggleStagingStrategy(StagingStrategy):
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise
         return staging_dir
+
+    @staticmethod
+    def _write_dataset_metadata(
+        source: Path,
+        destination: Path,
+        target: DatasetTarget,
+    ) -> None:
+        """Copy the metadata template while binding it to this lot's dataset."""
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Dataset metadata must be valid JSON: {source}") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(f"Dataset metadata must be a JSON object: {source}")
+        metadata = dict(payload)
+        metadata["id"] = target.dataset_ref
+        metadata.pop("id_no", None)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _copy_file(source: Path, destination: Path) -> None:
@@ -248,7 +286,11 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
                 video_ids=[asset.video_id for asset in assets],
                 files=relative_files,
             )
-            return StagingResult(staging_dir=self.staging_dir, files=files)
+            return StagingResult(
+                staging_dir=self.staging_dir,
+                files=files,
+                target=self.config.target_for_lot(layout.lot_id),
+            )
         finally:
             shutil.rmtree(payload_dir, ignore_errors=True)
 
@@ -321,25 +363,61 @@ class KaggleCliUploader(DatasetUploader):
     def upload_and_verify(self, staging: StagingResult) -> UploadResult:
         if not self.config.enabled:
             raise RuntimeError("Kaggle upload is disabled in configuration")
-        command = self._upload_command(staging.staging_dir)
+        target = staging.target
+        if target is None:
+            if not self.config.dataset_ref:
+                raise ValueError(
+                    "Staging result has no dataset target and upload.dataset_ref is not configured"
+                )
+            target = DatasetTarget(
+                dataset_ref=self.config.dataset_ref,
+                mode=self.config.mode,
+            )
+        mode = self._resolve_mode(target)
+        command = self._upload_command(
+            staging.staging_dir,
+            dataset_ref=target.dataset_ref,
+            mode=mode,
+        )
         completed = subprocess.run(command, text=True, capture_output=True, check=False)
         output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
             raise RuntimeError(f"Kaggle upload failed (exit {completed.returncode}): {output[-3000:]}")
-        verified, verification_output = self._verify()
+        verified, verification_output = self._verify(target.dataset_ref)
         if not verified:
             raise RuntimeError(f"Kaggle upload was not verified: {verification_output[-3000:]}")
         return UploadResult(
-            dataset_ref=self.config.dataset_ref or "created-from-metadata",
-            mode=self.config.mode,
+            dataset_ref=target.dataset_ref,
+            mode=mode,
             verified=True,
             command=tuple(command),
             output_tail=output[-3000:],
             verified_output_tail=verification_output[-3000:],
         )
 
-    def _upload_command(self, staging_dir: Path) -> list[str]:
-        if self.config.mode == "create":
+    def _resolve_mode(self, target: DatasetTarget) -> str:
+        if target.mode in {"create", "version"}:
+            return target.mode
+        if target.mode != "auto":
+            raise ValueError(f"Unsupported upload mode: {target.mode!r}")
+        completed = subprocess.run(
+            self._status_command(target.dataset_ref),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        return "version" if completed.returncode == 0 else "create"
+
+    def _upload_command(
+        self,
+        staging_dir: Path,
+        *,
+        dataset_ref: str | None = None,
+        mode: str | None = None,
+    ) -> list[str]:
+        effective_mode = mode or self.config.mode
+        effective_ref = dataset_ref or self.config.dataset_ref
+        if effective_mode == "create":
             command = [
                 self.executable,
                 "datasets",
@@ -351,7 +429,11 @@ class KaggleCliUploader(DatasetUploader):
             ]
             command.append("--public" if self.config.public else "--private")
             return command
-        if not self.config.dataset_ref:
+        if effective_mode != "version":
+            raise ValueError(
+                "_upload_command requires resolved mode 'create' or 'version'"
+            )
+        if not effective_ref:
             raise ValueError("dataset_ref is required for version uploads")
         return [
             self.executable,
@@ -365,15 +447,19 @@ class KaggleCliUploader(DatasetUploader):
             self.config.dir_mode,
         ]
 
-    def _verify(self) -> tuple[bool, str]:
-        if not self.config.dataset_ref:
-            return False, "dataset_ref is required for remote verification"
-        command = [
+    def _status_command(self, dataset_ref: str) -> list[str]:
+        return [
             self.executable,
             "datasets",
             "status",
-            self.config.dataset_ref,
+            dataset_ref,
         ]
+
+    def _verify(self, dataset_ref: str | None = None) -> tuple[bool, str]:
+        effective_ref = dataset_ref or self.config.dataset_ref
+        if not effective_ref:
+            return False, "dataset_ref is required for remote verification"
+        command = self._status_command(effective_ref)
         deadline = time.monotonic() + self.config.verify_timeout_seconds
         output = ""
         while time.monotonic() <= deadline:
