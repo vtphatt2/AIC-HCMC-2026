@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from preprocess.batch.config import UploadConfig
+from preprocess.batch.dataset_state import DatasetUploadStateStore
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.metadata import MetadataProvider
 from preprocess.batch.models import ProcessingResult, StagingResult, UploadResult, VideoAsset
@@ -57,6 +58,30 @@ class KaggleStagingStrategy(StagingStrategy):
     ) -> StagingResult:
         if layout.staging_dir.exists() and any(layout.staging_dir.iterdir()):
             raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
+        staging_dir = self._build_payload(layout, assets, results, parent=layout.root)
+        try:
+            files = tuple(sorted(path for path in staging_dir.rglob("*") if path.is_file()))
+            if layout.staging_dir.exists():
+                if any(layout.staging_dir.iterdir()):
+                    raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
+                layout.staging_dir.rmdir()
+            os.replace(staging_dir, layout.staging_dir)
+            final_files = tuple(
+                layout.staging_dir / path.relative_to(staging_dir) for path in files
+            )
+            return StagingResult(staging_dir=layout.staging_dir, files=final_files)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
+
+    def _build_payload(
+        self,
+        layout: LotLayout,
+        assets: Sequence[VideoAsset],
+        results: Sequence[ProcessingResult],
+        *,
+        parent: Path,
+    ) -> Path:
         metadata_template = self.config.metadata_template
         if metadata_template is None or not metadata_template.is_file():
             raise FileNotFoundError(
@@ -79,7 +104,8 @@ class KaggleStagingStrategy(StagingStrategy):
                     )
                 scene_segment_paths[asset.video_id] = scene_segments_path
 
-        staging_dir = Path(tempfile.mkdtemp(prefix=f".{layout.staging_dir.name}.", dir=layout.root))
+        parent.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(tempfile.mkdtemp(prefix=".kaggle-staging.", dir=parent))
         try:
             self._copy_file(metadata_template, staging_dir / "dataset-metadata.json")
 
@@ -127,20 +153,10 @@ class KaggleStagingStrategy(StagingStrategy):
                 index_dir = layout.dataset_dir / "keyframe_transcript_index"
                 if index_dir.is_dir():
                     self._copy_tree(index_dir, staging_dir / "keyframe_transcript_index")
-
-            files = tuple(sorted(path for path in staging_dir.rglob("*") if path.is_file()))
-            if layout.staging_dir.exists():
-                if any(layout.staging_dir.iterdir()):
-                    raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
-                layout.staging_dir.rmdir()
-            os.replace(staging_dir, layout.staging_dir)
-            final_files = tuple(
-                layout.staging_dir / path.relative_to(staging_dir) for path in files
-            )
-            return StagingResult(staging_dir=layout.staging_dir, files=final_files)
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise
+        return staging_dir
 
     @staticmethod
     def _copy_file(source: Path, destination: Path) -> None:
@@ -174,6 +190,117 @@ class KaggleStagingStrategy(StagingStrategy):
             self._copy_file(path, target)
             copied.append(target)
         return copied
+
+
+class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
+    """Merge each lot into one persistent dataset-level upload snapshot."""
+
+    def __init__(
+        self,
+        metadata_provider: MetadataProvider,
+        config: UploadConfig,
+        *,
+        staging_dir: Path,
+        state_store: DatasetUploadStateStore,
+        scene_segments_dir: Path | None = None,
+    ) -> None:
+        super().__init__(
+            metadata_provider,
+            config,
+            scene_segments_dir=scene_segments_dir,
+        )
+        self.staging_dir = staging_dir
+        self.state_store = state_store
+
+    def stage(
+        self,
+        layout: LotLayout,
+        assets: Sequence[VideoAsset],
+        results: Sequence[ProcessingResult],
+    ) -> StagingResult:
+        if self.staging_dir.resolve() == layout.data_root.resolve():
+            raise ValueError("Cumulative dataset staging must not be the data root itself")
+        if self.staging_dir.exists() and not self.staging_dir.is_dir():
+            raise FileExistsError(f"Cumulative staging path is not a directory: {self.staging_dir}")
+
+        self.state_store.initialize(
+            dataset_ref=self.config.dataset_ref or "created-from-metadata",
+            staging_dir=self.staging_dir,
+        )
+        self.state_store.ensure_staging_available(self.staging_dir)
+        payload_dir = self._build_payload(
+            layout,
+            assets,
+            results,
+            parent=self.staging_dir.parent,
+        )
+        try:
+            self.staging_dir.mkdir(parents=True, exist_ok=True)
+            for asset in assets:
+                self._remove_video_payload(asset.video_id)
+            self._merge_payload(payload_dir)
+            files = tuple(sorted(path for path in self.staging_dir.rglob("*") if path.is_file()))
+            relative_files = tuple(
+                path.relative_to(self.staging_dir).as_posix() for path in files
+            )
+            self.state_store.record_staged(
+                layout.lot_id,
+                video_ids=[asset.video_id for asset in assets],
+                files=relative_files,
+            )
+            return StagingResult(staging_dir=self.staging_dir, files=files)
+        finally:
+            shutil.rmtree(payload_dir, ignore_errors=True)
+
+    def _remove_video_payload(self, video_id: str) -> None:
+        targets = (
+            self.staging_dir / "keyframes" / video_id,
+            self.staging_dir / "metadata" / f"{video_id}.json",
+            self.staging_dir / "manifests" / "selection" / f"{video_id}.json",
+            self.staging_dir / "manifests" / "rendered" / f"{video_id}.json",
+            self.staging_dir / "manifests" / "validation" / f"{video_id}.json",
+            self.staging_dir / "scene-segments" / f"{video_id}.json",
+            self.staging_dir / "PECore-features" / video_id,
+        )
+        for target in targets:
+            self._remove_owned_path(target)
+
+    def _remove_owned_path(self, path: Path) -> None:
+        if not path.exists() and not path.is_symlink():
+            return
+        try:
+            path.resolve().relative_to(self.staging_dir.resolve())
+        except ValueError as exc:
+            raise RuntimeError(f"Refusing to modify path outside cumulative staging: {path}") from exc
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+    def _merge_payload(self, payload_dir: Path) -> None:
+        for source in sorted(path for path in payload_dir.rglob("*") if path.is_file()):
+            relative = source.relative_to(payload_dir)
+            destination = self.staging_dir / relative
+            self._replace_file(source, destination)
+
+    @staticmethod
+    def _replace_file(source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+        )
+        os.close(descriptor)
+        temporary = Path(temporary_name)
+        try:
+            try:
+                os.link(source, temporary)
+            except OSError:
+                shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 class DatasetUploader(ABC):

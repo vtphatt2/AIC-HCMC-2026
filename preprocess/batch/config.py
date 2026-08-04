@@ -17,6 +17,9 @@ from preprocess.pecore.embedding import PECoreEmbeddingConfig
 from preprocess.progress import ProgressConfig
 
 
+DEFAULT_DATASET_STAGING_DIR_NAME = "kaggle-dataset-staging"
+
+
 def _resolve_path(value: str | Path | None, base_dir: Path, default: Path | None = None) -> Path | None:
     if value is None:
         if default is None:
@@ -208,6 +211,8 @@ class UploadConfig:
     dataset_ref: str | None = None
     mode: str = "version"
     dir_mode: str = "zip"
+    staging_scope: str = "dataset"
+    dataset_staging_dir: Path | None = None
     metadata_template: Path | None = None
     include_scene_segments: bool = False
     include_features: bool = True
@@ -223,6 +228,8 @@ class UploadConfig:
             raise ValueError("upload mode must be 'create' or 'version'")
         if self.dir_mode not in {"skip", "zip", "tar"}:
             raise ValueError("upload dir_mode must be one of: skip, zip, tar")
+        if self.staging_scope not in {"lot", "dataset"}:
+            raise ValueError("upload staging_scope must be 'lot' or 'dataset'")
         if self.enabled and not self.dataset_ref:
             raise ValueError("dataset_ref is required for a verifiable upload")
         if self.verify_timeout_seconds <= 0 or self.verify_poll_seconds <= 0:
@@ -312,6 +319,11 @@ class BatchConfig:
         embedding = PECoreEmbeddingConfig(**dict(payload.get("embedding", {})))
 
         upload_payload = dict(payload.get("upload", {}))
+        upload_payload["dataset_staging_dir"] = _resolve_path(
+            upload_payload.get("dataset_staging_dir"),
+            base_dir,
+            (data_root or Path("data")) / DEFAULT_DATASET_STAGING_DIR_NAME,
+        )
         upload_payload["metadata_template"] = _resolve_path(
             upload_payload.get("metadata_template"), base_dir
         )
@@ -357,6 +369,11 @@ class BatchConfig:
         value["upload"]["metadata_template"] = (
             str(value["upload"]["metadata_template"])
             if value["upload"]["metadata_template"] is not None
+            else None
+        )
+        value["upload"]["dataset_staging_dir"] = (
+            str(value["upload"]["dataset_staging_dir"])
+            if value["upload"]["dataset_staging_dir"] is not None
             else None
         )
         value["archive"]["video_extensions"] = list(value["archive"]["video_extensions"])

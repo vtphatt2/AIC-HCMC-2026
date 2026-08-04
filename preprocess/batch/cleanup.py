@@ -24,8 +24,15 @@ class CleanupResult:
 class CleanupManager:
     """Delete only explicitly configured, lot-owned artifact directories."""
 
-    def __init__(self, config: CleanupConfig, *, rendered_profile_id: str = "keyframes") -> None:
+    def __init__(
+        self,
+        config: CleanupConfig,
+        *,
+        rendered_profile_id: str = "keyframes",
+        preserve_staging: bool = False,
+    ) -> None:
         self.config = config
+        self.preserve_staging = preserve_staging
         if (
             not rendered_profile_id
             or rendered_profile_id in {".", ".."}
@@ -66,7 +73,6 @@ class CleanupManager:
                 layout.dataset_dir / "keyframe_transcript_index",
                 self.config.delete_transcript_index,
             ),
-            ("kaggle-staging", layout.staging_dir, self.config.delete_staging),
         ]
         deleted: list[str] = []
         skipped: list[str] = []
@@ -84,6 +90,22 @@ class CleanupManager:
             else:
                 path.unlink()
             deleted.append(str(path))
+        if self.preserve_staging:
+            skipped.append("kaggle-staging: preserved for cumulative dataset")
+        else:
+            staging_path = layout.staging_dir
+            if not self.config.delete_staging:
+                skipped.append("kaggle-staging: disabled")
+            elif not staging_path.exists():
+                skipped.append("kaggle-staging: absent")
+            else:
+                if not layout.is_owned_path(staging_path):
+                    raise RuntimeError(f"Refusing to delete path outside lot: {staging_path}")
+                if staging_path.is_dir():
+                    shutil.rmtree(staging_path)
+                else:
+                    staging_path.unlink()
+                deleted.append(str(staging_path))
         result = CleanupResult(deleted=tuple(deleted), skipped=tuple(skipped))
         self._write_receipt(layout, result)
         return result
