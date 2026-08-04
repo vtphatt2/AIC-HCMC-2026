@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -78,58 +79,68 @@ class KaggleStagingStrategy(StagingStrategy):
                     )
                 scene_segment_paths[asset.video_id] = scene_segments_path
 
-        layout.staging_dir.mkdir(parents=True, exist_ok=True)
-        self._copy_file(metadata_template, layout.staging_dir / "dataset-metadata.json")
-        staged: list[Path] = [layout.staging_dir / "dataset-metadata.json"]
+        staging_dir = Path(tempfile.mkdtemp(prefix=f".{layout.staging_dir.name}.", dir=layout.root))
+        try:
+            self._copy_file(metadata_template, staging_dir / "dataset-metadata.json")
 
-        for asset, result in zip(assets, results, strict=True):
-            source_keyframes = result.rendered_manifest_path.parent
-            destination_keyframes = layout.staging_dir / "keyframes" / asset.video_id
-            staged.extend(self._copy_tree(source_keyframes, destination_keyframes, skip_names={"manifest.json"}))
-            self._copy_file(
-                self.metadata_provider.path_for(asset.video_id),
-                layout.staging_dir / "metadata" / f"{asset.video_id}.json",
-            )
-            staged.append(layout.staging_dir / "metadata" / f"{asset.video_id}.json")
-            staged.extend(self._copy_tree(
-                result.selection_manifest_path.parent,
-                layout.staging_dir / "manifests" / "selection",
-                include_names={result.selection_manifest_path.name},
-            ))
-            rendered_destination = (
-                layout.staging_dir / "manifests" / "rendered" / f"{asset.video_id}.json"
-            )
-            self._copy_file(result.rendered_manifest_path, rendered_destination)
-            staged.append(rendered_destination)
-            validation_path = layout.reports_dir / "validation" / f"{asset.video_id}.json"
-            if validation_path.is_file():
-                self._copy_file(validation_path, layout.staging_dir / "manifests" / "validation" / validation_path.name)
-                staged.append(layout.staging_dir / "manifests" / "validation" / validation_path.name)
-
-            if self.config.include_scene_segments:
-                scene_segments_path = scene_segment_paths[asset.video_id]
-                staged_scene_segments_path = (
-                    layout.staging_dir / "scene-segments" / scene_segments_path.name
+            for asset, result in zip(assets, results, strict=True):
+                source_keyframes = result.rendered_manifest_path.parent
+                destination_keyframes = staging_dir / "keyframes" / asset.video_id
+                self._copy_tree(source_keyframes, destination_keyframes, skip_names={"manifest.json"})
+                self._copy_file(
+                    self.metadata_provider.path_for(asset.video_id),
+                    staging_dir / "metadata" / f"{asset.video_id}.json",
                 )
-                self._copy_file(scene_segments_path, staged_scene_segments_path)
-                staged.append(staged_scene_segments_path)
+                self._copy_tree(
+                    result.selection_manifest_path.parent,
+                    staging_dir / "manifests" / "selection",
+                    include_names={result.selection_manifest_path.name},
+                )
+                rendered_destination = (
+                    staging_dir / "manifests" / "rendered" / f"{asset.video_id}.json"
+                )
+                self._copy_file(result.rendered_manifest_path, rendered_destination)
+                validation_path = layout.reports_dir / "validation" / f"{asset.video_id}.json"
+                if validation_path.is_file():
+                    self._copy_file(
+                        validation_path,
+                        staging_dir / "manifests" / "validation" / validation_path.name,
+                    )
 
-            if self.config.include_features:
-                feature_dir = layout.dataset_dir / "PECore-features" / asset.video_id
-                if feature_dir.is_dir():
-                    staged.extend(self._copy_tree(feature_dir, layout.staging_dir / "PECore-features" / asset.video_id))
+                if self.config.include_scene_segments:
+                    scene_segments_path = scene_segment_paths[asset.video_id]
+                    self._copy_file(
+                        scene_segments_path,
+                        staging_dir / "scene-segments" / scene_segments_path.name,
+                    )
 
-        if self.config.include_transcripts:
-            transcript_dir = layout.dataset_dir / "transcripts"
-            if transcript_dir.is_dir():
-                staged.extend(self._copy_tree(transcript_dir, layout.staging_dir / "transcripts"))
-        if self.config.include_transcript_index:
-            index_dir = layout.dataset_dir / "keyframe_transcript_index"
-            if index_dir.is_dir():
-                staged.extend(self._copy_tree(index_dir, layout.staging_dir / "keyframe_transcript_index"))
+                if self.config.include_features:
+                    feature_dir = layout.dataset_dir / "PECore-features" / asset.video_id
+                    if feature_dir.is_dir():
+                        self._copy_tree(feature_dir, staging_dir / "PECore-features" / asset.video_id)
 
-        files = tuple(sorted(path for path in layout.staging_dir.rglob("*") if path.is_file()))
-        return StagingResult(staging_dir=layout.staging_dir, files=files)
+            if self.config.include_transcripts:
+                transcript_dir = layout.dataset_dir / "transcripts"
+                if transcript_dir.is_dir():
+                    self._copy_tree(transcript_dir, staging_dir / "transcripts")
+            if self.config.include_transcript_index:
+                index_dir = layout.dataset_dir / "keyframe_transcript_index"
+                if index_dir.is_dir():
+                    self._copy_tree(index_dir, staging_dir / "keyframe_transcript_index")
+
+            files = tuple(sorted(path for path in staging_dir.rglob("*") if path.is_file()))
+            if layout.staging_dir.exists():
+                if any(layout.staging_dir.iterdir()):
+                    raise FileExistsError(f"Kaggle staging directory is not empty: {layout.staging_dir}")
+                layout.staging_dir.rmdir()
+            os.replace(staging_dir, layout.staging_dir)
+            final_files = tuple(
+                layout.staging_dir / path.relative_to(staging_dir) for path in files
+            )
+            return StagingResult(staging_dir=layout.staging_dir, files=final_files)
+        except Exception:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+            raise
 
     @staticmethod
     def _copy_file(source: Path, destination: Path) -> None:

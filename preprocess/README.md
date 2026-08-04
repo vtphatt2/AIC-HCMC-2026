@@ -401,6 +401,8 @@ repository-root/
         ├── kaggle-staging/
         ├── reports/
         ├── receipts/
+        ├── upload-state.json
+        ├── upload.lock
         └── state.json
 ```
 
@@ -624,6 +626,20 @@ Khi bật `upload.enabled`, tạo file metadata Kaggle tại path cấu hình b�
 `data/kaggle-dataset-metadata.json`) và đặt `upload.dataset_ref` đúng dataset
 đích. Không bật upload khi chưa kiểm tra credentials bằng `kaggle datasets list`.
 
+Nếu các stage xử lý đã hoàn tất nhưng chỉ muốn retry/cập nhật upload của một
+lot, dùng lệnh riêng:
+
+```bash
+python -m preprocess.batch \
+  --config preprocess/batch/config.json \
+  upload --lot-id L29_a
+```
+
+Lệnh này không chạy lại download, extraction, TransNetV2, keyframe hoặc
+embedding. Nó đọc artifact đã validate, ghi trạng thái upload riêng vào
+`data/L29_a/upload-state.json`, và dùng `data/L29_a/upload.lock` để không cho
+hai tiến trình upload cùng lot chạy đồng thời.
+
 Có thể kiểm tra một ZIP đã tải mà không chạy cả pipeline:
 
 ```bash
@@ -846,6 +862,7 @@ Kiểm tra checkpoint của một lot:
 ```bash
 grep -n '"state"' data/L29_a/state.json
 tail -n 40 data/L29_a/state.json
+tail -n 40 data/L29_a/upload-state.json
 ```
 
 Khi selector cần scene, checkpoint sẽ đi qua `shot_boundaries` rồi
@@ -877,11 +894,16 @@ lại. Khi stage hoặc video hoàn tất, `state.json` ghi `started_at`,
 ứng. Không xóa `state.json` để resume.
 
 `CheckpointStore` ghi `state.json` atomically nên việc đọc file trong lúc pipeline
-đang chạy sẽ thấy bản cũ hoặc bản mới hoàn chỉnh, không thấy JSON dở dang. Tuy
-nhiên hiện chưa có inter-process lock: không chạy hai pipeline trên cùng lot,
-không chạy stage upload thủ công song song với `run`, và không chỉnh sửa
-`state.json` khi process đang hoạt động. Pipeline thực hiện upload tuần tự sau
-processing/embedding của từng lot.
+đang chạy sẽ thấy bản cũ hoặc bản mới hoàn chỉnh, không thấy JSON dở dang. Không
+chạy hai pipeline xử lý cùng lot, và không chỉnh sửa thủ công các file state khi
+process đang hoạt động. Các thao tác upload có lock riêng theo lot tại
+`upload.lock`; vì vậy không chạy hai lệnh upload cùng lot song song, cũng không
+chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Pipeline chính
+thực hiện upload tuần tự sau processing/embedding của từng lot.
+
+Trạng thái hai stage `stage_upload` và `cleanup` nằm trong
+`data/<lot_id>/upload-state.json`; `data/<lot_id>/state.json` giữ pipeline
+chính và được chuyển sang `completed` sau khi upload độc lập thành công.
 
 #### 9. Kiểm tra sau khi hoàn thành
 
@@ -1041,5 +1063,5 @@ strategy mới theo tên; config chọn `processing.strategy` và `processing.se
 vì vậy có thể thay `Aria2ArchiveDownloader`, `KeyframeProcessingStrategy`,
 `VideoValidationPipeline`, `KaggleStagingStrategy` hoặc `KaggleCliUploader`
 bằng adapter/fake khác mà không sửa workflow chính. `CheckpointStore` lưu
-`state.json` và event history theo từng lot để SSH có thể quan sát/resume sau
-khi một bước thất bại.
+`state.json` và `upload-state.json` cùng event history theo từng lot để SSH có
+thể quan sát/resume sau khi một bước thất bại.
