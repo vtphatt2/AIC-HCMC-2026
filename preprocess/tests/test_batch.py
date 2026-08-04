@@ -35,6 +35,7 @@ from preprocess.batch.models import (
     ArchiveInspection,
     BatchState,
     ProcessingResult,
+    StagingResult,
     UploadResult,
     VideoAsset,
 )
@@ -65,7 +66,7 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(config.processing.scene_segments_dir, root / "data" / "scene-segments")
         self.assertEqual(config.shot_boundary.output_dir, root / "data" / "scene-segments")
 
-    def test_upload_defaults_to_dataset_scoped_cumulative_staging(self) -> None:
+    def test_upload_defaults_to_lot_scoped_auto_dataset_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = BatchConfig.from_mapping(
@@ -76,11 +77,31 @@ class BatchModuleTests(unittest.TestCase):
                 base_dir=root,
             )
 
-        self.assertEqual(config.upload.staging_scope, "dataset")
+        self.assertEqual(config.upload.staging_scope, "lot")
+        self.assertEqual(config.upload.mode, "auto")
+        self.assertIsNone(config.upload.dataset_staging_dir)
+
+    def test_dataset_ref_template_resolves_one_dataset_per_lot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "upload": {
+                        "enabled": True,
+                        "mode": "auto",
+                        "staging_scope": "lot",
+                        "dataset_ref_template": "tdat835/aic2026-hcmc-{lot_slug}",
+                    },
+                },
+                base_dir=root,
+            )
+
         self.assertEqual(
-            config.upload.dataset_staging_dir,
-            root / "data" / "kaggle-dataset-staging",
+            config.upload.target_for_lot("L22_a").dataset_ref,
+            "tdat835/aic2026-hcmc-l22-a",
         )
+        self.assertEqual(config.upload.target_for_lot("L22_a").mode, "auto")
 
     def test_shot_boundary_pipeline_writes_and_reuses_manifest(self) -> None:
         class FakeDetector(ShotBoundaryDetector):
@@ -772,11 +793,15 @@ class BatchModuleTests(unittest.TestCase):
                 layout, [asset], [result]
             )
             staged_paths = {path.relative_to(staging.staging_dir).as_posix() for path in staging.files}
+            metadata = json.loads(
+                (staging.staging_dir / "dataset-metadata.json").read_text(encoding="utf-8")
+            )
         self.assertIn("dataset-metadata.json", staged_paths)
         self.assertIn("keyframes/L21_V030/000000.jpg", staged_paths)
         self.assertIn("manifests/rendered/L21_V030.json", staged_paths)
         self.assertNotIn("videos/L21_V030.mp4", staged_paths)
         self.assertNotIn("source/L29_a/L21_V030.mp4", staged_paths)
+        self.assertEqual(metadata["id"], "owner/test")
 
     def test_staging_includes_scene_segment_per_video_when_enabled(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1017,6 +1042,51 @@ class BatchModuleTests(unittest.TestCase):
             check=False,
         )
 
+    def test_kaggle_auto_mode_creates_missing_lot_dataset(self) -> None:
+        config = UploadConfig(
+            enabled=True,
+            dataset_ref_template="owner/aic2026-hcmc-{lot_slug}",
+            mode="auto",
+            public=False,
+        )
+        uploader = KaggleCliUploader("kaggle", config)
+        target = config.target_for_lot("L22_a")
+        staging = StagingResult(
+            staging_dir=Path("staging"),
+            files=(),
+            target=target,
+        )
+        missing = type(
+            "Completed",
+            (),
+            {"returncode": 1, "stdout": "", "stderr": "not found"},
+        )()
+        created = type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "created", "stderr": ""},
+        )()
+        ready = type(
+            "Completed",
+            (),
+            {"returncode": 0, "stdout": "ready", "stderr": ""},
+        )()
+
+        with patch(
+            "preprocess.batch.kaggle_uploader.subprocess.run",
+            side_effect=[missing, created, ready],
+        ) as run:
+            result = uploader.upload_and_verify(staging)
+
+        self.assertEqual(result.dataset_ref, "owner/aic2026-hcmc-l22-a")
+        self.assertEqual(result.mode, "create")
+        self.assertEqual(run.call_args_list[1].args[0][:4], [
+            "kaggle",
+            "datasets",
+            "create",
+            "-p",
+        ])
+
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1040,6 +1110,7 @@ class BatchModuleTests(unittest.TestCase):
             self.assertFalse(layout.archive_dir.exists())
             self.assertFalse(layout.source_dir.exists())
             self.assertFalse((layout.dataset_dir / "selection-manifests").exists())
+            self.assertFalse(layout.staging_dir.exists())
             self.assertTrue(metadata.is_file())
 
 
