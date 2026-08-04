@@ -14,7 +14,7 @@ from preprocess.batch.archive_extractor import ArchiveExtractor, ZipArchiveExtra
 from preprocess.batch.archive_validator import ZipArchiveValidator
 from preprocess.batch.checkpoints import CheckpointStore
 from preprocess.batch.config import BatchConfig, selector_requires_scene_boundaries
-from preprocess.batch.cleanup import CleanupManager
+from preprocess.batch.cleanup import CleanupManager, CleanupResult
 from preprocess.batch.dataset_state import (
     DatasetUploadStateStore,
     dataset_state_path,
@@ -27,8 +27,18 @@ from preprocess.batch.embedding import (
 )
 from preprocess.batch.layout import LotLayout
 from preprocess.batch.locks import ExclusiveFileLock
-from preprocess.batch.links import LinkListParser
 from preprocess.batch.metadata import JsonMetadataProvider, MetadataProvider
+from preprocess.batch.provenance import (
+    apply_reproducibility_policy,
+    atomic_json_write,
+    digest_directory,
+    digest_records,
+    inventory,
+    git_revision,
+    package_versions,
+    sha256_file,
+    tool_versions,
+)
 from preprocess.batch.models import (
     ArchiveInput,
     ArchiveInspection,
@@ -48,7 +58,6 @@ from preprocess.batch.kaggle_uploader import (
 from preprocess.batch.preflight import PreflightChecker
 from preprocess.batch.processor import (
     BatchProcessor,
-    KeyframeProcessingStrategy,
     ProcessingStrategyRegistry,
     SelectionStrategyRegistry,
     default_processing_registry,
@@ -117,8 +126,15 @@ class BatchOrchestrator:
         self.progress = progress or TqdmProgressReporter(config.progress)
         self.dataset_upload_state = dataset_upload_state
         self.dataset_upload_lock_path = dataset_upload_lock_path
+        self.failed_lots: list[dict[str, str]] = []
 
-    def run_all(self, requests: Sequence[ArchiveInput]) -> list[LotRunResult]:
+    def run_all(
+        self,
+        requests: Sequence[ArchiveInput],
+        *,
+        continue_on_error: bool = False,
+    ) -> list[LotRunResult]:
+        self.failed_lots = []
         stage_names = self._pipeline_stage_names()
         completed_flags = [self._is_completed_lot(request) for request in requests]
         if not requests or not all(completed_flags):
@@ -142,7 +158,14 @@ class BatchOrchestrator:
                         stage_count=len(stage_names),
                     )
                     continue
-                results.append(self.run_lot(request))
+                try:
+                    results.append(self.run_lot(request))
+                except Exception as exc:
+                    self.failed_lots.append(
+                        {"lot_id": request.lot_id, "error": f"{type(exc).__name__}: {exc}"}
+                    )
+                    if not continue_on_error:
+                        raise
         finally:
             self.progress.finish_pipeline()
         return results
@@ -154,12 +177,25 @@ class BatchOrchestrator:
         if state.get("state") != BatchState.COMPLETED.value:
             return False
         previous_request = state.get("request")
-        if previous_request is not None and previous_request != request.to_dict():
+        if previous_request is not None and not self._same_request(previous_request, request):
             raise RuntimeError(
                 f"Lot is already completed for a different archive request: {request.lot_id}. "
                 "Use a new lot directory for a different URL or archive name."
             )
-        return True
+        stored_config = state.get("config_fingerprint")
+        # Very old checkpoints predate config fingerprints. Preserve their
+        # terminal-lot skip behavior; any new/updated checkpoint is strict.
+        return stored_config is None or stored_config == self._config_fingerprint()
+
+    @staticmethod
+    def _same_request(previous: object, current: ArchiveInput) -> bool:
+        """Compare request identity without binding a lot to links.txt line order."""
+        if not isinstance(previous, Mapping):
+            return False
+        return all(
+            str(previous.get(key, "")) == str(getattr(current, key))
+            for key in ("url", "archive_name", "lot_id")
+        )
 
     def _pipeline_stage_names(self) -> tuple[str, ...]:
         stages = ["download", "archive_validate", "extract", "discover"]
@@ -174,6 +210,12 @@ class BatchOrchestrator:
         return tuple(stages)
 
     def run_lot(self, request: ArchiveInput) -> LotRunResult:
+        """Run one lot while excluding concurrent upload/cleanup operations."""
+        layout = LotLayout(self.config.data_root, request.lot_id)
+        with ExclusiveFileLock(layout.run_lock_path, purpose=f"pipeline for {request.lot_id}"):
+            return self._run_lot_locked(request)
+
+    def _run_lot_locked(self, request: ArchiveInput) -> LotRunResult:
         layout = LotLayout(self.config.data_root, request.lot_id)
         layout.create_runtime_dirs()
         checkpoints = CheckpointStore(layout.state_path)
@@ -270,6 +312,12 @@ class BatchOrchestrator:
     def upload_lot(self, lot_id: str) -> UploadResult:
         """Explicitly upload one lot, independently of the full-run flag."""
         layout = LotLayout(self.config.data_root, lot_id)
+        with ExclusiveFileLock(layout.run_lock_path, purpose=f"upload/cleanup for {lot_id}"):
+            return self._upload_lot_locked(lot_id)
+
+    def _upload_lot_locked(self, lot_id: str) -> UploadResult:
+        """Upload implementation; caller owns the lot-wide run lock."""
+        layout = LotLayout(self.config.data_root, lot_id)
         if not layout.state_path.is_file():
             raise FileNotFoundError(f"Main checkpoint not found: {layout.state_path}")
 
@@ -291,7 +339,7 @@ class BatchOrchestrator:
                     request,
                     legacy_state=main_state,
                 )
-                if self._upload_state_is_complete(upload_checkpoints):
+                if self._upload_state_is_complete(upload_checkpoints, request, layout):
                     result = self._restore_upload(layout)
                     if upload_checkpoints.load().get("state") != BatchState.COMPLETED.value:
                         upload_checkpoints.transition(
@@ -313,7 +361,7 @@ class BatchOrchestrator:
                         processed,
                         layout,
                         upload_checkpoints,
-                        reuse_completed=True,
+                        reuse_completed=False,
                     )
             main_checkpoints.transition(
                 BatchState.COMPLETED,
@@ -329,6 +377,65 @@ class BatchOrchestrator:
             raise
         finally:
             self.progress.finish_pipeline()
+
+    def cleanup_lot(self, lot_id: str) -> CleanupResult:
+        """Reverify an existing upload and run configured local cleanup only."""
+        layout = LotLayout(self.config.data_root, lot_id)
+        with ExclusiveFileLock(layout.run_lock_path, purpose=f"cleanup for {lot_id}"):
+            if not layout.state_path.is_file():
+                raise FileNotFoundError(f"Main checkpoint not found: {layout.state_path}")
+            main_checkpoints = CheckpointStore(layout.state_path)
+            main_state = main_checkpoints.load()
+            request = self._request_from_state(main_state, lot_id)
+            self.progress.start_pipeline(
+                total_units=1,
+                total_lots=1,
+                stage_names=("cleanup",),
+            )
+            self.progress.set_lot_context(lot_index=1, total_lots=1, lot_id=lot_id)
+            upload_checkpoints: CheckpointStore | None = None
+            try:
+                with self._upload_locks(layout, lot_id):
+                    upload_checkpoints = self._initialize_upload_state(
+                        CheckpointStore(layout.upload_state_path),
+                        request,
+                        legacy_state=main_state,
+                    )
+                    if self.uploader is None:
+                        raise RuntimeError("Cleanup requires a configured upload verifier")
+                    upload = self._restore_upload(layout)
+                    result = self._execute_stage(
+                        upload_checkpoints,
+                        request,
+                        "cleanup",
+                        action=lambda: self._cleanup_and_restore_result(
+                            layout, upload, upload_checkpoints
+                        ),
+                        restore=lambda: self._restore_cleanup(layout),
+                    )
+                main_checkpoints.transition(
+                    BatchState.COMPLETED,
+                    payload={"finished_at": utc_now(), "cleanup_only": True},
+                )
+                return result
+            except Exception as exc:
+                if upload_checkpoints is not None:
+                    upload_checkpoints.transition(
+                        BatchState.FAILED,
+                        payload={"error": f"{type(exc).__name__}: {exc}", "failed_at": utc_now()},
+                    )
+                raise
+            finally:
+                self.progress.finish_pipeline()
+
+    def _cleanup_and_restore_result(
+        self,
+        layout: LotLayout,
+        upload: UploadResult,
+        checkpoints: CheckpointStore,
+    ) -> CleanupResult:
+        self._cleanup(layout, upload, checkpoints)
+        return self._restore_cleanup(layout)
 
     @contextmanager
     def _upload_locks(self, layout: LotLayout, lot_id: str) -> Iterator[None]:
@@ -350,16 +457,50 @@ class BatchOrchestrator:
                 )
             yield
 
-    @staticmethod
-    def _upload_state_is_complete(checkpoints: CheckpointStore) -> bool:
+    def _upload_state_is_complete(
+        self,
+        checkpoints: CheckpointStore,
+        request: ArchiveInput,
+        layout: LotLayout,
+    ) -> bool:
         state = checkpoints.load()
         stages = state.get("stages", {})
         if not isinstance(stages, Mapping):
             return False
-        return all(
-            isinstance(stages.get(name), Mapping)
-            and stages[name].get("status") == "completed"
-            for name in ("stage_upload", "cleanup")
+        strict_complete = True
+        legacy_complete = True
+        for name in ("stage_upload", "cleanup"):
+            expected = self._stage_fingerprint(request, name)
+            record = stages.get(name)
+            if not (
+                isinstance(record, Mapping)
+                and record.get("status") == "completed"
+                and not record.get("legacy_untrusted")
+                and record.get("fingerprint") == expected
+            ):
+                strict_complete = False
+            if not (isinstance(record, Mapping) and record.get("status") == "completed"):
+                legacy_complete = False
+        try:
+            expected_target = self.config.upload.target_for_lot(request.lot_id).dataset_ref
+            receipt = self._restore_upload(layout)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            return False
+        if strict_complete and (
+            receipt.dataset_ref == expected_target
+            and receipt.verified
+            and receipt.remote_status == "ready"
+            and bool(receipt.payload_digest)
+        ):
+            return True
+        # Legacy upload receipts predate payload provenance. Reuse them only
+        # as a non-destructive terminal acknowledgement; the caller will not
+        # invoke cleanup again and a future upload with local artifacts must
+        # create a new provenance-aware receipt.
+        return (
+            legacy_complete
+            and receipt.dataset_ref == expected_target
+            and receipt.verified
         )
 
     def _initialize_upload_state(
@@ -378,11 +519,14 @@ class BatchOrchestrator:
                     for name in ("stage_upload", "cleanup"):
                         value = legacy_stages.get(name)
                         if isinstance(value, Mapping):
-                            migrated_stages[name] = dict(value)
+                            migrated_stages[name] = {
+                                **dict(value),
+                                "legacy_untrusted": True,
+                            }
             state = {
                 "state": BatchState.NEW.value,
                 "initialized": True,
-                "resume_version": 1,
+                "resume_version": 2,
                 "lot_id": request.lot_id,
                 "request": request.to_dict(),
                 "config": self.config.to_dict(),
@@ -397,11 +541,11 @@ class BatchOrchestrator:
             return checkpoints
 
         previous_request = state.get("request")
-        if previous_request is not None and previous_request != request.to_dict():
+        if previous_request is not None and not self._same_request(previous_request, request):
             raise RuntimeError(
                 f"Archive request changed after upload started: {request.lot_id}."
             )
-        state["resume_version"] = 1
+        state["resume_version"] = 2
         state["config"] = self.config.to_dict()
         state["config_fingerprint"] = self._config_fingerprint()
         state["request_fingerprint"] = self._request_fingerprint(request)
@@ -432,13 +576,11 @@ class BatchOrchestrator:
 
     def _initialize_state(self, checkpoints: CheckpointStore, request: ArchiveInput) -> None:
         state = checkpoints.load()
-        if state.get("state") == BatchState.COMPLETED.value:
-            raise RuntimeError(f"Lot is already completed: {request.lot_id}")
         if not state.get("initialized"):
             state = {
                 "state": BatchState.NEW.value,
                 "initialized": True,
-                "resume_version": 1,
+                "resume_version": 2,
                 "lot_id": request.lot_id,
                 "request": request.to_dict(),
                 "config": self.config.to_dict(),
@@ -452,7 +594,7 @@ class BatchOrchestrator:
             return
 
         previous_request = state.get("request")
-        if previous_request is not None and previous_request != request.to_dict():
+        if previous_request is not None and not self._same_request(previous_request, request):
             raise RuntimeError(
                 f"Archive request changed after this lot started: {request.lot_id}. "
                 "Use a new lot directory for a different URL or archive name."
@@ -460,7 +602,17 @@ class BatchOrchestrator:
 
         # Checkpoints written by the pre-stage-resume version remain usable;
         # their artifact caches are still validated by each restore method.
-        state["resume_version"] = 1
+        state["resume_version"] = 2
+        if state.get("state") == BatchState.COMPLETED.value:
+            state["state"] = BatchState.NEW.value
+            state.setdefault("events", []).append(
+                {
+                    "state": BatchState.NEW.value,
+                    "at": utc_now(),
+                    "payload": {"resumed_after_completed": True},
+                }
+            )
+        state["config"] = self.config.to_dict()
         state["config_fingerprint"] = self._config_fingerprint()
         state["request_fingerprint"] = self._request_fingerprint(request)
         state.setdefault("request", request.to_dict())
@@ -506,6 +658,10 @@ class BatchOrchestrator:
             stage_config = {
                 "shot_boundary": config["shot_boundary"],
                 "scene_segments_dir": config["processing"]["scene_segments_dir"],
+                "scene_segments": self._scoped_directory_digest(
+                    self.config.processing.scene_segments_dir,
+                    request,
+                ),
             }
         elif name == "process_validate":
             stage_config = {
@@ -513,16 +669,27 @@ class BatchOrchestrator:
                 "processing": config["processing"],
                 "metadata_root": config["metadata_root"],
                 "scene_boundaries": config["shot_boundary"],
+                "metadata": self._scoped_directory_digest(
+                    self.config.metadata_root,
+                    request,
+                ),
             }
         elif name == "embedding":
             stage_config = {
                 "embedding": config["embedding"],
                 "profile_id": config["processing"]["profile_id"],
+                "reproducibility": config["reproducibility"],
             }
         elif name == "stage_upload":
             stage_config = {
                 "upload": config["upload"],
                 "profile_id": config["processing"]["profile_id"],
+                "processing_dependency": self._completed_stage_fingerprint(
+                    request, "process_validate"
+                ),
+                "embedding_dependency": self._completed_stage_fingerprint(
+                    request, "embedding"
+                ),
             }
         elif name == "cleanup":
             stage_config = {
@@ -542,7 +709,11 @@ class BatchOrchestrator:
         elif name == "shot_boundaries":
             dependencies.append("discover")
         elif name == "process_validate":
-            dependencies.append("shot_boundaries" if self.shot_boundary_detector is not None else "discover")
+            dependencies.append(
+                "shot_boundaries"
+                if getattr(self, "shot_boundary_detector", None) is not None
+                else "discover"
+            )
         elif name == "embedding":
             dependencies.append("process_validate")
         elif name == "stage_upload":
@@ -554,10 +725,82 @@ class BatchOrchestrator:
             "request": request.to_dict(),
             "stage": name,
             "config": stage_config,
+            "runtime": self._runtime_signature(),
             "dependencies": [self._stage_fingerprint(request, dependency) for dependency in dependencies],
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
+
+    def _runtime_signature(self) -> dict[str, Any]:
+        cached = getattr(self, "_cached_runtime_signature", None)
+        if isinstance(cached, Mapping):
+            return dict(cached)
+        tools = self.config.to_dict().get("tools", {})
+        signature = {
+            "git_revision": git_revision(Path(__file__).resolve().parents[2]),
+            "packages": package_versions(),
+            "tools": tool_versions(tools if isinstance(tools, Mapping) else None),
+        }
+        self._cached_runtime_signature = signature
+        return signature
+
+    def _completed_stage_fingerprint(self, request: ArchiveInput, name: str) -> str | None:
+        state = CheckpointStore(LotLayout(self.config.data_root, request.lot_id).state_path).load()
+        stages = state.get("stages", {})
+        record = stages.get(name, {}) if isinstance(stages, Mapping) else {}
+        value = (
+            record.get("fingerprint")
+            if isinstance(record, Mapping) and record.get("status") == "completed"
+            else None
+        )
+        return str(value) if value else None
+
+    @staticmethod
+    def _directory_digest(
+        path: Path | None,
+        *,
+        file_names: Sequence[str] | None = None,
+    ) -> str | None:
+        if path is None or not path.is_dir():
+            return None
+        include = None
+        if file_names is not None:
+            include = [path / name for name in sorted(set(file_names))]
+        records = inventory(path, include=include)
+        return digest_records(records) if records else None
+
+    def _scoped_directory_digest(
+        self,
+        path: Path | None,
+        request: ArchiveInput,
+    ) -> str | None:
+        """Digest only artifacts belonging to this lot when discovery is known."""
+        video_ids = self._lot_video_ids(request)
+        if video_ids is None:
+            return self._directory_digest(path)
+        return self._directory_digest(
+            path,
+            file_names=[f"{video_id}.json" for video_id in video_ids],
+        )
+
+    def _lot_video_ids(self, request: ArchiveInput) -> frozenset[str] | None:
+        """Read discovered IDs without making a global metadata directory a dependency."""
+        report_path = LotLayout(self.config.data_root, request.lot_id).reports_dir / "videos.json"
+        if not report_path.is_file():
+            return None
+        try:
+            payload = self._read_json(report_path)
+            records = payload.get("videos")
+            if not isinstance(records, list):
+                return None
+            video_ids = frozenset(
+                str(record["video_id"])
+                for record in records
+                if isinstance(record, Mapping) and record.get("video_id")
+            )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return video_ids
 
     @staticmethod
     def _video_checkpoint_fingerprint(stage_fingerprint: str, asset: VideoAsset) -> str:
@@ -566,9 +809,8 @@ class BatchOrchestrator:
         payload = {
             "stage": stage_fingerprint,
             "video_id": asset.video_id,
-            "path": str(asset.path),
             "size_bytes": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
+            "sha256": sha256_file(asset.path),
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -674,11 +916,7 @@ class BatchOrchestrator:
             source = payload.get("source")
             if isinstance(source, Mapping) and isinstance(source.get("fingerprint"), Mapping):
                 fingerprint = source["fingerprint"]
-                stat = asset.path.stat()
-                if (
-                    int(fingerprint.get("size_bytes")) != stat.st_size
-                    or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
-                ):
+                if not self._source_fingerprint_matches(asset.path, fingerprint):
                     raise ValueError(f"Source video changed for shot-boundary artifact: {asset.video_id}")
             segments = load_scene_segments(path)
             restored.append(
@@ -713,6 +951,8 @@ class BatchOrchestrator:
             video_id = str(raw_asset.get("video_id", ""))
             if video_id not in asset_by_id:
                 raise ValueError(f"Processing report contains an unknown video: {video_id}")
+            if video_id in record_by_id:
+                raise ValueError(f"Processing report contains duplicate video: {video_id}")
             record_by_id[video_id] = record
         if set(record_by_id) != set(asset_by_id):
             raise ValueError(f"Processing report does not cover all videos: {report_path}")
@@ -732,8 +972,14 @@ class BatchOrchestrator:
         if not isinstance(raw_asset, Mapping) or str(raw_asset.get("video_id", "")) != asset.video_id:
             raise ValueError(f"Processing record does not match video: {asset.video_id}")
         video_id = asset.video_id
-        selection_path = Path(str(record["selection_manifest_path"]))
-        rendered_path = Path(str(record["rendered_manifest_path"]))
+        selection_path = self._resolve_artifact_path(
+            record["selection_manifest_path"], layout.dataset_dir
+        )
+        rendered_path = self._resolve_artifact_path(
+            record["rendered_manifest_path"], layout.dataset_dir
+        )
+        for artifact_path in (selection_path, rendered_path):
+            self._ensure_path_inside(artifact_path, layout.dataset_dir, "processing artifact")
         validation_path = layout.reports_dir / "validation" / f"{video_id}.json"
         if not selection_path.is_file() or not rendered_path.is_file() or not validation_path.is_file():
             raise FileNotFoundError(f"Processing artifacts are incomplete for {video_id}")
@@ -741,11 +987,7 @@ class BatchOrchestrator:
         source = selection.get("source")
         fingerprint = source.get("fingerprint") if isinstance(source, Mapping) else None
         if isinstance(fingerprint, Mapping):
-            stat = asset.path.stat()
-            if (
-                int(fingerprint.get("size_bytes")) != stat.st_size
-                or int(fingerprint.get("mtime_ns")) != stat.st_mtime_ns
-            ):
+            if not self._source_fingerprint_matches(asset.path, fingerprint):
                 raise ValueError(f"Source video changed after processing: {video_id}")
         validation = self._read_json(validation_path)
         if validation.get("passed") is not True:
@@ -760,9 +1002,14 @@ class BatchOrchestrator:
             frame_path = Path(str(frame["path"]))
             candidates = [frame_path]
             if not frame_path.is_absolute():
-                candidates.append(rendered_path.parent / frame_path.name)
+                candidates = [rendered_path.parent / frame_path, rendered_path.parent / frame_path.name]
             if not any(candidate.is_file() for candidate in candidates):
                 raise FileNotFoundError(f"Rendered frame is missing for {video_id}: {frame_path}")
+            actual_path = next(candidate for candidate in candidates if candidate.is_file())
+            self._ensure_path_inside(actual_path, rendered_path.parent, "rendered frame")
+            expected_hash = frame.get("sha256")
+            if expected_hash is not None and str(expected_hash) != sha256_file(actual_path):
+                raise ValueError(f"Rendered frame content changed for {video_id}: {actual_path}")
         return ProcessingResult(
             asset=asset,
             video_info=dict(record.get("video_info", {})),
@@ -776,6 +1023,10 @@ class BatchOrchestrator:
         payload = self._read_json(report_path)
         dimension = int(payload["dimension"])
         writer = NpyFeatureWriter(dimension)
+        expected_cache = getattr(getattr(self.embedding, "pipeline", None), "cache_fingerprint", None)
+        report_cache = payload.get("cache_fingerprint")
+        if expected_cache is not None and report_cache is not None and str(report_cache) != str(expected_cache):
+            raise ValueError("Embedding model/cache fingerprint changed")
         records = payload.get("videos")
         if not isinstance(records, list):
             raise ValueError(f"Embedding report is invalid: {report_path}")
@@ -788,20 +1039,60 @@ class BatchOrchestrator:
             if len(feature_files) != image_count:
                 raise ValueError(f"Embedding report has incomplete feature list: {report_path}")
             for feature_file in feature_files:
+                self._ensure_path_inside(feature_file, layout.dataset_dir, "embedding feature")
                 writer.validate_file(feature_file)
+                metadata_path = writer.metadata_path(feature_file)
+                if not metadata_path.is_file():
+                    raise FileNotFoundError(f"Embedding provenance is missing: {metadata_path}")
+                metadata = self._read_json(metadata_path)
+                expected_feature_cache = record.get("cache_fingerprint") or report_cache
+                if (
+                    metadata.get("schema_version") != 1
+                    or (
+                        expected_feature_cache is not None
+                        and metadata.get("cache_fingerprint") != expected_feature_cache
+                    )
+                ):
+                    raise ValueError(f"Embedding feature provenance changed: {feature_file}")
+                source_dir = self._resolve_artifact_path(record["source_dir"], layout.dataset_dir)
+                self._ensure_path_inside(source_dir, layout.dataset_dir, "embedding source")
+                image_path = next(
+                    (
+                        candidate
+                        for candidate in sorted(source_dir.glob(f"{feature_file.stem}.*"))
+                        if candidate.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                    ),
+                    None,
+                )
+                if image_path is None or metadata.get("image_sha256") != sha256_file(image_path):
+                    raise ValueError(f"Embedding source provenance changed: {feature_file}")
             restored.append(
                 EmbeddingVideoResult(
                     video_id=str(record["video_id"]),
                     source_dir=Path(str(record["source_dir"])),
-                    output_dir=Path(str(record["output_dir"])),
+                    output_dir=self._resolve_artifact_path(record["output_dir"], layout.dataset_dir),
                     image_count=image_count,
                     embedded_count=int(record["embedded_count"]),
                     skipped_count=int(record["skipped_count"]),
                     dimension=int(record["dimension"]),
                     feature_files=feature_files,
+                    cache_fingerprint=(
+                        str(record["cache_fingerprint"])
+                        if record.get("cache_fingerprint")
+                        else None
+                    ),
                 )
             )
-        result = EmbeddingBatchResult(videos=tuple(restored), dimension=dimension)
+        result = EmbeddingBatchResult(
+            videos=tuple(restored),
+            dimension=dimension,
+            cache_fingerprint=(str(report_cache) if report_cache else None),
+            encoder_provenance=(
+                dict(payload.get("encoder_provenance", {}))
+                if isinstance(payload.get("encoder_provenance"), Mapping)
+                else {}
+            ),
+        )
         if result.embedded_count + result.skipped_count != result.image_count:
             raise ValueError(f"Embedding report counts are inconsistent: {report_path}")
         return result
@@ -816,17 +1107,44 @@ class BatchOrchestrator:
             command=tuple(str(item) for item in payload.get("command", [])),
             output_tail=str(payload.get("output_tail", "")),
             verified_output_tail=str(payload.get("verified_output_tail", "")),
+            payload_digest=(str(payload["payload_digest"]) if payload.get("payload_digest") else None),
+            remote_status=(str(payload["remote_status"]) if payload.get("remote_status") else None),
+            remote_files=tuple(str(item) for item in payload.get("remote_files", [])),
+            verified_at=(str(payload["verified_at"]) if payload.get("verified_at") else None),
         )
         if not result.verified:
             raise ValueError(f"Upload receipt is not verified: {path}")
+        staging_root = layout.staging_dir
+        if self.config.upload.staging_scope == "dataset":
+            staging_root = (
+                self.config.upload.dataset_staging_dir
+                or self.config.data_root / "kaggle-dataset-staging"
+            )
+        provenance_path = staging_root / "provenance.json"
+        staging_has_files = staging_root.is_dir() and any(
+            path.is_file() for path in staging_root.rglob("*")
+        )
+        if result.payload_digest and staging_has_files and not provenance_path.is_file():
+            raise ValueError("Staging payload is present but provenance.json is missing")
+        if provenance_path.is_file() and result.payload_digest:
+            provenance = self._read_json(provenance_path)
+            if provenance.get("payload_digest") != result.payload_digest:
+                raise ValueError("Staging payload changed after upload")
+            current_digest, _ = digest_directory(
+                staging_root,
+                exclude_names={provenance_path.name},
+            )
+            if current_digest != result.payload_digest:
+                raise ValueError("Staging payload files changed after upload")
         return result
 
-    def _restore_cleanup(self, layout: LotLayout) -> None:
+    def _restore_cleanup(self, layout: LotLayout) -> CleanupResult:
         result_path = layout.receipts_dir / "cleanup-result.json"
         manager_path = layout.receipts_dir / "cleanup.json"
         if not result_path.is_file() and not manager_path.is_file():
             raise FileNotFoundError(f"Cleanup receipt not found: {result_path}")
-        self._read_json(result_path if result_path.is_file() else manager_path)
+        payload = self._read_json(result_path if result_path.is_file() else manager_path)
+        return CleanupResult.from_mapping(payload)
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
@@ -834,6 +1152,31 @@ class BatchOrchestrator:
         if not isinstance(payload, dict):
             raise ValueError(f"Expected a JSON object: {path}")
         return payload
+
+    @staticmethod
+    def _resolve_artifact_path(value: object, base: Path) -> Path:
+        path = Path(str(value))
+        return path if path.is_absolute() else base / path
+
+    @staticmethod
+    def _ensure_path_inside(path: Path, root: Path, label: str) -> None:
+        try:
+            path.resolve().relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"{label} is outside the lot dataset directory: {path}") from exc
+
+    @staticmethod
+    def _source_fingerprint_matches(path: Path, fingerprint: Mapping[str, Any]) -> bool:
+        try:
+            stat = path.stat()
+            if int(fingerprint.get("size_bytes")) != stat.st_size:
+                return False
+            expected_hash = fingerprint.get("sha256")
+            if expected_hash is not None:
+                return str(expected_hash) == sha256_file(path)
+            return int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
+        except (OSError, TypeError, ValueError):
+            return False
 
     def _download(self, request: ArchiveInput, layout: LotLayout, checkpoints: CheckpointStore) -> Path:
         archive_path = layout.archive_dir / request.archive_name
@@ -868,6 +1211,13 @@ class BatchOrchestrator:
         layout: LotLayout,
         checkpoints: CheckpointStore,
     ) -> Path:
+        free_bytes = shutil.disk_usage(layout.data_root).free
+        required_bytes = inspection.uncompressed_size_bytes + self.config.minimum_free_bytes
+        if free_bytes < required_bytes:
+            raise RuntimeError(
+                "Insufficient free disk space for extraction: "
+                f"{free_bytes} < {required_bytes} bytes"
+            )
         if layout.source_root.is_dir():
             try:
                 source_root = self._restore_extraction(inspection, layout)
@@ -1064,17 +1414,35 @@ class BatchOrchestrator:
 
     def _cleanup(self, layout: LotLayout, upload: UploadResult, checkpoints: CheckpointStore) -> None:
         checkpoints.transition(BatchState.CLEANING)
-        result = self.cleanup.cleanup(layout, upload)
+        verified_upload = upload
+        if self.uploader is not None:
+            provenance_path = layout.staging_dir / "provenance.json"
+            if self.config.upload.staging_scope == "dataset":
+                staging_root = (
+                    self.config.upload.dataset_staging_dir
+                    or self.config.data_root / "kaggle-dataset-staging"
+                )
+                provenance_path = staging_root / "provenance.json"
+            verified_upload = self.uploader.verify_existing(
+                upload,
+                provenance_path=provenance_path if provenance_path.is_file() else None,
+            )
+            self._write_json(layout.receipts_dir / "upload.json", verified_upload.to_dict())
+        result = self.cleanup.cleanup(layout, verified_upload)
         self._write_json(layout.receipts_dir / "cleanup-result.json", result.to_dict())
 
     @staticmethod
     def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(payload), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+        atomic_json_write(path, payload)
 
 
 def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
     """Build the default implementation graph; callers may inject custom parts."""
+    apply_reproducibility_policy(
+        mode=config.reproducibility.mode,
+        seed=config.reproducibility.seed,
+        cublas_workspace_config=config.reproducibility.cublas_workspace_config,
+    )
     device_hint = "auto"
     if config.shot_boundary.enabled and selector_requires_scene_boundaries(config.processing.selector):
         device_hint = config.shot_boundary.device
@@ -1128,12 +1496,14 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
                 staging_dir=dataset_staging_dir,
                 state_store=dataset_upload_state,
                 scene_segments_dir=config.processing.scene_segments_dir,
+                provenance_context={"config": config.to_dict()},
             )
         else:
             stager = KaggleStagingStrategy(
                 metadata_provider,
                 config.upload,
                 scene_segments_dir=config.processing.scene_segments_dir,
+                provenance_context={"config": config.to_dict()},
             )
     uploader = KaggleCliUploader(config.tools.kaggle, config.upload) if config.upload.enabled else None
     return BatchOrchestrator(
@@ -1141,7 +1511,9 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
         downloader=Aria2ArchiveDownloader(
             config.tools.aria2c,
             config.download,
-            show_progress=config.progress.enabled,
+            # Keep aria2c's redraw stream out of the shared tqdm region. The
+            # pipeline stage bar remains the single terminal progress surface.
+            show_progress=False,
         ),
         archive_validator=ZipArchiveValidator(config.archive),
         archive_extractor=ZipArchiveExtractor(),

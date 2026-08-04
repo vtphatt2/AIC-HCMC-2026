@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -13,6 +14,7 @@ from preprocess.batch.archive_validator import ZipArchiveValidator
 from preprocess.batch.checkpoints import CheckpointStore
 from preprocess.batch.cleanup import CleanupManager
 from preprocess.batch.config import (
+    ArchiveConfig,
     BatchConfig,
     CleanupConfig,
     DownloadConfig,
@@ -32,13 +34,13 @@ from preprocess.batch.locks import ExclusiveFileLock
 from preprocess.batch.metadata import JsonMetadataProvider
 from preprocess.batch.models import (
     ArchiveInput,
-    ArchiveInspection,
     BatchState,
     ProcessingResult,
     StagingResult,
     UploadResult,
     VideoAsset,
 )
+from preprocess.batch.provenance import atomic_json_write, digest_directory
 from preprocess.batch.shot_boundaries import (
     ShotBoundaryDetection,
     ShotBoundaryDetector,
@@ -46,7 +48,15 @@ from preprocess.batch.shot_boundaries import (
     load_scene_segments,
 )
 from preprocess.batch.video_discovery import VideoDiscovery
-from preprocess.keyframes.contracts import FrameCandidate, FrameRef, SceneSegment, VideoInfo
+from preprocess.keyframes.contracts import (
+    FrameCandidate,
+    FrameRef,
+    SceneSegment,
+    SelectedFrame,
+    VideoInfo,
+    VideoSource,
+)
+from preprocess.keyframes.extractors.ffmpeg import FFmpegKeyframeExtractor
 from preprocess.keyframes.selectors.linear_rulebase import LinearRuleBasedSelector
 from preprocess.progress import ProgressConfig, TqdmProgressReporter
 
@@ -188,6 +198,26 @@ class BatchModuleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ZipArchiveValidator().validate(archive_path)
 
+    def test_zip_duplicate_member_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "duplicate.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("video/L21_V030.mp4", b"first")
+                archive.writestr("video/L21_V030.mp4", b"second")
+            with self.assertRaisesRegex(ValueError, "Duplicate ZIP member"):
+                ZipArchiveValidator().validate(archive_path)
+
+    def test_zip_member_size_limit_is_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            archive_path = Path(temporary) / "large-member.zip"
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                archive.writestr("video/L21_V030.mp4", b"0123456789")
+            validator = ZipArchiveValidator(
+                ArchiveConfig(max_member_uncompressed_bytes=5)
+            )
+            with self.assertRaisesRegex(ValueError, "member exceeds size limit"):
+                validator.validate(archive_path)
+
     def test_video_discovery_uses_original_stem(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "L29_a"
@@ -236,6 +266,31 @@ class BatchModuleTests(unittest.TestCase):
             for index in range(3)
         ]
         self.assertEqual(counts, [1, 2, 3])
+
+    def test_ffmpeg_remap_prefers_decoder_ordinal_when_pts_ticks_differ(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = VideoSource("L21_V001", root / "L21_V001.mp4")
+            source.path.write_bytes(b"video")
+            selected = [
+                SelectedFrame(
+                    FrameRef("L21_V001", 3084, 101_466, 101.466667),
+                    score=1.0,
+                    reasons=(),
+                    rank=0,
+                )
+            ]
+            extractor = FFmpegKeyframeExtractor(
+                progress=TqdmProgressReporter(ProgressConfig(enabled=False))
+            )
+            with patch.object(
+                extractor,
+                "_authoritative_decoder_timeline",
+                return_value=[(3084, 101.467000)],
+            ):
+                mapped = extractor._map_selected_to_decoder_indexes(source, selected)
+
+        self.assertEqual(mapped, [3084])
 
     def test_checkpoint_transition_is_atomic_and_serializable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -762,6 +817,63 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(state["stages"]["process_validate"]["status"], "completed")
         self.assertEqual(state["stages"]["process_validate"]["attempt"], 2)
 
+    def test_stage_fingerprint_scopes_shared_inputs_to_current_lot(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            metadata_root = root / "metadata"
+            scene_root = root / "scene-segments"
+            metadata_root.mkdir()
+            scene_root.mkdir()
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(data_root),
+                    "metadata_root": str(metadata_root),
+                    "processing": {"scene_segments_dir": str(scene_root)},
+                },
+                base_dir=root,
+            )
+            layout = LotLayout(data_root, "L21_a")
+            layout.create_runtime_dirs()
+            (layout.reports_dir / "videos.json").write_text(
+                json.dumps({"videos": [{"video_id": "L21_V001"}]}),
+                encoding="utf-8",
+            )
+            (metadata_root / "L21_V001.json").write_text("{\"fps\":25}", encoding="utf-8")
+            (scene_root / "L21_V001.json").write_text(
+                "{\"segments\":[{\"start_ms\":0,\"end_ms\":1000}]}",
+                encoding="utf-8",
+            )
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.shot_boundary_detector = object()
+            orchestrator.embedding = None
+            orchestrator._cached_runtime_signature = {"test": "runtime"}
+            request = ArchiveInput(
+                url="https://example.test/Videos_L21_a.zip",
+                archive_name="Videos_L21_a.zip",
+                lot_id="L21_a",
+                line_number=1,
+            )
+
+            before = orchestrator._stage_fingerprint(request, "process_validate")
+            before_scene = orchestrator._stage_fingerprint(request, "shot_boundaries")
+            (metadata_root / "L22_V001.json").write_text("{\"fps\":30}", encoding="utf-8")
+            (scene_root / "L22_V001.json").write_text(
+                "{\"segments\":[{\"start_ms\":0,\"end_ms\":2000}]}",
+                encoding="utf-8",
+            )
+            after_other_lot = orchestrator._stage_fingerprint(request, "process_validate")
+            after_other_scene = orchestrator._stage_fingerprint(request, "shot_boundaries")
+            (metadata_root / "L21_V001.json").write_text("{\"fps\":24}", encoding="utf-8")
+            after_current_lot = orchestrator._stage_fingerprint(request, "process_validate")
+
+        self.assertEqual(before, after_other_lot)
+        self.assertEqual(before_scene, after_other_scene)
+        self.assertNotEqual(before, after_current_lot)
+
     def test_staging_excludes_source_video(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -853,6 +965,126 @@ class BatchModuleTests(unittest.TestCase):
             }
 
         self.assertIn("scene-segments/L21_V030.json", staged_paths)
+
+    def test_staging_uses_rendered_manifest_allowlist_and_records_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata_root = root / "metadata"
+            metadata_root.mkdir()
+            (metadata_root / "L21_V030.json").write_text("{}\n", encoding="utf-8")
+            layout = LotLayout(root / "data", "L29_a")
+            layout.create_runtime_dirs()
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000000.jpg").write_bytes(b"selected")
+            (keyframes / "999999.jpg").write_bytes(b"stale")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {
+                                "frame": {"frame_id": "000000", "source_frame_number": 0},
+                                "path": "000000.jpg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            selection = layout.dataset_dir / "selection-manifests" / "L21_V030.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}\n", encoding="utf-8")
+            validation = layout.reports_dir / "validation" / "L21_V030.json"
+            validation.parent.mkdir(parents=True)
+            validation.write_text("{}\n", encoding="utf-8")
+            source_video = layout.source_root / "L21_V030.mp4"
+            source_video.parent.mkdir(parents=True)
+            source_video.write_bytes(b"raw-video")
+            template = root / "dataset-metadata.json"
+            template.write_text('{"title":"test"}\n', encoding="utf-8")
+            asset = VideoAsset("L21_V030", source_video, "L29_a", source_video.name)
+            result = ProcessingResult(asset, {}, 1, selection, rendered)
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                metadata_template=template,
+                include_features=False,
+                include_transcripts=False,
+                include_transcript_index=False,
+            )
+            staging = KaggleStagingStrategy(
+                JsonMetadataProvider(metadata_root), config
+            ).stage(layout, [asset], [result])
+            staged_paths = {
+                path.relative_to(staging.staging_dir).as_posix() for path in staging.files
+            }
+            digest, _ = digest_directory(
+                staging.staging_dir,
+                exclude_names={"provenance.json"},
+            )
+            provenance = json.loads(
+                (staging.staging_dir / "provenance.json").read_text(encoding="utf-8")
+            )
+
+        self.assertIn("keyframes/L21_V030/000000.jpg", staged_paths)
+        self.assertNotIn("keyframes/L21_V030/999999.jpg", staged_paths)
+        self.assertEqual(staging.payload_digest, digest)
+        self.assertEqual(provenance["payload_digest"], digest)
+
+    def test_staging_error_policy_rejects_missing_feature_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metadata_root = root / "metadata"
+            metadata_root.mkdir()
+            (metadata_root / "L21_V030.json").write_text("{}\n", encoding="utf-8")
+            layout = LotLayout(root / "data", "L29_a")
+            layout.create_runtime_dirs()
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000000.jpg").write_bytes(b"selected")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text(
+                json.dumps(
+                    {
+                        "frames": [
+                            {
+                                "frame": {"frame_id": "000000", "source_frame_number": 0},
+                                "path": "000000.jpg",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            selection = layout.dataset_dir / "selection-manifests" / "L21_V030.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}\n", encoding="utf-8")
+            validation = layout.reports_dir / "validation" / "L21_V030.json"
+            validation.parent.mkdir(parents=True)
+            validation.write_text("{}\n", encoding="utf-8")
+            source_video = layout.source_root / "L21_V030.mp4"
+            source_video.parent.mkdir(parents=True)
+            source_video.write_bytes(b"raw-video")
+            template = root / "dataset-metadata.json"
+            template.write_text('{"title":"test"}\n', encoding="utf-8")
+            asset = VideoAsset("L21_V030", source_video, "L29_a", source_video.name)
+            result = ProcessingResult(asset, {}, 1, selection, rendered)
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                metadata_template=template,
+                missing_artifact_policy="error",
+                include_transcripts=False,
+                include_transcript_index=False,
+            )
+
+            with self.assertRaisesRegex(FileNotFoundError, "Feature directory"):
+                KaggleStagingStrategy(JsonMetadataProvider(metadata_root), config).stage(
+                    layout, [asset], [result]
+                )
+
+            self.assertFalse(layout.staging_dir.exists())
 
     def test_cumulative_staging_keeps_previous_lot_and_replaces_only_same_video(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1087,6 +1319,78 @@ class BatchModuleTests(unittest.TestCase):
             "-p",
         ])
         self.assertNotIn("--private", run.call_args_list[1].args[0])
+
+    def test_kaggle_evidence_requires_remote_provenance_and_local_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            staging.mkdir()
+            (staging / "keyframes.zip").write_bytes(b"payload")
+            digest, _ = digest_directory(staging)
+            atomic_json_write(staging / "provenance.json", {"payload_digest": digest})
+            config = UploadConfig(
+                enabled=True,
+                dataset_ref="owner/test",
+                verify_timeout_seconds=1,
+                verify_poll_seconds=1,
+                require_remote_inventory=True,
+            )
+            uploader = KaggleCliUploader("kaggle", config)
+            status = type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": "ready\n", "stderr": ""},
+            )()
+            files = type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "name size creationDate\nprovenance.json 12 today\n",
+                    "stderr": "",
+                },
+            )()
+            with patch(
+                "preprocess.batch.kaggle_uploader.subprocess.run",
+                side_effect=[status, files],
+            ):
+                evidence = uploader._verify_evidence(
+                    expected_payload_digest=digest,
+                    provenance_path=staging / "provenance.json",
+                )
+
+        self.assertTrue(evidence["verified"])
+        self.assertEqual(evidence["status"], "ready")
+        self.assertIn("provenance.json", evidence["files"])
+
+    def test_cumulative_transaction_recovery_publishes_ready_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            staging_dir = data_root / "kaggle-dataset-staging"
+            staging_dir.mkdir(parents=True)
+            (staging_dir / "old.txt").write_text("old", encoding="utf-8")
+            candidate = data_root / ".kaggle-dataset-staging.candidate.test"
+            candidate.mkdir(parents=True)
+            (candidate / "new.txt").write_text("new", encoding="utf-8")
+            backup = data_root / ".kaggle-dataset-staging.backup.test"
+            os.replace(staging_dir, backup)
+            marker = data_root / "kaggle-dataset-transaction.json"
+            atomic_json_write(
+                marker,
+                {
+                    "status": "ready",
+                    "candidate_dir": str(candidate),
+                    "backup_dir": str(backup),
+                },
+            )
+            strategy = object.__new__(CumulativeKaggleStagingStrategy)
+            strategy.staging_dir = staging_dir
+            strategy._recover_transaction()
+
+            self.assertEqual((staging_dir / "new.txt").read_text(encoding="utf-8"), "new")
+            self.assertFalse(backup.exists())
+            self.assertFalse(marker.exists())
 
     def test_cleanup_requires_verified_upload_and_preserves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

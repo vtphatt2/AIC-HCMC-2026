@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import fcntl
 import os
+import socket
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -26,7 +28,12 @@ class ExclusiveFileLock:
             ) from exc
         handle.seek(0)
         handle.truncate()
-        handle.write(f"pid={os.getpid()}\n")
+        handle.write(
+            f"pid={os.getpid()}\n"
+            f"host={socket.gethostname()}\n"
+            f"purpose={self.purpose}\n"
+            f"started_at={datetime.now(timezone.utc).isoformat()}\n"
+        )
         handle.flush()
         self._handle = handle
         return self

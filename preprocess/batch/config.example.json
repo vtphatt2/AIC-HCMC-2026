@@ -12,7 +12,11 @@
     "prefix": "Videos_",
     "extension": ".zip",
     "expected_root_name": "video",
-    "video_extensions": [".mp4"]
+    "video_extensions": [".mp4"],
+    "max_members": 10000,
+    "max_uncompressed_bytes": 500000000000,
+    "max_member_uncompressed_bytes": 50000000000,
+    "max_compression_ratio": 200.0
   },
   "download": {
     "continue_download": true,
@@ -61,6 +65,7 @@
   "embedding": {
     "enabled": false,
     "model_id": "hf-hub:timm/PE-Core-bigG-14-448",
+    "model_revision": null,
     "device": "auto",
     "precision": "fp32",
     "expected_dim": 1280,
@@ -87,7 +92,9 @@
     "include_transcripts": true,
     "include_transcript_index": true,
     "version_message": "preprocess batch upload",
-    "public": false
+    "public": false,
+    "require_remote_inventory": true,
+    "missing_artifact_policy": "skip"
   },
   "cleanup": {
     "enabled": true,
@@ -100,5 +107,10 @@
     "delete_transcript_index": true,
     "delete_staging": true
   },
-  "minimum_free_bytes": 0
+  "reproducibility": {
+    "mode": "best_effort",
+    "seed": 2026,
+    "cublas_workspace_config": ":4096:8"
+  },
+  "minimum_free_bytes": 10737418240
 }

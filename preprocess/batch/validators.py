@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import subprocess
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from preprocess.batch.config import ProcessingConfig, ToolConfig
 from preprocess.batch.metadata import MetadataProvider
 from preprocess.batch.models import ProcessingResult, ValidationReport, VideoAsset
+from preprocess.batch.provenance import sha256_file
 from preprocess.keyframes.contracts import RenderProfile
 
 
@@ -141,6 +142,25 @@ class ArtifactRule(ValidationRule):
             report.add_error("artifacts.empty_selection", "Selector produced no keyframes")
         if len(selected_frames) != len(rendered_frames):
             report.add_error("artifacts.count_mismatch", "Selection and rendered frame counts differ")
+        if rendered.get("profile") != asdict(self.profile):
+            report.add_error("artifacts.profile_changed", "Rendered manifest profile differs from configured profile")
+        expected_names = {
+            Path(str(frame.get("path", ""))).name
+            for frame in rendered_frames
+            if isinstance(frame, Mapping)
+        }
+        actual_names = {
+            path.name
+            for path in context.processing.rendered_manifest_path.parent.iterdir()
+            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        }
+        if actual_names != expected_names:
+            report.add_error(
+                "artifacts.extra_frames",
+                "Rendered keyframe directory contains files outside the manifest",
+                extra=sorted(actual_names - expected_names),
+                missing=sorted(expected_names - actual_names),
+            )
 
         selected_numbers = [self._source_frame_number(item) for item in selected_frames]
         rendered_numbers = [self._source_frame_number(item) for item in rendered_frames]
@@ -157,8 +177,14 @@ class ArtifactRule(ValidationRule):
             current_stat = context.asset.path.stat()
             if source_fingerprint.get("size_bytes") != current_stat.st_size:
                 report.add_error("artifacts.source_changed", "Source video size differs from selection fingerprint")
-            if source_fingerprint.get("mtime_ns") != current_stat.st_mtime_ns:
-                report.add_warning("artifacts.source_mtime_changed", "Source video mtime differs from selection fingerprint")
+            expected_hash = source_fingerprint.get("sha256")
+            if expected_hash is not None and str(expected_hash) != sha256_file(context.asset.path):
+                report.add_error("artifacts.source_changed", "Source video content differs from selection fingerprint")
+            elif expected_hash is None and source_fingerprint.get("mtime_ns") != current_stat.st_mtime_ns:
+                # Legacy manifests had no content digest. Keep their timestamp
+                # check as a conservative fallback; new manifests are portable
+                # across filesystems because content is authoritative.
+                report.add_error("artifacts.source_mtime_changed", "Source video mtime differs from legacy selection fingerprint")
 
     @staticmethod
     def _load_json(path: Path, report: ValidationReport, label: str) -> dict[str, Any] | None:
@@ -193,10 +219,18 @@ class ArtifactRule(ValidationRule):
         path = Path(str(path_value))
         candidates = [path]
         if not path.is_absolute():
-            candidates.append(manifest_path.parent / path.name)
+            candidates = [manifest_path.parent / path, manifest_path.parent / path.name]
         actual = next((candidate for candidate in candidates if candidate.is_file()), None)
         if actual is None:
             report.add_error("artifacts.frame_missing", f"Rendered frame is missing: {path}")
+            return
+        try:
+            actual.resolve().relative_to(manifest_path.parent.resolve())
+        except ValueError:
+            report.add_error(
+                "artifacts.frame_outside_manifest",
+                f"Rendered frame is outside its manifest directory: {actual}",
+            )
             return
         try:
             from PIL import Image
@@ -213,6 +247,12 @@ class ArtifactRule(ValidationRule):
             report.add_error(
                 "artifacts.frame_dimensions",
                 f"Rendered frame dimensions differ for {actual}: {(width, height)} != {(expected_width, expected_height)}",
+            )
+        expected_hash = frame.get("sha256")
+        if expected_hash is not None and str(expected_hash) != sha256_file(actual):
+            report.add_error(
+                "artifacts.frame_changed",
+                f"Rendered frame content differs from manifest: {actual}",
             )
         if self.profile.image_format == "jpeg" and actual.suffix.lower() not in {".jpg", ".jpeg"}:
             report.add_error("artifacts.frame_extension", f"Expected JPEG output: {actual}")

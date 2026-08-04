@@ -33,6 +33,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--links", type=Path, help="Override config.links_file.")
     run.add_argument("--data-root", type=Path, help="Override config.data_root.")
     run.add_argument("--metadata-root", type=Path, help="Override config.metadata_root.")
+    run.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue with later lots after one lot fails.",
+    )
     run.set_defaults(handler=_run_pipeline)
 
     upload = subparsers.add_parser(
@@ -41,6 +46,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     upload.add_argument("--lot-id", required=True, help="Lot directory to upload, e.g. L21_a.")
     upload.set_defaults(handler=_upload_lot)
+
+    cleanup = subparsers.add_parser(
+        "cleanup",
+        help="Reverify an uploaded lot and delete only its configured local artifacts.",
+    )
+    cleanup.add_argument("--lot-id", required=True, help="Lot directory to clean, e.g. L21_a.")
+    cleanup.set_defaults(handler=_cleanup_lot)
     return parser
 
 
@@ -58,7 +70,13 @@ def load_config(args: argparse.Namespace) -> BatchConfig:
 
 def _run_preflight(args: argparse.Namespace) -> int:
     result = PreflightChecker(load_config(args)).run()
-    print(json.dumps({"tools": result.tools, "free_bytes": result.free_bytes, "root": str(result.root)}, indent=2))
+    print(json.dumps({
+        "tools": result.tools,
+        "versions": result.versions,
+        "packages": result.packages,
+        "free_bytes": result.free_bytes,
+        "root": str(result.root),
+    }, indent=2))
     return 0
 
 
@@ -85,9 +103,13 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         archive_prefix=config.archive.prefix,
         archive_extension=config.archive.extension,
     ).parse(config.links_file)
-    results = build_default_orchestrator(config).run_all(requests)
-    print(json.dumps({"completed_lots": [result.lot_id for result in results]}, ensure_ascii=False, indent=2))
-    return 0
+    orchestrator = build_default_orchestrator(config)
+    results = orchestrator.run_all(requests, continue_on_error=args.continue_on_error)
+    print(json.dumps({
+        "completed_lots": [result.lot_id for result in results],
+        "failed_lots": orchestrator.failed_lots,
+    }, ensure_ascii=False, indent=2))
+    return 1 if orchestrator.failed_lots else 0
 
 
 def _upload_lot(args: argparse.Namespace) -> int:
@@ -95,6 +117,8 @@ def _upload_lot(args: argparse.Namespace) -> int:
     # The explicit upload command is an opt-in override; the config flag only
     # controls whether the full ``run`` command includes upload stages.
     config = replace(config, upload=replace(config.upload, enabled=True))
+    if getattr(args, "_cli_entry", False):
+        PreflightChecker(config).run()
     result = build_default_orchestrator(config).upload_lot(args.lot_id)
     print(
         json.dumps(
@@ -106,8 +130,25 @@ def _upload_lot(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cleanup_lot(args: argparse.Namespace) -> int:
+    config = load_config(args)
+    config = replace(config, upload=replace(config.upload, enabled=True))
+    if getattr(args, "_cli_entry", False):
+        PreflightChecker(config).run()
+    result = build_default_orchestrator(config).cleanup_lot(args.lot_id)
+    print(
+        json.dumps(
+            {"lot_id": args.lot_id, "cleanup": result.to_dict()},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    args._cli_entry = True
     try:
         return args.handler(args)
     except KeyboardInterrupt:

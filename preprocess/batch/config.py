@@ -79,8 +79,10 @@ class ArchiveConfig:
     extension: str = ".zip"
     expected_root_name: str = "video"
     video_extensions: tuple[str, ...] = (".mp4", ".mkv", ".mov", ".avi", ".webm")
-    max_members: int | None = None
-    max_uncompressed_bytes: int | None = None
+    max_members: int | None = 10_000
+    max_uncompressed_bytes: int | None = 500_000_000_000
+    max_member_uncompressed_bytes: int | None = 50_000_000_000
+    max_compression_ratio: float | None = 200.0
     minimum_archive_bytes: int = 1
 
     def __post_init__(self) -> None:
@@ -97,6 +99,10 @@ class ArchiveConfig:
             raise ValueError("max_members must be positive when provided")
         if self.max_uncompressed_bytes is not None and self.max_uncompressed_bytes <= 0:
             raise ValueError("max_uncompressed_bytes must be positive when provided")
+        if self.max_member_uncompressed_bytes is not None and self.max_member_uncompressed_bytes <= 0:
+            raise ValueError("max_member_uncompressed_bytes must be positive when provided")
+        if self.max_compression_ratio is not None and self.max_compression_ratio < 1:
+            raise ValueError("max_compression_ratio must be >= 1 when provided")
         if self.minimum_archive_bytes < 0:
             raise ValueError("minimum_archive_bytes must not be negative")
 
@@ -223,6 +229,8 @@ class UploadConfig:
     include_transcript_index: bool = True
     version_message: str = "preprocess batch upload"
     public: bool = False
+    require_remote_inventory: bool = True
+    missing_artifact_policy: str = "skip"
     verify_timeout_seconds: int = 600
     verify_poll_seconds: int = 10
 
@@ -233,6 +241,8 @@ class UploadConfig:
             raise ValueError("upload dir_mode must be one of: skip, zip, tar")
         if self.staging_scope not in {"lot", "dataset"}:
             raise ValueError("upload staging_scope must be 'lot' or 'dataset'")
+        if self.missing_artifact_policy not in {"error", "skip"}:
+            raise ValueError("missing_artifact_policy must be 'error' or 'skip'")
         if self.dataset_ref and self.dataset_ref_template:
             raise ValueError("set either dataset_ref or dataset_ref_template, not both")
         if self.staging_scope == "dataset" and self.dataset_ref_template:
@@ -260,10 +270,15 @@ class UploadConfig:
             raise ValueError(f"Unsafe lot_id for dataset target: {lot_id!r}")
         if self.dataset_ref_template:
             lot_slug = re.sub(r"[^a-z0-9]+", "-", lot_id.lower()).strip("-")
-            dataset_ref = self.dataset_ref_template.format(
-                lot_id=lot_id,
-                lot_slug=lot_slug,
-            )
+            try:
+                dataset_ref = self.dataset_ref_template.format(
+                    lot_id=lot_id,
+                    lot_slug=lot_slug,
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"Unsupported placeholder in dataset_ref_template: {exc.args[0]}"
+                ) from exc
         elif self.dataset_ref:
             dataset_ref = self.dataset_ref
         else:
@@ -272,7 +287,7 @@ class UploadConfig:
                 "upload.dataset_ref_template"
             )
         owner, separator, slug = dataset_ref.partition("/")
-        if not separator or not owner or not slug:
+        if not separator or not owner or not slug or not re.fullmatch(r"[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+", dataset_ref):
             raise ValueError(
                 "Resolved dataset_ref must have the form 'owner/dataset-slug': "
                 f"{dataset_ref!r}"
@@ -294,6 +309,25 @@ class CleanupConfig:
 
 
 @dataclass(frozen=True)
+class ReproducibilityConfig:
+    """Runtime reproducibility policy; strict mode favors repeatability."""
+
+    mode: str = "best_effort"
+    seed: int | None = None
+    cublas_workspace_config: str = ":4096:8"
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"best_effort", "strict"}:
+            raise ValueError("reproducibility.mode must be 'best_effort' or 'strict'")
+        if self.seed is not None and self.seed < 0:
+            raise ValueError("reproducibility.seed must not be negative")
+        if self.cublas_workspace_config not in {":4096:8", ":16:8"}:
+            raise ValueError(
+                "reproducibility.cublas_workspace_config must be ':4096:8' or ':16:8'"
+            )
+
+
+@dataclass(frozen=True)
 class BatchConfig:
     """Top-level settings with no user-specific absolute paths."""
 
@@ -309,7 +343,21 @@ class BatchConfig:
     embedding: PECoreEmbeddingConfig = field(default_factory=PECoreEmbeddingConfig)
     upload: UploadConfig = field(default_factory=UploadConfig)
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
+    reproducibility: ReproducibilityConfig = field(default_factory=ReproducibilityConfig)
     minimum_free_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        if self.minimum_free_bytes < 0:
+            raise ValueError("minimum_free_bytes must not be negative")
+        if (
+            self.reproducibility.mode == "strict"
+            and self.embedding.enabled
+            and self.embedding.model_id.startswith("hf-hub:")
+            and not self.embedding.model_revision
+        ):
+            raise ValueError(
+                "strict reproducibility requires embedding.model_revision for hf-hub models"
+            )
 
     @classmethod
     def from_json(cls, path: Path) -> "BatchConfig":
@@ -398,6 +446,7 @@ class BatchConfig:
             embedding=embedding,
             upload=upload,
             cleanup=CleanupConfig(**dict(payload.get("cleanup", {}))),
+            reproducibility=ReproducibilityConfig(**dict(payload.get("reproducibility", {}))),
             minimum_free_bytes=int(payload.get("minimum_free_bytes", 0)),
         )
 

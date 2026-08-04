@@ -13,9 +13,8 @@ import subprocess
 import tempfile
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from preprocess.batch.config import UploadConfig
 from preprocess.batch.dataset_state import DatasetUploadStateStore
@@ -27,6 +26,13 @@ from preprocess.batch.models import (
     StagingResult,
     UploadResult,
     VideoAsset,
+    utc_now,
+)
+from preprocess.batch.provenance import (
+    PROVENANCE_FILE_NAME,
+    atomic_json_write,
+    digest_directory,
+    runtime_provenance,
 )
 
 
@@ -51,10 +57,12 @@ class KaggleStagingStrategy(StagingStrategy):
         metadata_provider: MetadataProvider,
         config: UploadConfig,
         scene_segments_dir: Path | None = None,
+        provenance_context: Mapping[str, Any] | None = None,
     ) -> None:
         self.metadata_provider = metadata_provider
         self.config = config
         self.scene_segments_dir = scene_segments_dir
+        self.provenance_context = dict(provenance_context or {})
 
     def stage(
         self,
@@ -67,6 +75,7 @@ class KaggleStagingStrategy(StagingStrategy):
         target = self.config.target_for_lot(layout.lot_id)
         staging_dir = self._build_payload(layout, assets, results, parent=layout.root)
         try:
+            payload_digest = self._write_provenance(staging_dir, layout, target)
             files = tuple(sorted(path for path in staging_dir.rglob("*") if path.is_file()))
             if layout.staging_dir.exists():
                 if any(layout.staging_dir.iterdir()):
@@ -80,6 +89,8 @@ class KaggleStagingStrategy(StagingStrategy):
                 staging_dir=layout.staging_dir,
                 files=final_files,
                 target=target,
+                payload_digest=payload_digest,
+                provenance_path=layout.staging_dir / PROVENANCE_FILE_NAME,
             )
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
@@ -126,9 +137,16 @@ class KaggleStagingStrategy(StagingStrategy):
             )
 
             for asset, result in zip(assets, results, strict=True):
-                source_keyframes = result.rendered_manifest_path.parent
+                if result.asset.video_id != asset.video_id:
+                    raise ValueError(
+                        f"Processing result does not match asset: {asset.video_id} != "
+                        f"{result.asset.video_id}"
+                    )
                 destination_keyframes = staging_dir / "keyframes" / asset.video_id
-                self._copy_tree(source_keyframes, destination_keyframes, skip_names={"manifest.json"})
+                self._copy_keyframes_from_manifest(
+                    result.rendered_manifest_path,
+                    destination_keyframes,
+                )
                 self._copy_file(
                     self.metadata_provider.path_for(asset.video_id),
                     staging_dir / "metadata" / f"{asset.video_id}.json",
@@ -143,11 +161,10 @@ class KaggleStagingStrategy(StagingStrategy):
                 )
                 self._copy_file(result.rendered_manifest_path, rendered_destination)
                 validation_path = layout.reports_dir / "validation" / f"{asset.video_id}.json"
-                if validation_path.is_file():
-                    self._copy_file(
-                        validation_path,
-                        staging_dir / "manifests" / "validation" / validation_path.name,
-                    )
+                self._copy_file(
+                    validation_path,
+                    staging_dir / "manifests" / "validation" / validation_path.name,
+                )
 
                 if self.config.include_scene_segments:
                     scene_segments_path = scene_segment_paths[asset.video_id]
@@ -157,22 +174,186 @@ class KaggleStagingStrategy(StagingStrategy):
                     )
 
                 if self.config.include_features:
-                    feature_dir = layout.dataset_dir / "PECore-features" / asset.video_id
-                    if feature_dir.is_dir():
-                        self._copy_tree(feature_dir, staging_dir / "PECore-features" / asset.video_id)
+                    feature_root = layout.dataset_dir / self._features_dir_name(layout)
+                    if not feature_root.is_dir():
+                        if self.config.missing_artifact_policy == "error":
+                            raise FileNotFoundError(
+                                f"Feature directory not found for {asset.video_id}: {feature_root}"
+                            )
+                        feature_files = ()
+                    else:
+                        feature_files = self._feature_files_for_video(layout, asset.video_id)
+                        if self.config.missing_artifact_policy == "error" and not feature_files:
+                            raise FileNotFoundError(
+                                f"No feature files found for {asset.video_id} while staging"
+                            )
+                    for feature_file in feature_files:
+                        relative = feature_file.relative_to(
+                            layout.dataset_dir / self._features_dir_name(layout)
+                        )
+                        self._copy_file(
+                            feature_file,
+                            staging_dir / "PECore-features" / relative,
+                        )
 
             if self.config.include_transcripts:
                 transcript_dir = layout.dataset_dir / "transcripts"
                 if transcript_dir.is_dir():
-                    self._copy_tree(transcript_dir, staging_dir / "transcripts")
+                    copied = self._copy_tree_for_video_ids(
+                        transcript_dir,
+                        staging_dir / "transcripts",
+                        {asset.video_id for asset in assets},
+                    )
+                    if self.config.missing_artifact_policy == "error":
+                        missing = [
+                            asset.video_id
+                            for asset in assets
+                            if not any(
+                                self._belongs_to_video(path, asset.video_id)
+                                for path in copied
+                            )
+                        ]
+                        if missing:
+                            raise FileNotFoundError(
+                                "Transcript artifact is missing for: " + ", ".join(missing)
+                            )
+                elif self.config.missing_artifact_policy == "error":
+                    raise FileNotFoundError(f"Transcript directory not found: {transcript_dir}")
             if self.config.include_transcript_index:
                 index_dir = layout.dataset_dir / "keyframe_transcript_index"
                 if index_dir.is_dir():
-                    self._copy_tree(index_dir, staging_dir / "keyframe_transcript_index")
+                    copied = self._copy_tree_for_video_ids(
+                        index_dir,
+                        staging_dir / "keyframe_transcript_index",
+                        {asset.video_id for asset in assets},
+                    )
+                    if self.config.missing_artifact_policy == "error":
+                        missing = [
+                            asset.video_id
+                            for asset in assets
+                            if not any(
+                                self._belongs_to_video(path, asset.video_id)
+                                for path in copied
+                            )
+                        ]
+                        if missing:
+                            raise FileNotFoundError(
+                                "Transcript index artifact is missing for: " + ", ".join(missing)
+                            )
+                elif self.config.missing_artifact_policy == "error":
+                    raise FileNotFoundError(f"Transcript index directory not found: {index_dir}")
         except Exception:
             shutil.rmtree(staging_dir, ignore_errors=True)
             raise
         return staging_dir
+
+    @staticmethod
+    def _features_dir_name(layout: LotLayout) -> str:
+        del layout
+        return "PECore-features"
+
+    def _feature_files_for_video(self, layout: LotLayout, video_id: str) -> tuple[Path, ...]:
+        """Read the embedding report and return only its allowlisted files."""
+        feature_root = layout.dataset_dir / self._features_dir_name(layout)
+        video_root = feature_root / video_id
+        if not video_root.is_dir():
+            return ()
+        report_path = layout.reports_dir / "embedding.json"
+        if not report_path.is_file():
+            raise FileNotFoundError(
+                f"Embedding report is required to stage features: {report_path}"
+            )
+        payload = json.loads(report_path.read_text(encoding="utf-8"))
+        records = payload.get("videos") if isinstance(payload, Mapping) else None
+        record = next(
+            (item for item in records or [] if isinstance(item, Mapping) and str(item.get("video_id")) == video_id),
+            None,
+        )
+        if record is None:
+            raise ValueError(f"Embedding report does not contain {video_id}: {report_path}")
+        files: list[Path] = []
+        for raw_path in record.get("feature_files", []):
+            path = Path(str(raw_path))
+            if not path.is_absolute():
+                path = layout.root / path
+            try:
+                path.resolve().relative_to(video_root.resolve())
+            except ValueError as exc:
+                raise ValueError(f"Feature path is outside its video directory: {path}") from exc
+            if not path.is_file():
+                raise FileNotFoundError(f"Feature file is missing: {path}")
+            if path.suffix.lower() != ".npy":
+                raise ValueError(f"Embedding report points to a non-NPY file: {path}")
+            files.append(path)
+        if len(set(files)) != len(files):
+            raise ValueError(f"Embedding report contains duplicate feature files for {video_id}")
+        return tuple(sorted(files))
+
+    def _copy_keyframes_from_manifest(self, manifest_path: Path, destination: Path) -> None:
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Rendered manifest not found: {manifest_path}")
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        frames = payload.get("frames") if isinstance(payload, Mapping) else None
+        if not isinstance(frames, list) or not frames:
+            # Keep a narrow migration path for pre-manifest fixtures: a
+            # directory containing exactly one image is unambiguous. Any
+            # multi-frame legacy directory must be reprocessed first.
+            legacy_images = sorted(
+                path
+                for path in manifest_path.parent.iterdir()
+                if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+            )
+            if len(legacy_images) != 1:
+                raise ValueError(f"Rendered manifest has no allowlisted frames: {manifest_path}")
+            self._copy_file(legacy_images[0], destination / legacy_images[0].name)
+            return
+        source_root = manifest_path.parent.resolve()
+        copied_names: set[str] = set()
+        for frame in frames:
+            if not isinstance(frame, Mapping) or not frame.get("path"):
+                raise ValueError(f"Rendered manifest contains an invalid frame: {manifest_path}")
+            path = Path(str(frame["path"]))
+            if not path.is_absolute():
+                path = manifest_path.parent / path
+            try:
+                path.resolve().relative_to(source_root)
+            except ValueError as exc:
+                raise ValueError(f"Rendered frame is outside its keyframe directory: {path}") from exc
+            if path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                raise ValueError(f"Rendered manifest points to a non-image file: {path}")
+            if path.name in copied_names:
+                raise ValueError(f"Rendered manifest contains duplicate frame path: {path.name}")
+            copied_names.add(path.name)
+            self._copy_file(path, destination / path.name)
+
+    def _write_provenance(
+        self,
+        staging_dir: Path,
+        layout: LotLayout,
+        target: DatasetTarget,
+    ) -> str:
+        digest, records = digest_directory(
+            staging_dir,
+            exclude_names={PROVENANCE_FILE_NAME},
+        )
+        payload: dict[str, Any] = {
+            **self.provenance_context,
+            "schema_version": 1,
+            "lot_id": layout.lot_id,
+            "dataset_ref": target.dataset_ref,
+            "payload_digest": digest,
+            "files": records,
+            "runtime": runtime_provenance(
+                root=Path(__file__).resolve().parents[2],
+                tools=(
+                    self.provenance_context.get("config", {}).get("tools")
+                    if isinstance(self.provenance_context.get("config"), Mapping)
+                    else None
+                ),
+            ),
+        }
+        atomic_json_write(staging_dir / PROVENANCE_FILE_NAME, payload)
+        return digest
 
     @staticmethod
     def _write_dataset_metadata(
@@ -229,6 +410,27 @@ class KaggleStagingStrategy(StagingStrategy):
             copied.append(target)
         return copied
 
+    def _copy_tree_for_video_ids(
+        self,
+        source: Path,
+        destination: Path,
+        video_ids: set[str],
+    ) -> list[Path]:
+        if not source.is_dir():
+            raise FileNotFoundError(f"Staging source directory not found: {source}")
+        copied: list[Path] = []
+        for path in sorted(source.rglob("*")):
+            if not path.is_file() or not any(self._belongs_to_video(path, video_id) for video_id in video_ids):
+                continue
+            target = destination / path.relative_to(source)
+            self._copy_file(path, target)
+            copied.append(target)
+        return copied
+
+    @staticmethod
+    def _belongs_to_video(path: Path, video_id: str) -> bool:
+        return path.stem == video_id or path.stem.startswith(f"{video_id}_")
+
 
 class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
     """Merge each lot into one persistent dataset-level upload snapshot."""
@@ -241,14 +443,20 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
         staging_dir: Path,
         state_store: DatasetUploadStateStore,
         scene_segments_dir: Path | None = None,
+        provenance_context: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(
             metadata_provider,
             config,
             scene_segments_dir=scene_segments_dir,
+            provenance_context=provenance_context,
         )
         self.staging_dir = staging_dir
         self.state_store = state_store
+
+    @property
+    def transaction_path(self) -> Path:
+        return self.staging_dir.parent / "kaggle-dataset-transaction.json"
 
     def stage(
         self,
@@ -260,9 +468,13 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
             raise ValueError("Cumulative dataset staging must not be the data root itself")
         if self.staging_dir.exists() and not self.staging_dir.is_dir():
             raise FileExistsError(f"Cumulative staging path is not a directory: {self.staging_dir}")
+        if self.staging_dir.is_symlink():
+            raise RuntimeError(f"Cumulative staging must not be a symlink: {self.staging_dir}")
 
+        self._recover_transaction()
+        target = self.config.target_for_lot(layout.lot_id)
         self.state_store.initialize(
-            dataset_ref=self.config.dataset_ref or "created-from-metadata",
+            dataset_ref=target.dataset_ref,
             staging_dir=self.staging_dir,
         )
         self.state_store.ensure_staging_available(self.staging_dir)
@@ -272,11 +484,56 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
             results,
             parent=self.staging_dir.parent,
         )
+        parent = self.staging_dir.parent
+        candidate_dir = Path(
+            tempfile.mkdtemp(prefix=f".{self.staging_dir.name}.candidate.", dir=parent)
+        )
+        shutil.rmtree(candidate_dir)
+        backup_dir = Path(
+            tempfile.mkdtemp(prefix=f".{self.staging_dir.name}.backup.", dir=parent)
+        )
+        shutil.rmtree(backup_dir)
+        transaction_status = "building"
         try:
-            self.staging_dir.mkdir(parents=True, exist_ok=True)
+            atomic_json_write(
+                self.transaction_path,
+                {
+                    "schema_version": 1,
+                    "status": transaction_status,
+                    "staging_dir": str(self.staging_dir),
+                    "candidate_dir": str(candidate_dir),
+                    "backup_dir": str(backup_dir),
+                    "lot_id": layout.lot_id,
+                    "started_at": utc_now(),
+                },
+            )
+            if self.staging_dir.is_dir():
+                shutil.copytree(
+                    self.staging_dir,
+                    candidate_dir,
+                    copy_function=self._link_or_copy,
+                )
+            else:
+                candidate_dir.mkdir(parents=True, exist_ok=True)
             for asset in assets:
-                self._remove_video_payload(asset.video_id)
-            self._merge_payload(payload_dir)
+                self._remove_video_payload(asset.video_id, root=candidate_dir)
+            self._merge_payload(payload_dir, staging_root=candidate_dir)
+            payload_digest = self._write_provenance(candidate_dir, layout, target)
+            atomic_json_write(
+                self.transaction_path,
+                {
+                    "schema_version": 1,
+                    "status": "ready",
+                    "staging_dir": str(self.staging_dir),
+                    "candidate_dir": str(candidate_dir),
+                    "backup_dir": str(backup_dir),
+                    "lot_id": layout.lot_id,
+                    "payload_digest": payload_digest,
+                    "ready_at": utc_now(),
+                },
+            )
+            transaction_status = "ready"
+            self._commit_transaction(candidate_dir, backup_dir)
             files = tuple(sorted(path for path in self.staging_dir.rglob("*") if path.is_file()))
             relative_files = tuple(
                 path.relative_to(self.staging_dir).as_posix() for path in files
@@ -285,33 +542,105 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
                 layout.lot_id,
                 video_ids=[asset.video_id for asset in assets],
                 files=relative_files,
+                payload_digest=payload_digest,
             )
             return StagingResult(
                 staging_dir=self.staging_dir,
                 files=files,
-                target=self.config.target_for_lot(layout.lot_id),
+                target=target,
+                payload_digest=payload_digest,
+                provenance_path=self.staging_dir / PROVENANCE_FILE_NAME,
             )
+        except Exception:
+            if transaction_status == "building":
+                shutil.rmtree(candidate_dir, ignore_errors=True)
+                backup_dir_missing = not backup_dir.exists()
+                if backup_dir_missing:
+                    self.transaction_path.unlink(missing_ok=True)
+            raise
         finally:
             shutil.rmtree(payload_dir, ignore_errors=True)
 
-    def _remove_video_payload(self, video_id: str) -> None:
+    def _recover_transaction(self) -> None:
+        """Finish or roll back a directory swap interrupted by SSH/process loss."""
+        if not self.transaction_path.is_file():
+            return
+        try:
+            payload = json.loads(self.transaction_path.read_text(encoding="utf-8"))
+            candidate = Path(str(payload["candidate_dir"]))
+            backup = Path(str(payload["backup_dir"]))
+            status = str(payload.get("status", "building"))
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Cumulative staging transaction marker is invalid: {self.transaction_path}"
+            ) from exc
+        parent = self.staging_dir.parent.resolve()
+        for path in (candidate, backup):
+            try:
+                if path.resolve().parent != parent:
+                    raise ValueError(path)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Cumulative staging transaction points outside its parent: {path}"
+                ) from exc
+
+        if status != "ready":
+            if not self.staging_dir.exists() and backup.exists():
+                os.replace(backup, self.staging_dir)
+            shutil.rmtree(candidate, ignore_errors=True)
+            shutil.rmtree(backup, ignore_errors=True)
+            self.transaction_path.unlink(missing_ok=True)
+            return
+
+        if self.staging_dir.exists() and backup.exists():
+            # The candidate was already published; only backup cleanup remained.
+            shutil.rmtree(backup, ignore_errors=True)
+        elif not self.staging_dir.exists() and candidate.exists():
+            os.replace(candidate, self.staging_dir)
+            shutil.rmtree(backup, ignore_errors=True)
+        elif not self.staging_dir.exists() and backup.exists():
+            # The process moved the old directory but did not publish candidate.
+            os.replace(backup, self.staging_dir)
+            shutil.rmtree(candidate, ignore_errors=True)
+        else:
+            shutil.rmtree(candidate, ignore_errors=True)
+            shutil.rmtree(backup, ignore_errors=True)
+        self.transaction_path.unlink(missing_ok=True)
+
+    def _commit_transaction(self, candidate: Path, backup: Path) -> None:
+        if self.staging_dir.exists():
+            os.replace(self.staging_dir, backup)
+        os.replace(candidate, self.staging_dir)
+        shutil.rmtree(backup, ignore_errors=True)
+        self.transaction_path.unlink(missing_ok=True)
+
+    def _remove_video_payload(self, video_id: str, *, root: Path | None = None) -> None:
+        staging_root = root or self.staging_dir
         targets = (
-            self.staging_dir / "keyframes" / video_id,
-            self.staging_dir / "metadata" / f"{video_id}.json",
-            self.staging_dir / "manifests" / "selection" / f"{video_id}.json",
-            self.staging_dir / "manifests" / "rendered" / f"{video_id}.json",
-            self.staging_dir / "manifests" / "validation" / f"{video_id}.json",
-            self.staging_dir / "scene-segments" / f"{video_id}.json",
-            self.staging_dir / "PECore-features" / video_id,
+            staging_root / "keyframes" / video_id,
+            staging_root / "metadata" / f"{video_id}.json",
+            staging_root / "manifests" / "selection" / f"{video_id}.json",
+            staging_root / "manifests" / "rendered" / f"{video_id}.json",
+            staging_root / "manifests" / "validation" / f"{video_id}.json",
+            staging_root / "scene-segments" / f"{video_id}.json",
+            staging_root / "PECore-features" / video_id,
         )
         for target in targets:
-            self._remove_owned_path(target)
+            self._remove_owned_path(target, root=staging_root)
+        for directory_name in ("transcripts", "keyframe_transcript_index"):
+            directory = staging_root / directory_name
+            if not directory.is_dir():
+                continue
+            for path in directory.rglob("*"):
+                if path.is_file() and self._belongs_to_video(path, video_id):
+                    self._remove_owned_path(path, root=staging_root)
 
-    def _remove_owned_path(self, path: Path) -> None:
+    def _remove_owned_path(self, path: Path, *, root: Path | None = None) -> None:
+        root = root or self.staging_dir
         if not path.exists() and not path.is_symlink():
             return
         try:
-            path.resolve().relative_to(self.staging_dir.resolve())
+            path.resolve().relative_to(root.resolve())
         except ValueError as exc:
             raise RuntimeError(f"Refusing to modify path outside cumulative staging: {path}") from exc
         if path.is_dir() and not path.is_symlink():
@@ -319,11 +648,23 @@ class CumulativeKaggleStagingStrategy(KaggleStagingStrategy):
         else:
             path.unlink()
 
-    def _merge_payload(self, payload_dir: Path) -> None:
+    def _merge_payload(self, payload_dir: Path, *, staging_root: Path | None = None) -> None:
+        staging_root = staging_root or self.staging_dir
         for source in sorted(path for path in payload_dir.rglob("*") if path.is_file()):
             relative = source.relative_to(payload_dir)
-            destination = self.staging_dir / relative
+            destination = staging_root / relative
             self._replace_file(source, destination)
+
+    @staticmethod
+    def _link_or_copy(source: str, destination: str) -> None:
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+
+    @staticmethod
+    def _belongs_to_video(path: Path, video_id: str) -> bool:
+        return path.stem == video_id or path.stem.startswith(f"{video_id}_")
 
     @staticmethod
     def _replace_file(source: Path, destination: Path) -> None:
@@ -351,6 +692,22 @@ class DatasetUploader(ABC):
     @abstractmethod
     def upload_and_verify(self, staging: StagingResult) -> UploadResult:
         raise NotImplementedError
+
+    def verify_existing(
+        self,
+        upload: UploadResult,
+        *,
+        provenance_path: Path | None = None,
+    ) -> UploadResult:
+        """Recheck an already uploaded payload before destructive cleanup.
+
+        Custom upload adapters can override this method. The default preserves
+        compatibility with lightweight test/fake adapters while requiring the
+        caller to have an upload receipt marked verified.
+        """
+        if not upload.verified:
+            raise RuntimeError("Cannot reverify an unverified upload")
+        return upload
 
 
 class KaggleCliUploader(DatasetUploader):
@@ -383,16 +740,54 @@ class KaggleCliUploader(DatasetUploader):
         output = (completed.stdout or "") + (completed.stderr or "")
         if completed.returncode != 0:
             raise RuntimeError(f"Kaggle upload failed (exit {completed.returncode}): {output[-3000:]}")
-        verified, verification_output = self._verify(target.dataset_ref)
-        if not verified:
-            raise RuntimeError(f"Kaggle upload was not verified: {verification_output[-3000:]}")
+        verification = self._verify_evidence(
+            target.dataset_ref,
+            expected_payload_digest=staging.payload_digest,
+            provenance_path=staging.provenance_path,
+        )
+        if not verification["verified"]:
+            raise RuntimeError(
+                f"Kaggle upload was not verified: {verification['output'][-3000:]}"
+            )
         return UploadResult(
             dataset_ref=target.dataset_ref,
             mode=mode,
             verified=True,
             command=tuple(command),
             output_tail=output[-3000:],
-            verified_output_tail=verification_output[-3000:],
+            verified_output_tail=str(verification["output"])[-3000:],
+            payload_digest=staging.payload_digest,
+            remote_status=str(verification["status"]),
+            remote_files=tuple(str(item) for item in verification["files"]),
+            verified_at=str(verification["verified_at"]),
+        )
+
+    def verify_existing(
+        self,
+        upload: UploadResult,
+        *,
+        provenance_path: Path | None = None,
+    ) -> UploadResult:
+        evidence = self._verify_evidence(
+            upload.dataset_ref,
+            expected_payload_digest=upload.payload_digest,
+            provenance_path=provenance_path,
+        )
+        if not evidence["verified"]:
+            raise RuntimeError(
+                f"Remote Kaggle verification failed before cleanup: {evidence['output'][-3000:]}"
+            )
+        return UploadResult(
+            dataset_ref=upload.dataset_ref,
+            mode=upload.mode,
+            verified=True,
+            command=upload.command,
+            output_tail=upload.output_tail,
+            verified_output_tail=str(evidence["output"])[-3000:],
+            payload_digest=upload.payload_digest,
+            remote_status=str(evidence["status"]),
+            remote_files=tuple(str(item) for item in evidence["files"]),
+            verified_at=str(evidence["verified_at"]),
         )
 
     def _resolve_mode(self, target: DatasetTarget) -> str:
@@ -406,7 +801,16 @@ class KaggleCliUploader(DatasetUploader):
             capture_output=True,
             check=False,
         )
-        return "version" if completed.returncode == 0 else "create"
+        output = (completed.stdout or "") + (completed.stderr or "")
+        if completed.returncode == 0:
+            return "version"
+        lowered = output.lower()
+        if any(marker in lowered for marker in ("not found", "does not exist", "not exist")):
+            return "create"
+        raise RuntimeError(
+            "Could not determine whether the Kaggle dataset exists; "
+            f"status command failed with exit {completed.returncode}: {output[-2000:]}"
+        )
 
     def _upload_command(
         self,
@@ -460,6 +864,7 @@ class KaggleCliUploader(DatasetUploader):
         ]
 
     def _verify(self, dataset_ref: str | None = None) -> tuple[bool, str]:
+        """Compatibility wrapper returning the textual verification evidence."""
         effective_ref = dataset_ref or self.config.dataset_ref
         if not effective_ref:
             return False, "dataset_ref is required for remote verification"
@@ -469,7 +874,158 @@ class KaggleCliUploader(DatasetUploader):
         while time.monotonic() <= deadline:
             completed = subprocess.run(command, text=True, capture_output=True, check=False)
             output = (completed.stdout or "") + (completed.stderr or "")
-            if completed.returncode == 0:
+            if completed.returncode == 0 and self._parse_ready_status(output) == "ready":
                 return True, output
             time.sleep(self.config.verify_poll_seconds)
         return False, output
+
+    def _verify_evidence(
+        self,
+        dataset_ref: str | None = None,
+        *,
+        expected_payload_digest: str | None = None,
+        provenance_path: Path | None = None,
+    ) -> dict[str, Any]:
+        effective_ref = dataset_ref or self.config.dataset_ref
+        if not effective_ref:
+            return {
+                "verified": False,
+                "status": "missing_ref",
+                "files": (),
+                "output": "dataset_ref is required for remote verification",
+                "verified_at": None,
+            }
+        status_command = self._status_command(effective_ref)
+        files_command = self._files_command(effective_ref)
+        deadline = time.monotonic() + self.config.verify_timeout_seconds
+        output = ""
+        while time.monotonic() <= deadline:
+            status_result = subprocess.run(
+                status_command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            status_output = (status_result.stdout or "") + (status_result.stderr or "")
+            status = self._parse_ready_status(status_output) if status_result.returncode == 0 else None
+            if status_result.returncode == 0 and status == "ready":
+                if provenance_path is None or not self.config.require_remote_inventory:
+                    return {
+                        "verified": True,
+                        "status": status,
+                        "files": (),
+                        "output": status_output,
+                        "verified_at": utc_now(),
+                    }
+                files_result = subprocess.run(
+                    files_command,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                files_output = (files_result.stdout or "") + (files_result.stderr or "")
+                remote_files = self._parse_file_names(files_result.stdout or "")
+                output = status_output + files_output
+                if files_result.returncode == 0 and remote_files:
+                    if provenance_path is not None and PROVENANCE_FILE_NAME not in remote_files:
+                        # Kaggle's --dir-mode zip can expose a file as part of
+                        # a directory archive. The provenance file is always
+                        # written at dataset root, so absence is still unsafe.
+                        return {
+                            "verified": False,
+                            "status": "ready_missing_provenance",
+                            "files": tuple(remote_files),
+                            "output": output + "\nmissing provenance.json",
+                            "verified_at": None,
+                        }
+                    if expected_payload_digest is not None and provenance_path is not None:
+                        try:
+                            local_provenance = json.loads(
+                                provenance_path.read_text(encoding="utf-8")
+                            )
+                        except (OSError, json.JSONDecodeError) as exc:
+                            return {
+                                "verified": False,
+                                "status": "invalid_local_provenance",
+                                "files": tuple(remote_files),
+                                "output": f"Could not read local provenance: {exc}",
+                                "verified_at": None,
+                            }
+                        if local_provenance.get("payload_digest") != expected_payload_digest:
+                            return {
+                                "verified": False,
+                                "status": "local_payload_digest_mismatch",
+                                "files": tuple(remote_files),
+                                "output": "Local staging payload digest does not match provenance",
+                                "verified_at": None,
+                            }
+                        try:
+                            actual_digest, _ = digest_directory(
+                                provenance_path.parent,
+                                exclude_names={PROVENANCE_FILE_NAME},
+                            )
+                        except (OSError, ValueError) as exc:
+                            return {
+                                "verified": False,
+                                "status": "invalid_local_payload",
+                                "files": tuple(remote_files),
+                                "output": f"Could not fingerprint local staging: {exc}",
+                                "verified_at": None,
+                            }
+                        if actual_digest != expected_payload_digest:
+                            return {
+                                "verified": False,
+                                "status": "local_payload_changed",
+                                "files": tuple(remote_files),
+                                "output": "Local staging payload files changed after upload",
+                                "verified_at": None,
+                            }
+                    return {
+                        "verified": True,
+                        "status": status,
+                        "files": tuple(remote_files),
+                        "output": output,
+                        "verified_at": utc_now(),
+                    }
+            else:
+                output = status_output
+            time.sleep(self.config.verify_poll_seconds)
+        return {
+            "verified": False,
+            "status": "timeout",
+            "files": (),
+            "output": output,
+            "verified_at": None,
+        }
+
+    def _files_command(self, dataset_ref: str) -> list[str]:
+        return [
+            self.executable,
+            "datasets",
+            "files",
+            dataset_ref,
+            "--page-size",
+            "200",
+        ]
+
+    @staticmethod
+    def _parse_ready_status(output: str) -> str | None:
+        """Parse the legacy/current human-readable Kaggle status output."""
+        for raw_line in output.splitlines():
+            line = raw_line.strip().lower()
+            if line == "ready" or line in {"status: ready", "status=ready"}:
+                return "ready"
+        return None
+
+    @staticmethod
+    def _parse_file_names(output: str) -> list[str]:
+        names: list[str] = []
+        for raw_line in output.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("-") or line.lower().startswith("name "):
+                continue
+            name = line.split()[0]
+            if name in {"No", "files"}:
+                continue
+            names.append(name)
+        return sorted(set(names))

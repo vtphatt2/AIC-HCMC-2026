@@ -14,6 +14,9 @@ from preprocess.batch.models import BatchState, utc_now
 class CheckpointStore:
     """Persist one JSON state document without exposing half-written files."""
 
+    schema_version = 2
+    max_events = 2_000
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
@@ -25,19 +28,31 @@ class CheckpointStore:
             raise ValueError(f"Checkpoint must be a JSON object: {self.path}")
         payload.setdefault("events", [])
         payload.setdefault("state", BatchState.NEW.value)
+        payload.setdefault("schema_version", self.schema_version)
         return payload
 
     def write(self, payload: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=self.path.parent, prefix=f".{self.path.name}.", suffix=".tmp", delete=False
-        ) as handle:
-            json.dump(dict(payload), handle, ensure_ascii=False, indent=2, default=str)
-            handle.write("\n")
-            temporary_path = Path(handle.name)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, self.path)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                json.dump(dict(payload), handle, ensure_ascii=False, indent=2, default=str)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, self.path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def stage_is_complete(self, name: str, fingerprint: str) -> bool:
         """Return true only when a stage marker matches this run's inputs."""
@@ -251,8 +266,8 @@ class CheckpointStore:
         self.write(current)
         return current
 
-    @staticmethod
     def _append_stage_event(
+        self,
         current: dict[str, Any],
         name: str,
         status: str,
@@ -273,7 +288,7 @@ class CheckpointStore:
         if payload:
             event["payload"] = dict(payload)
         events.append(event)
-        current["events"] = events
+        current["events"] = events[-self.max_events :]
         current["updated_at"] = timestamp
 
     def transition(
@@ -292,7 +307,7 @@ class CheckpointStore:
         events.append(event)
         current["state"] = state.value
         current["updated_at"] = event["at"]
-        current["events"] = events
+        current["events"] = events[-self.max_events :]
         if payload:
             current.update(payload)
         self.write(current)
