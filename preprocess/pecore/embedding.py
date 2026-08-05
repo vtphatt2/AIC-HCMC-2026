@@ -13,6 +13,7 @@ import json
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, Sequence
@@ -59,6 +60,38 @@ class EmbeddingDataLoaderConfig:
 
 
 @dataclass(frozen=True)
+class AutocastConfig:
+    """AMP inference settings applied around the image encoder call."""
+
+    enabled: bool = False
+    dtype: str = "bf16"
+    cache_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        dtype = self.dtype.strip().lower()
+        aliases = {"float16": "fp16", "bfloat16": "bf16"}
+        dtype = aliases.get(dtype, dtype)
+        object.__setattr__(self, "dtype", dtype)
+        if dtype not in {"fp16", "bf16"}:
+            raise ValueError("embedding.autocast.dtype must be 'fp16' or 'bf16'")
+
+
+@dataclass(frozen=True)
+class TF32Config:
+    """CUDA TF32 backend settings for eligible FP32 operations."""
+
+    enabled: bool = False
+    matmul: bool = True
+    cudnn: bool = True
+
+    def __post_init__(self) -> None:
+        if self.enabled and not (self.matmul or self.cudnn):
+            raise ValueError(
+                "embedding.tf32 must enable matmul or cudnn when enabled"
+            )
+
+
+@dataclass(frozen=True)
 class PECoreEmbeddingConfig:
     """Runtime settings for the full PE-Core image encoder.
 
@@ -73,6 +106,8 @@ class PECoreEmbeddingConfig:
     model_revision: str | None = None
     device: str = "auto"
     precision: str = "fp32"
+    autocast: AutocastConfig = field(default_factory=AutocastConfig)
+    tf32: TF32Config = field(default_factory=TF32Config)
     expected_dim: int = 1_280
     batch_size: int = 8
     dataloader: EmbeddingDataLoaderConfig = field(default_factory=EmbeddingDataLoaderConfig)
@@ -84,7 +119,12 @@ class PECoreEmbeddingConfig:
         model_id = self.model_id.strip()
         model_revision = self.model_revision.strip() if self.model_revision else None
         device = self.device.strip().lower()
-        precision = self.precision.strip().lower()
+        precision_aliases = {
+            "float32": "fp32",
+            "float16": "fp16",
+            "bfloat16": "bf16",
+        }
+        precision = precision_aliases.get(self.precision.strip().lower(), self.precision.strip().lower())
         extensions = tuple(
             extension.lower() if extension.startswith(".") else f".{extension.lower()}"
             for extension in self.image_extensions
@@ -94,6 +134,16 @@ class PECoreEmbeddingConfig:
         object.__setattr__(self, "device", device)
         object.__setattr__(self, "precision", precision)
         object.__setattr__(self, "image_extensions", extensions)
+        if isinstance(self.autocast, Mapping):
+            object.__setattr__(self, "autocast", AutocastConfig(**dict(self.autocast)))
+        elif not isinstance(self.autocast, AutocastConfig):
+            raise TypeError("autocast must be an AutocastConfig or mapping")
+        if isinstance(self.tf32, Mapping):
+            object.__setattr__(self, "tf32", TF32Config(**dict(self.tf32)))
+        elif isinstance(self.tf32, bool):
+            object.__setattr__(self, "tf32", TF32Config(enabled=self.tf32))
+        elif not isinstance(self.tf32, TF32Config):
+            raise TypeError("tf32 must be a TF32Config, mapping, or bool")
         if isinstance(self.dataloader, Mapping):
             object.__setattr__(
                 self,
@@ -107,8 +157,8 @@ class PECoreEmbeddingConfig:
             raise ValueError("model_id must not be empty")
         if device not in {"auto", "cpu", "cuda", "mps"}:
             raise ValueError("device must be one of: auto, cpu, cuda, mps")
-        if precision not in {"fp32", "fp16"}:
-            raise ValueError("precision must be one of: fp32, fp16")
+        if precision not in {"fp32", "fp16", "bf16"}:
+            raise ValueError("precision must be one of: fp32, fp16, bf16")
         if self.expected_dim <= 0:
             raise ValueError("expected_dim must be positive")
         if self.batch_size <= 0:
@@ -205,6 +255,8 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             "model_id": self.config.model_id,
             "model_revision": self.config.model_revision,
             "precision": self.config.precision,
+            "autocast": asdict(self.config.autocast),
+            "tf32": asdict(self.config.tf32),
             "expected_dim": self.config.expected_dim,
         }
         return hashlib.sha256(
@@ -217,6 +269,8 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             "model_id": self.config.model_id,
             "model_revision": self.config.model_revision,
             "precision": self.config.precision,
+            "autocast": asdict(self.config.autocast),
+            "tf32": asdict(self.config.tf32),
             "requested_device": self.config.device,
             "resolved_device": self._resolved_device,
             "resolved_model_revision": self._resolved_model_revision,
@@ -259,7 +313,7 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
         expected_count = int(batch.shape[0])
         batch = batch.to(self._resolved_device, non_blocking=non_blocking)
         batch = self._input_dtype(batch)
-        with torch.inference_mode():
+        with torch.inference_mode(), self._tf32_context(), self._autocast_context():
             features = self._model.encode_image(batch, normalize=True)
         vectors = features.detach().float().cpu().numpy()
         return self._normalize_and_validate(vectors, expected_count)
@@ -283,10 +337,7 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
                 torch.manual_seed(int(seed))
 
         resolved_device = self._resolve_device(torch)
-        if resolved_device == "cpu" and self.config.precision == "fp16":
-            raise PECoreEmbeddingUnavailable(
-                "PECore precision fp16 requires CUDA; use --precision fp32 on CPU."
-            )
+        self._validate_runtime_capabilities(torch, resolved_device)
 
         model_id = self._resolve_model_source()
         try:
@@ -307,6 +358,109 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
         self._model = model
         self._preprocess = preprocess
         self._resolved_device = resolved_device
+
+    def _validate_runtime_capabilities(self, torch, device: str) -> None:
+        """Validate dtype features only after the actual device is resolved."""
+        device_type = torch.device(device).type
+        if device_type == "cuda" and self.config.precision == "bf16":
+            if not self._cuda_supports_bfloat16(torch):
+                raise PECoreEmbeddingUnavailable(
+                    "PECore precision bf16 was requested, but the selected CUDA "
+                    "device does not support bfloat16. Use fp16/fp32 or a supported GPU."
+                )
+
+        if self.config.tf32.enabled and device_type == "cuda":
+            if not self._cuda_supports_tf32(torch):
+                raise PECoreEmbeddingUnavailable(
+                    "PECore tf32 was requested, but the selected CUDA device does not "
+                    "support TF32 (requires compute capability 8.0 or newer). "
+                    "Set embedding.tf32.enabled=false or use an Ampere-or-newer GPU."
+                )
+            cuda_backend = getattr(getattr(torch, "backends", None), "cuda", None)
+            matmul_backend = getattr(cuda_backend, "matmul", None)
+            cudnn_backend = getattr(getattr(torch, "backends", None), "cudnn", None)
+            if self.config.tf32.matmul and not hasattr(matmul_backend, "allow_tf32"):
+                raise PECoreEmbeddingUnavailable(
+                    "PECore tf32.matmul was requested, but this PyTorch build does not "
+                    "expose torch.backends.cuda.matmul.allow_tf32."
+                )
+            if self.config.tf32.cudnn and not hasattr(cudnn_backend, "allow_tf32"):
+                raise PECoreEmbeddingUnavailable(
+                    "PECore tf32.cudnn was requested, but this PyTorch build does not "
+                    "expose torch.backends.cudnn.allow_tf32."
+                )
+
+        if not self.config.autocast.enabled:
+            return
+        if device_type == "cuda" and self.config.autocast.dtype == "bf16":
+            if not self._cuda_supports_bfloat16(torch):
+                raise PECoreEmbeddingUnavailable(
+                    "PECore autocast dtype bf16 was requested, but the selected CUDA "
+                    "device does not support bfloat16. Use autocast dtype fp16."
+                )
+        if device_type == "cpu" and self.config.autocast.dtype == "fp16":
+            raise PECoreEmbeddingUnavailable(
+                "CPU autocast supports bfloat16 in this pipeline; use autocast dtype bf16."
+            )
+
+    @staticmethod
+    def _cuda_supports_bfloat16(torch) -> bool:
+        checker = getattr(torch.cuda, "is_bf16_supported", None)
+        if callable(checker):
+            return bool(checker())
+        try:
+            major, _ = torch.cuda.get_device_capability()
+        except (AttributeError, RuntimeError):
+            return False
+        return major >= 8
+
+    @staticmethod
+    def _cuda_supports_tf32(torch) -> bool:
+        try:
+            major, _ = torch.cuda.get_device_capability()
+        except (AttributeError, RuntimeError):
+            return False
+        return major >= 8
+
+    @contextmanager
+    def _tf32_context(self):
+        """Temporarily apply TF32 backend flags for one model inference call."""
+        if not self.config.tf32.enabled:
+            yield
+            return
+
+        torch = self._torch
+        if torch is None or self._resolved_device is None or torch.device(self._resolved_device).type != "cuda":
+            # TF32 is a CUDA-only optimization; keep CPU/MPS configurations portable.
+            yield
+            return
+
+        cuda_backend = torch.backends.cuda
+        matmul_backend = cuda_backend.matmul
+        cudnn_backend = torch.backends.cudnn
+        previous_matmul = matmul_backend.allow_tf32
+        previous_cudnn = cudnn_backend.allow_tf32
+        try:
+            matmul_backend.allow_tf32 = self.config.tf32.matmul
+            cudnn_backend.allow_tf32 = self.config.tf32.cudnn
+            yield
+        finally:
+            matmul_backend.allow_tf32 = previous_matmul
+            cudnn_backend.allow_tf32 = previous_cudnn
+
+    def _autocast_context(self):
+        """Return a device-aware AMP context; disabled mode is a no-op."""
+        if not self.config.autocast.enabled:
+            return nullcontext()
+        torch = self._torch
+        device_type = torch.device(self._resolved_device).type
+        dtype = torch.float16 if self.config.autocast.dtype == "fp16" else torch.bfloat16
+        return torch.autocast(
+            device_type=device_type,
+            dtype=dtype,
+            enabled=True,
+            cache_enabled=self.config.autocast.cache_enabled,
+        )
 
     def _resolve_model_source(self) -> str:
         """Resolve an optional immutable Hugging Face revision to a local snapshot."""

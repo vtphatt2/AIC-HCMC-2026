@@ -541,6 +541,13 @@ processing.target_short_edge_px       = null # preserve decoded dimensions
 processing.decode_checkpoints          = [0, 0.5, 1] # normalized position
 embedding.expected_dim                = 1280 # vector values
 embedding.batch_size                  = 8    # images/encoder call
+embedding.precision                   = fp32 # model load: fp32/fp16/bf16
+embedding.autocast.enabled            = false # AMP around encode_image
+embedding.autocast.dtype              = bf16 # AMP dtype: fp16/bf16
+embedding.autocast.cache_enabled      = true
+embedding.tf32.enabled                = false # CUDA TF32 for eligible FP32 ops
+embedding.tf32.matmul                 = true  # CUDA matmul TF32 flag
+embedding.tf32.cudnn                  = true  # cuDNN convolution TF32 flag
 embedding.dataloader.num_workers     = 0    # CPU image preprocessing workers
 embedding.dataloader.pin_memory      = false # host→CUDA transfer hint
 embedding.dataloader.persistent_workers = false
@@ -581,6 +588,49 @@ bit-level. Với `reproducibility.mode=strict`, pipeline đặt
 `CUBLAS_WORKSPACE_CONFIG`, seed và deterministic mode trước khi load model.
 Muốn pin model Hugging Face trong strict mode, phải đặt
 `embedding.model_revision` thành commit/revision cụ thể.
+
+`embedding.precision` chỉ kiểm tra tên dtype khi đọc config; capability được
+kiểm tra sau khi `device=auto` đã resolve. `bf16` trên CUDA sẽ dừng với lỗi rõ
+ràng nếu GPU không hỗ trợ bfloat16. `fp16` hoặc `bf16` trên CPU được chuyển
+xuống backend để backend quyết định; MPS hiện yêu cầu `precision=fp32`.
+
+`autocast` là AMP inference độc lập với precision của model:
+
+```text
+precision=fp32 + autocast.enabled=true  → model FP32, phép tính AMP theo dtype
+precision=fp16/bf16 + autocast=false     → model được load ở low precision
+```
+
+Khuyến nghị trên CUDA là `precision=fp32` kết hợp
+`autocast.enabled=true`; đặt `autocast.dtype=bf16` nếu GPU hỗ trợ, nếu không
+dùng `fp16`. `torch.inference_mode()` của pipeline chỉ tắt gradient, không
+phải AMP.
+
+`tf32` là backend flag CUDA độc lập với `precision` và `autocast`. Nó không
+đổi dtype của model hoặc vector output, mà cho phép các phép toán FP32 đủ điều
+kiện dùng TensorFloat-32:
+
+```text
+embedding.tf32.enabled=true
+  → torch.backends.cuda.matmul.allow_tf32 = true
+  → torch.backends.cudnn.allow_tf32 = true
+```
+
+Chỉ áp dụng cấu hình này sau khi `device=auto` đã resolve thành CUDA; trên
+CPU/MPS nó được bỏ qua để giữ config portable. CUDA dưới compute capability 8.0 sẽ dừng
+với lỗi rõ ràng khi TF32 được bật. Với `reproducibility.mode=strict`, nên để
+`embedding.tf32.enabled=false` vì TF32 có thể làm khác kết quả giữa các GPU.
+Thay đổi TF32 cũng làm encoder cache fingerprint thay đổi.
+
+Nếu cần chọn GPU vật lý mà không sửa code, dùng CUDA visibility trước lệnh:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 \
+python -m preprocess.batch --config preprocess/batch/config.json run
+```
+
+Trong process, GPU đó sẽ được nhìn thấy là `cuda`; pipeline hiện chưa nhận
+`cuda:1` trực tiếp trong `embedding.device`.
 
 Rule `linear-rulebase` dùng milliseconds và số frame:
 
@@ -1112,6 +1162,7 @@ Embed tất cả thư mục video dưới `--input-root` thì bỏ các cờ `--
 Dùng `--overwrite` khi muốn tính lại các feature đã tồn tại. `--pin-memory`
 và `--persistent-workers` tương ứng với các cờ trong `embedding.dataloader`;
 `--persistent-workers` yêu cầu `--num-workers` lớn hơn 0.
+`--tf32` bật cả CUDA matmul TF32 và cuDNN TF32 trong standalone command.
 
 Để chạy tự động sau bước validate trong batch pipeline, bật:
 
@@ -1123,6 +1174,16 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
     "model_revision": "<immutable-hugging-face-commit>",
     "device": "auto",
     "precision": "fp32",
+    "autocast": {
+      "enabled": true,
+      "dtype": "bf16",
+      "cache_enabled": true
+    },
+    "tf32": {
+      "enabled": true,
+      "matmul": true,
+      "cudnn": true
+    },
     "expected_dim": 1280,
     "batch_size": 8,
     "dataloader": {
@@ -1139,10 +1200,19 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
 
 `model_revision` là tùy chọn ở `best_effort`; ở `strict` với model
 `hf-hub:` nó là bắt buộc. Mỗi vector có file `.npy.meta.json` chứa SHA-256 của
-ảnh nguồn và fingerprint encoder, vì vậy đổi model/precision hoặc sửa ảnh sẽ
-không bị nhầm là cache hợp lệ. Với `embedding.dataloader.num_workers > 0`,
+ảnh nguồn và fingerprint encoder, vì vậy đổi model/precision, autocast, TF32
+hoặc sửa ảnh sẽ không bị nhầm là cache hợp lệ. Với
+`embedding.dataloader.num_workers > 0`,
 `pin_memory=true` chỉ là tối ưu truyền host → CUDA, không thay đổi số lượng
 vector hay thứ tự frame.
+
+TransNetV2 hiện giữ FP32 và `torch.no_grad()`. Package
+`transnetv2-pytorch` không expose precision/autocast trong API mà pipeline đang
+dùng; hơn nữa scene boundary nhạy với sai khác số học. Vì vậy nên tối ưu
+TransNetV2 bằng `device=cuda`, cache manifest và các memory setting của chính
+package trước. Chỉ nên bổ sung `inference_dtype`/autocast riêng cho TransNetV2
+sau khi có regression so sánh boundary trên một tập video cố định; không dùng
+chung `embedding.precision` cho detector.
 
 Khi `embedding.enabled=true`, pipeline thực hiện:
 

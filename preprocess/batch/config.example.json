@@ -68,6 +68,16 @@
     "model_revision": null,
     "device": "auto",
     "precision": "fp32",
+    "autocast": {
+      "enabled": false,
+      "dtype": "bf16",
+      "cache_enabled": true
+    },
+    "tf32": {
+      "enabled": false,
+      "matmul": true,
+      "cudnn": true
+    },
     "expected_dim": 1280,
     "batch_size": 8,
     "dataloader": {

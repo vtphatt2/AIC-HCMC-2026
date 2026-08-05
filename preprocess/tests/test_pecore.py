@@ -8,9 +8,12 @@ from pathlib import Path
 import numpy as np
 
 from preprocess.pecore.embedding import (
+    AutocastConfig,
     EmbeddingDataLoaderConfig,
+    OpenClipPECoreEncoder,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
+    TF32Config,
     VisualEmbeddingEncoder,
 )
 from preprocess.batch.embedding import PECoreEmbeddingStrategy
@@ -151,6 +154,76 @@ class PECoreEmbeddingTests(unittest.TestCase):
         self.assertEqual(config.model_id, "hf-hub:timm/PE-Core-bigG-14-448")
         self.assertEqual(config.expected_dim, 1280)
         self.assertEqual(config.features_dir_name, "PECore-features")
+
+    def test_bfloat16_and_autocast_are_runtime_configurations(self) -> None:
+        config = PECoreEmbeddingConfig(
+            precision="bfloat16",
+            autocast={"enabled": True, "dtype": "bfloat16", "cache_enabled": False},
+            tf32={"enabled": True, "matmul": True, "cudnn": False},
+        )
+        self.assertEqual(config.precision, "bf16")
+        self.assertEqual(config.autocast, AutocastConfig(True, "bf16", False))
+        self.assertEqual(config.tf32, TF32Config(True, True, False))
+
+        encoder = OpenClipPECoreEncoder(config)
+        other = OpenClipPECoreEncoder(PECoreEmbeddingConfig())
+        self.assertNotEqual(encoder.cache_fingerprint, other.cache_fingerprint)
+
+    def test_autocast_context_uses_configured_cpu_dtype(self) -> None:
+        import torch
+
+        encoder = OpenClipPECoreEncoder(
+            PECoreEmbeddingConfig(
+                autocast={"enabled": True, "dtype": "bf16"},
+            )
+        )
+        encoder._torch = torch
+        encoder._resolved_device = "cpu"
+        self.assertFalse(torch.is_autocast_enabled("cpu"))
+        with encoder._autocast_context():
+            self.assertTrue(torch.is_autocast_enabled("cpu"))
+            self.assertEqual(torch.get_autocast_dtype("cpu"), torch.bfloat16)
+        self.assertFalse(torch.is_autocast_enabled("cpu"))
+
+    def test_tf32_context_is_noop_on_non_cuda(self) -> None:
+        import torch
+
+        encoder = OpenClipPECoreEncoder(
+            PECoreEmbeddingConfig(tf32={"enabled": True}),
+        )
+        encoder._torch = torch
+        encoder._resolved_device = "cpu"
+        with encoder._tf32_context():
+            self.assertTrue(True)
+
+    def test_tf32_context_applies_and_restores_cuda_flags(self) -> None:
+        import torch
+
+        cuda_backend = getattr(getattr(torch, "backends", None), "cuda", None)
+        cudnn_backend = getattr(getattr(torch, "backends", None), "cudnn", None)
+        if (
+            cuda_backend is None
+            or not hasattr(cuda_backend, "matmul")
+            or not hasattr(cuda_backend.matmul, "allow_tf32")
+            or cudnn_backend is None
+            or not hasattr(cudnn_backend, "allow_tf32")
+        ):
+            self.skipTest("PyTorch build has no TF32 backend flags")
+
+        previous_matmul = cuda_backend.matmul.allow_tf32
+        previous_cudnn = cudnn_backend.allow_tf32
+        encoder = OpenClipPECoreEncoder(
+            PECoreEmbeddingConfig(tf32={"enabled": True, "matmul": False, "cudnn": True}),
+        )
+        encoder._torch = torch
+        encoder._resolved_device = "cuda"
+        try:
+            with encoder._tf32_context():
+                self.assertFalse(cuda_backend.matmul.allow_tf32)
+                self.assertTrue(cudnn_backend.allow_tf32)
+        finally:
+            self.assertEqual(cuda_backend.matmul.allow_tf32, previous_matmul)
+            self.assertEqual(cudnn_backend.allow_tf32, previous_cudnn)
 
     def test_dataloader_config_is_nested_and_validated(self) -> None:
         config = PECoreEmbeddingConfig(
