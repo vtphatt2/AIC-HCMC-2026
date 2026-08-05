@@ -28,6 +28,11 @@ source preprocess/.venv/bin/activate
 python <script> [arguments]
 ```
 
+Pipeline lock này hỗ trợ Python **3.10 trở lên**. Với Python 3.10, pip sẽ
+chọn `kaggle==1.7.4.5`; từ Python 3.11 trở lên sẽ chọn `kaggle==2.2.4`.
+Không dùng Python 3.9 hoặc thấp hơn vì các package vision trong lock có thể
+không có wheel tương thích.
+
 Xem chính xác argument của một command:
 
 ```bash
@@ -362,6 +367,14 @@ source preprocess/.venv/bin/activate
 python -m pip install -r preprocess/requirements.lock.txt
 ```
 
+Kiểm tra Python và version Kaggle sau khi cài:
+
+```bash
+python --version
+python -m pip show kaggle | grep '^Version:'
+python -m pip check
+```
+
 ## Hướng dẫn mở rộng code
 
 - Thêm preprocessing transcript trong `preprocess/transcript/`; không thêm vào
@@ -618,19 +631,25 @@ bằng APT theo tài liệu Ubuntu và cách cài/auth Kaggle CLI xem
 [Ubuntu package management](https://documentation.ubuntu.com/server/how-to/software/package-management/)
 và [Kaggle CLI documentation](https://github.com/Kaggle/kaggle-cli/blob/main/docs/README.md).
 
-Kaggle cần authentication trước khi bật upload. Trên SSH có thể dùng token qua
-environment variable, không ghi token vào repository:
+Kaggle cần authentication trước khi bật upload. Cách tương thích với cả
+Kaggle CLI 1.x (Python 3.10) và 2.x là tải `kaggle.json` từ trang API của
+Kaggle rồi đặt vào `~/.kaggle/kaggle.json`; không ghi file này vào repository:
 
 ```bash
-export KAGGLE_API_TOKEN="<your-kaggle-api-token>"
+mkdir -p ~/.kaggle
+# chép file kaggle.json đã tải từ trang Kaggle API vào ~/.kaggle/kaggle.json
+chmod 600 ~/.kaggle/kaggle.json
 kaggle datasets list
 ```
 
-Hoặc dùng flow tương tác của CLI:
+Nếu đang dùng Python 3.11+ và Kaggle CLI 2.x, có thể dùng OAuth:
 
 ```bash
 kaggle auth login
 ```
+
+Trên host Python 3.10, không dùng `kaggle auth login` vì CLI 1.x không có
+subcommand này; dùng `kaggle.json` như trên.
 
 ### Quick run từ SSH (không thay thế runbook tmux)
 
@@ -645,6 +664,19 @@ python -m preprocess.batch --config preprocess/batch/config.json preflight
 python -m preprocess.batch --config preprocess/batch/config.json parse-links
 python -m preprocess.batch --config preprocess/batch/config.json run
 ```
+
+Với config mẫu đặt tại `preprocess/batch/config.json`, các path
+`../../data/...` trỏ về `<repository-root>/data/...`. Kiểm tra cách resolve
+trước khi chạy:
+
+```bash
+python -c 'from pathlib import Path; from preprocess.batch.config import BatchConfig; c=BatchConfig.from_json(Path("preprocess/batch/config.json")); print("data_root=", c.data_root); print("links_file=", c.links_file); print("metadata_root=", c.metadata_root); print("scene_segments_dir=", c.processing.scene_segments_dir); print("metadata_template=", c.upload.metadata_template)'
+test -f data/input/links.txt
+```
+
+Nếu config dùng path tuyệt đối như `/data`, mọi input/output sẽ nằm dưới
+`/data`, không nằm dưới `./data`; hãy kiểm tra đúng mount point trước khi
+chạy.
 
 Nếu virtual environment không nằm trong `PATH`, thay `python` bằng Python của
 environment đó. `preflight` kiểm tra `aria2c`, `ffmpeg`/filter `showinfo`, `ffprobe`, thêm
