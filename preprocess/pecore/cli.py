@@ -7,10 +7,12 @@ import sys
 from pathlib import Path
 
 from preprocess.pecore.embedding import (
+    AutocastConfig,
     EmbeddingDataLoaderConfig,
     OpenClipPECoreEncoder,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
+    TF32Config,
 )
 
 
@@ -31,7 +33,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="OpenCLIP/Hugging Face model identifier.",
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda", "mps"), default="auto")
-    parser.add_argument("--precision", choices=("fp32", "fp16"), default="fp32")
+    parser.add_argument("--precision", choices=("fp32", "fp16", "bf16"), default="fp32")
+    parser.add_argument("--autocast", action="store_true", help="Enable AMP/autocast during inference.")
+    parser.add_argument(
+        "--autocast-dtype",
+        choices=("fp16", "bf16"),
+        default="bf16",
+        help="AMP dtype when --autocast is enabled.",
+    )
+    parser.add_argument(
+        "--tf32",
+        action="store_true",
+        help="Enable CUDA TF32 for eligible FP32 matmul and cuDNN operations.",
+    )
     parser.add_argument("--expected-dim", type=int, default=1_280)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=0)
@@ -54,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
             model_id=args.model_id,
             device=args.device,
             precision=args.precision,
+            autocast=AutocastConfig(enabled=args.autocast, dtype=args.autocast_dtype),
+            tf32=TF32Config(enabled=args.tf32),
             expected_dim=args.expected_dim,
             batch_size=args.batch_size,
             dataloader=EmbeddingDataLoaderConfig(
