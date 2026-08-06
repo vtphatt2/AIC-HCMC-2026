@@ -80,7 +80,8 @@ resolve ở runtime hoặc được yêu cầu rõ bằng config.
 - [x] Cho phép upload lot N overlap xử lý lot N+1 khi bật config.
 - [x] Dataset-scoped/cumulative upload vẫn serialize bằng dataset lock.
 - [x] Giới hạn một upload pending và kiểm tra temporary disk reserve.
-- [x] Progress nền tắt; state/upload-state và lock không ghi đè nhau.
+- [x] Progress worker nội bộ tắt; orchestrator có row riêng cho embedding/upload
+  nền, còn state/upload-state và lock không ghi đè nhau.
 - [x] Test overlap bounded, lock, interruption, continue-on-error và output order.
 
 ## 6. Docs và xác nhận cuối
@@ -89,7 +90,7 @@ resolve ở runtime hoặc được yêu cầu rõ bằng config.
 - [x] Cập nhật README dataflow, performance profiles, resume và tmux workflow.
 - [x] Docs rõ filename `dataset-metadata.json` nguồn và file staging.
 - [x] Docs rõ transcript layout theo lot và PNG/JPEG extension.
-- [x] Chạy unit tests, compileall, pip check và lint/static check: 75 tests,
+- [x] Chạy unit tests, compileall, pip check và lint/static check: 81 tests,
   `compileall`, `pip check`, `ruff check`, config parse, CLI help và
   `git diff --check` đều pass.
 - [x] Chạy benchmark nhẹ cho hash cache, FFmpeg timeline/render và embedding
@@ -106,10 +107,14 @@ resolve ở runtime hoặc được yêu cầu rõ bằng config.
   PyTorch không thể đổi dataset an toàn sau khi worker đã fork nếu không đổi
   sang một lot-wide sampler.
 - [x] Overlap render CPU và embedding GPU trong cùng lot bằng một GPU worker và
-  backlog chưa embed giới hạn một task. Main thread là writer duy nhất của `state.json`;
+  FIFO backlog cấu hình từ 1 đến 10 task. Main thread là writer duy nhất của `state.json`;
   worker dùng completion journal atomic theo video để resume an toàn.
-- [ ] Download lại `provenance.json` từ Kaggle để byte-compare remote. CLI
-  `datasets files` hiện chỉ cho status/inventory, không trả checksum nội dung.
+- [x] Download trực tiếp `provenance.json` từ Kaggle và đối chiếu payload digest;
+  không còn false negative do `datasets files --page-size 200`.
+- [x] Nếu transfer thành công nhưng verify/checkpoint bị ngắt, lần chạy sau nhận
+  payload remote có digest trùng và bỏ qua upload lại.
+- [x] Embedding và Kaggle transfer có progress row riêng, thread-safe, cùng tồn
+  tại với pipeline/detail bar khi bật cả hai overlap.
 
 ## Kết quả benchmark nhẹ
 

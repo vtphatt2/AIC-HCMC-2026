@@ -581,7 +581,7 @@ upload.mode                           = auto # create lần đầu, version khi 
 upload.staging_scope                  = lot  # một staging độc lập cho mỗi lot
 upload.dataset_ref_template           = owner/aic2026-hcmc-{lot_slug}
 upload.metadata_template              = data/kaggle-dataset-metadata.json
-upload.require_remote_inventory       = true # status + datasets files + provenance
+upload.require_remote_inventory       = true # status + tải/đối chiếu provenance remote
 upload.missing_artifact_policy        = error # error hoặc skip artifact tùy chọn
 upload.temporary_space_multiplier     = 1.0 # reserve cho package tạm của CLI
 reproducibility.mode                  = best_effort # strict để pin seed/CUBLAS
@@ -598,19 +598,24 @@ shot_boundary.overwrite               = false # reuse valid manifests
 scheduling.overlap_upload             = false # lot N upload cùng lúc xử lý lot N+1
 scheduling.overlap_render_embedding   = false # render video N+1 khi embed video N
 scheduling.max_pending_uploads        = 1 # hiện cố định 1 để bound disk
-scheduling.max_pending_embeddings     = 1 # một GPU task; backlog chưa embed bị giới hạn
+scheduling.max_pending_embeddings     = 1 # 1..10 video running/queued; một GPU worker
 ```
 
-Progress bar dùng `tqdm` và hiển thị đúng năm dòng cố định trong terminal/tmux:
-dòng lot/stage, dòng CPU/GPU, dòng disk, full-pipeline bar và detail bar của
-operation hiện tại. Các operation lồng nhau dùng lại detail bar nên không tạo
-thêm hàng. Cả hai progress bar đều hiển thị theo dạng
+Progress bar dùng `tqdm` và hiển thị tối đa bảy dòng cố định trong terminal/tmux:
+dòng lot/stage, dòng CPU/GPU, dòng disk, full-pipeline bar, detail bar của
+operation hiện tại, embedding bar và upload bar. Hai dòng cuối chỉ xuất hiện
+khi activity tương ứng bắt đầu và giữ vị trí riêng, vì vậy upload nền, embedding
+GPU và render foreground không vẽ đè nhau. Các operation lồng nhau dùng lại
+detail bar nên không tạo thêm hàng. Các progress bar hiển thị theo dạng
 `elapsed<eta (rate)`, ví dụ `00:12<01:45 (8.4 video/s)`; `bar_width` là chiều
-dài tối đa của phần bar và tự co lại nếu terminal hẹp; `leave=false` xóa hai
-bar khi pipeline kết thúc.
+dài tối đa của phần bar và tự co lại nếu terminal hẹp; `leave=false` xóa các
+bar khi pipeline kết thúc. Embedding bar đếm video đã hoàn tất/khôi phục;
+upload bar đọc byte progress của Kaggle CLI và đổi sang trạng thái `verifying`
+rồi `verified` sau khi transfer kết thúc.
 Khi output đi qua `tee`, pipeline tự chuyển sang một dòng ASCII duy nhất để
 không ghi cursor escape code vào log, nhưng vẫn giữ full-pipeline, operation
-hiện tại, CPU/GPU/disk metrics và ETA. Để xem layout năm dòng cố định, chạy
+hiện tại, embedding/upload, CPU/GPU/disk metrics và ETA. Để xem layout nhiều
+dòng cố định, chạy
 trực tiếp trong terminal/tmux không pipe output qua `tee`. Warning CUDA không
 gây lỗi pipeline. Với `reproducibility.mode=best_effort`, pipeline lọc warning
 CUDA lặp lại để terminal không bị rác; chế độ này không cam kết kết quả
@@ -798,13 +803,17 @@ Staging được dựng trong thư mục tạm rồi đổi tên atomically. M�
 `provenance.json` chứa config, revision code, phiên bản package/tool, model
 cache fingerprint và SHA-256 inventory của payload. Khi
 `require_remote_inventory=true`, upload chỉ được coi là verify sau khi status
-là `ready`, `datasets files` trả file và remote inventory có
-`provenance.json`. Trong cùng lệnh upload, payload digest được tái sử dụng và
-cleanup tin receipt vừa verify để tránh đọc lại hàng chục GB. Lệnh `cleanup`
-chạy độc lập vẫn audit inventory local và re-verify remote trước khi xóa.
-Đây là status + inventory verification; `kaggle datasets files` không trả
-remote checksum, nên receipt không tuyên bố byte-for-byte remote verification
-nếu dataset chưa được download về audit riêng.
+là `ready`, pipeline tải chính xác file remote `provenance.json` bằng Kaggle CLI
+và đối chiếu `payload_digest` với staging local. Cách này không phụ thuộc giới
+hạn 200 kết quả của `kaggle datasets files`, kể cả dataset có hàng nghìn `.npy`.
+Trong cùng lệnh upload, payload digest được tái sử dụng và cleanup tin receipt
+vừa verify để tránh đọc lại hàng chục GB. Lệnh `cleanup` chạy độc lập vẫn audit
+inventory local và tải lại provenance remote trước khi xóa.
+
+Nếu SSH bị ngắt hoặc verifier cũ báo lỗi sau khi transfer đã hoàn tất, chạy lại
+`run` hoặc `upload --lot-id ...`: trước khi gửi dữ liệu, uploader kiểm tra status
+và provenance remote. Nếu digest đã trùng, transfer được bỏ qua, receipt được
+khôi phục và pipeline tiếp tục cleanup; nếu digest khác thì mới tạo version mới.
 
 Không bật upload khi chưa kiểm tra credentials bằng `kaggle datasets list`.
 
@@ -881,11 +890,15 @@ Trên SSH server:
 
 ```bash
 cd /path/to/AIC-HCMC-2026
-git branch --show-current       # phải là preprocess
+git switch preprocess
+git pull --ff-only origin preprocess
+git branch --show-current       # kết quả phải là preprocess
 ```
 
 Không push hoặc merge trong workflow này. Mọi thay đổi code vẫn chỉ thuộc
-branch `preprocess`.
+branch `preprocess`. Pull code trước khi thêm option mới vào config; nếu config
+có `scheduling.overlap_render_embedding` nhưng source vẫn ở `main`/bản cũ,
+Python sẽ báo `unexpected keyword argument` trước khi pipeline chạy.
 
 #### 2. Cài system tools và Python environment
 
@@ -974,7 +987,7 @@ Trong config, kiểm tra tối thiểu:
     "overlap_upload": false,
     "overlap_render_embedding": true,
     "max_pending_uploads": 1,
-    "max_pending_embeddings": 1
+    "max_pending_embeddings": 10
   }
 }
 ```
@@ -1033,6 +1046,16 @@ python -m preprocess.batch \
 Nếu preflight hoặc parse-links lỗi, sửa lỗi trước khi chạy batch.
 
 #### 7. Chạy toàn bộ pipeline
+
+```bash
+python -m preprocess.batch \
+  --config preprocess/batch/config.json \
+  run
+```
+
+Chạy trực tiếp như trên để thấy các row pipeline/detail/embedding/upload cố
+định trong tmux. Nếu cần đồng thời ghi stdout/stderr bằng `tee`, dùng lệnh dưới;
+reporter sẽ tự chuyển sang một dòng ASCII để file log không chứa cursor escape:
 
 ```bash
 python -m preprocess.batch \
@@ -1150,13 +1173,17 @@ process đang hoạt động. Các thao tác upload có lock riêng theo lot t�
 chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Mặc định pipeline
 chính upload tuần tự sau processing/embedding của từng lot. Nếu
 `scheduling.overlap_render_embedding=true`, sau khi video N render + validate,
-pipeline submit đúng một GPU task để embed N rồi tiếp tục render N+1 bằng
-FFmpeg/CPU. Trước khi submit thêm task, foreground phải nhận xong task cũ; vì
-vậy queue không tăng vô hạn và tối đa chỉ có một video đã render đang chờ GPU
-ngoài video GPU đang xử lý. Keyframe đã embed vẫn được giữ để upload nên tổng
-dung lượng keyframe của lot không giảm bởi option này. Progress worker bị tắt để không tranh terminal;
-detail bar foreground dùng nhãn `render+embed`, còn GPU utilization/memory vẫn
-được system metrics cập nhật. Custom embedding strategy có mutable progress/UI
+pipeline submit task embed N vào một GPU worker rồi tiếp tục render N+1 bằng
+FFmpeg/CPU. `max_pending_embeddings` nhận giá trị `1..10` và đếm tổng task đang
+chạy hoặc đang nằm trong FIFO queue. Khi queue đạt giới hạn, foreground nhận
+xong task cũ nhất trước khi submit thêm, nên không mất video và backlog không
+tăng vô hạn. Giá trị `10` cho phép renderer đi trước tối đa mười task GPU; nó
+không tạo mười model/worker chạy đồng thời. Keyframe đã embed vẫn được giữ để
+upload nên tổng dung lượng keyframe của lot không giảm bởi option này. Progress
+nội bộ của worker bị tắt để không tranh terminal; orchestrator cập nhật một
+embedding bar riêng theo số video worker hoàn tất/restore. Detail bar foreground
+dùng nhãn `render+embed`, còn GPU utilization/memory vẫn được system metrics cập
+nhật. Custom embedding strategy có mutable progress/UI
 nên override `BatchEmbeddingStrategy.for_background()` để trả worker view độc
 lập. PECore worker overlap buộc DataLoader `num_workers=0` dù config đặt lớn
 hơn: tạo process bằng `fork` từ background thread trên Linux có thể deadlock.
@@ -1168,12 +1195,14 @@ Nếu
 nền trong khi lot N+1 được xử lý; chỉ một upload pending được phép, và dataset
 cumulative vẫn serialize bằng dataset lock. Chế độ này giữ tối đa artifact của
 lot đang xử lý cộng một lot đang upload, nên phải để đủ disk reserve. Progress
-nền không vẽ đè terminal; `state.json`/`upload-state.json` vẫn tách biệt.
+nền cập nhật upload bar riêng, không vẽ đè detail/embedding bar;
+`state.json`/`upload-state.json` vẫn tách biệt.
 
 Hai overlap có thể bật cùng lúc: trong lot hiện tại CPU render song song GPU
 embedding, đồng thời network upload lot trước. Nếu disk, CPU preprocessing hoặc
 network cùng tranh tài nguyên, hãy tắt `overlap_upload` trước; render–embed chỉ
-giữ một GPU task pending và thường là phần có lợi trực tiếp hơn.
+giữ tối đa `max_pending_embeddings` task chạy/chờ và thường là phần có lợi trực
+tiếp hơn.
 
 `run.lock` bảo vệ pipeline chính; upload/cleanup dùng thêm `upload.lock`. Với
 legacy cumulative staging, `kaggle-dataset-upload.lock` bảo vệ dataset chung và
@@ -1371,7 +1400,8 @@ transcript và transcript index: thiếu artifact của một video thì staging
 được đưa vào staging.
 
 Staging **không chứa archive, source hoặc video**. Chỉ khi Kaggle CLI upload
-thành công và status được verify thì `CleanupManager` mới xóa artifact được bật
+thành công, status là `ready` và remote `provenance.json` có payload digest đúng
+thì `CleanupManager` mới xóa artifact được bật
 trong `cleanup`; metadata độc lập trong `data/metadata/` không bao giờ bị xóa.
 Mặc định `upload.staging_scope=lot`: staging nằm ở
 `data/<lot_id>/kaggle-staging/` và được cleanup sau khi verify thành công, nên

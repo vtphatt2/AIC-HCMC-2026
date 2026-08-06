@@ -350,10 +350,9 @@ class SchedulingConfig:
             raise ValueError(
                 "scheduling.max_pending_uploads currently must be 1 to bound disk usage"
             )
-        if self.max_pending_embeddings != 1:
+        if not 1 <= self.max_pending_embeddings <= 10:
             raise ValueError(
-                "scheduling.max_pending_embeddings currently must be 1 to keep "
-                "GPU work serialized and bound the unembedded-video backlog"
+                "scheduling.max_pending_embeddings must be between 1 and 10"
             )
 
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
@@ -36,6 +36,19 @@ from preprocess.batch.provenance import (
     file_fingerprint_matches,
     runtime_provenance,
 )
+from preprocess.progress import ProgressReporter
+
+
+_KAGGLE_TRANSFER_PROGRESS = re.compile(
+    r"(?P<percent>\d{1,3})%\|[^\r\n]*?\|\s*"
+    r"(?P<current>\d+(?:\.\d+)?)(?P<current_unit>[kKMGTPE]?)/"
+    r"(?P<total>\d+(?:\.\d+)?)(?P<total_unit>[kKMGTPE]?)"
+)
+
+
+def _scaled_transfer_bytes(value: str, unit: str) -> int:
+    powers = {"": 0, "k": 1, "m": 2, "g": 3, "t": 4, "p": 5, "e": 6}
+    return round(float(value) * (1000 ** powers[unit.lower()]))
 
 
 class StagingStrategy(ABC):
@@ -726,9 +739,16 @@ class DatasetUploader(ABC):
 class KaggleCliUploader(DatasetUploader):
     """Use the official Kaggle CLI for create/version and status verification."""
 
-    def __init__(self, executable: str, config: UploadConfig) -> None:
+    def __init__(
+        self,
+        executable: str,
+        config: UploadConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self.executable = executable
         self.config = config
+        self.progress = progress
 
     def upload_and_verify(self, staging: StagingResult) -> UploadResult:
         if not self.config.enabled:
@@ -744,22 +764,47 @@ class KaggleCliUploader(DatasetUploader):
                 mode=self.config.mode,
             )
         mode = self._resolve_mode(target)
+        reused = self._reuse_matching_remote_payload(
+            staging,
+            dataset_ref=target.dataset_ref,
+            mode=mode,
+        )
+        if reused is not None:
+            return reused
         command = self._upload_command(
             staging.staging_dir,
             dataset_ref=target.dataset_ref,
             mode=mode,
         )
-        return_code, output = self._run_streaming(command)
+        return_code, output = self._run_streaming(
+            command,
+            desc=f"upload {target.dataset_ref}",
+        )
         if return_code != 0:
             raise RuntimeError(f"Kaggle upload failed (exit {return_code}): {output[-3000:]}")
+        if self.progress is not None:
+            self.progress.update_activity(
+                key="upload",
+                desc=f"upload {target.dataset_ref}: verifying",
+            )
         verification = self._verify_evidence(
             target.dataset_ref,
             expected_payload_digest=staging.payload_digest,
             provenance_path=staging.provenance_path,
         )
         if not verification["verified"]:
+            if self.progress is not None:
+                self.progress.update_activity(
+                    key="upload",
+                    desc=f"upload {target.dataset_ref}: verify failed",
+                )
             raise RuntimeError(
                 f"Kaggle upload was not verified: {verification['output'][-3000:]}"
+            )
+        if self.progress is not None:
+            self.progress.complete_activity(
+                key="upload",
+                desc=f"upload {target.dataset_ref}: verified",
             )
         return UploadResult(
             dataset_ref=target.dataset_ref,
@@ -772,6 +817,66 @@ class KaggleCliUploader(DatasetUploader):
             remote_status=str(verification["status"]),
             remote_files=tuple(str(item) for item in verification["files"]),
             verified_at=str(verification["verified_at"]),
+        )
+
+    def _reuse_matching_remote_payload(
+        self,
+        staging: StagingResult,
+        *,
+        dataset_ref: str,
+        mode: str,
+    ) -> UploadResult | None:
+        """Avoid uploading again after an interrupted post-transfer verification."""
+        if (
+            mode != "version"
+            or staging.payload_digest is None
+            or staging.provenance_path is None
+            or not staging.provenance_path.is_file()
+        ):
+            return None
+        if self.progress is not None:
+            self.progress.start_activity(
+                key="upload",
+                desc=f"upload {dataset_ref}: checking remote",
+                total=None,
+                unit="B",
+            )
+        status_result = subprocess.run(
+            self._status_command(dataset_ref),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        status_output = (status_result.stdout or "") + (status_result.stderr or "")
+        if (
+            status_result.returncode != 0
+            or self._parse_ready_status(status_output) != "ready"
+        ):
+            return None
+        remote_provenance, provenance_output = self._download_remote_provenance(
+            dataset_ref
+        )
+        if (
+            remote_provenance is None
+            or remote_provenance.get("payload_digest") != staging.payload_digest
+        ):
+            return None
+        if self.progress is not None:
+            self.progress.complete_activity(
+                key="upload",
+                desc=f"upload {dataset_ref}: already verified",
+            )
+        return UploadResult(
+            dataset_ref=dataset_ref,
+            mode=mode,
+            verified=True,
+            command=(),
+            output_tail="Matching Kaggle payload already exists; transfer skipped.",
+            verified_output_tail=(status_output + provenance_output)[-3000:],
+            payload_digest=staging.payload_digest,
+            remote_status="ready",
+            remote_files=(PROVENANCE_FILE_NAME,),
+            verified_at=utc_now(),
         )
 
     def verify_existing(
@@ -919,9 +1024,61 @@ class KaggleCliUploader(DatasetUploader):
                 "verified_at": None,
             }
         status_command = self._status_command(effective_ref)
-        files_command = self._files_command(effective_ref)
         deadline = time.monotonic() + self.config.verify_timeout_seconds
         output = ""
+        last_status = "timeout"
+        local_provenance: dict[str, Any] | None = None
+        if provenance_path is not None:
+            try:
+                payload = json.loads(provenance_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return {
+                    "verified": False,
+                    "status": "invalid_local_provenance",
+                    "files": (),
+                    "output": f"Could not read local provenance: {exc}",
+                    "verified_at": None,
+                }
+            if not isinstance(payload, Mapping):
+                return {
+                    "verified": False,
+                    "status": "invalid_local_provenance",
+                    "files": (),
+                    "output": "Local provenance must contain one JSON object",
+                    "verified_at": None,
+                }
+            local_provenance = dict(payload)
+            if (
+                expected_payload_digest is not None
+                and local_provenance.get("payload_digest") != expected_payload_digest
+            ):
+                return {
+                    "verified": False,
+                    "status": "local_payload_digest_mismatch",
+                    "files": (),
+                    "output": "Local payload digest does not match provenance",
+                    "verified_at": None,
+                }
+            if audit_local_payload:
+                records = local_provenance.get("files")
+                if not isinstance(records, list) or not all(
+                    isinstance(record, Mapping) for record in records
+                ):
+                    return {
+                        "verified": False,
+                        "status": "invalid_local_inventory",
+                        "files": (),
+                        "output": "Local provenance has no valid file inventory",
+                        "verified_at": None,
+                    }
+                if not self._local_inventory_matches(provenance_path.parent, records):
+                    return {
+                        "verified": False,
+                        "status": "local_payload_changed",
+                        "files": (),
+                        "output": "Local staging payload files changed after upload",
+                        "verified_at": None,
+                    }
         while time.monotonic() <= deadline:
             status_result = subprocess.run(
                 status_command,
@@ -940,88 +1097,80 @@ class KaggleCliUploader(DatasetUploader):
                         "output": status_output,
                         "verified_at": utc_now(),
                     }
-                files_result = subprocess.run(
-                    files_command,
-                    text=True,
-                    capture_output=True,
-                    check=False,
+                remote_provenance, provenance_output = self._download_remote_provenance(
+                    effective_ref
                 )
-                files_output = (files_result.stdout or "") + (files_result.stderr or "")
-                remote_files = self._parse_file_names(files_result.stdout or "")
-                output = status_output + files_output
-                if files_result.returncode == 0 and remote_files:
-                    if provenance_path is not None and PROVENANCE_FILE_NAME not in remote_files:
-                        # Kaggle's --dir-mode zip can expose a file as part of
-                        # a directory archive. The provenance file is always
-                        # written at dataset root, so absence is still unsafe.
-                        return {
-                            "verified": False,
-                            "status": "ready_missing_provenance",
-                            "files": tuple(remote_files),
-                            "output": output + "\nmissing provenance.json",
-                            "verified_at": None,
-                        }
-                    if expected_payload_digest is not None and provenance_path is not None:
-                        try:
-                            local_provenance = json.loads(
-                                provenance_path.read_text(encoding="utf-8")
-                            )
-                        except (OSError, json.JSONDecodeError) as exc:
-                            return {
-                                "verified": False,
-                                "status": "invalid_local_provenance",
-                                "files": tuple(remote_files),
-                                "output": f"Could not read local provenance: {exc}",
-                                "verified_at": None,
-                            }
-                        if local_provenance.get("payload_digest") != expected_payload_digest:
-                            return {
-                                "verified": False,
-                                "status": "local_payload_digest_mismatch",
-                                "files": tuple(remote_files),
-                                "output": "Local staging payload digest does not match provenance",
-                                "verified_at": None,
-                            }
-                        if audit_local_payload:
-                            records = local_provenance.get("files")
-                            if not isinstance(records, list) or not all(
-                                isinstance(record, Mapping) for record in records
-                            ):
-                                return {
-                                    "verified": False,
-                                    "status": "invalid_local_inventory",
-                                    "files": tuple(remote_files),
-                                    "output": "Local provenance has no valid file inventory",
-                                    "verified_at": None,
-                                }
-                            if not self._local_inventory_matches(
-                                provenance_path.parent,
-                                records,
-                            ):
-                                return {
-                                    "verified": False,
-                                    "status": "local_payload_changed",
-                                    "files": tuple(remote_files),
-                                    "output": "Local staging payload files changed after upload",
-                                    "verified_at": None,
-                                }
+                output = status_output + provenance_output
+                if remote_provenance is None:
+                    last_status = "ready_missing_provenance"
+                elif remote_provenance.get("payload_digest") != (
+                    expected_payload_digest
+                    or (
+                        local_provenance.get("payload_digest")
+                        if local_provenance is not None
+                        else None
+                    )
+                ):
+                    last_status = "ready_provenance_digest_mismatch"
+                    output += "\nremote payload digest does not match uploaded payload"
+                else:
                     return {
                         "verified": True,
                         "status": status,
-                        "files": tuple(remote_files),
+                        "files": (PROVENANCE_FILE_NAME,),
                         "output": output,
                         "verified_at": utc_now(),
                     }
             else:
                 output = status_output
+                last_status = "status_not_ready"
             time.sleep(self.config.verify_poll_seconds)
         return {
             "verified": False,
-            "status": "timeout",
+            "status": last_status,
             "files": (),
             "output": output,
             "verified_at": None,
         }
+
+    def _download_remote_provenance(
+        self,
+        dataset_ref: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Download exact remote evidence instead of scanning only one file page."""
+        with tempfile.TemporaryDirectory(prefix="preprocess-kaggle-verify-") as temporary:
+            destination = Path(temporary)
+            command = [
+                self.executable,
+                "datasets",
+                "download",
+                dataset_ref,
+                "--file",
+                PROVENANCE_FILE_NAME,
+                "--path",
+                str(destination),
+                "--force",
+                "--quiet",
+            ]
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            output = (completed.stdout or "") + (completed.stderr or "")
+            if completed.returncode != 0:
+                return None, output
+            candidates = tuple(destination.rglob(PROVENANCE_FILE_NAME))
+            if len(candidates) != 1:
+                return None, output + "\nremote provenance.json was not downloaded uniquely"
+            try:
+                payload = json.loads(candidates[0].read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                return None, output + f"\ninvalid remote provenance.json: {exc}"
+            if not isinstance(payload, Mapping):
+                return None, output + "\nremote provenance.json is not a JSON object"
+            return dict(payload), output
 
     @staticmethod
     def _local_inventory_matches(
@@ -1043,9 +1192,20 @@ class KaggleCliUploader(DatasetUploader):
         except (OSError, RuntimeError, ValueError):
             return False
 
-    @staticmethod
-    def _run_streaming(command: Sequence[str]) -> tuple[int, str]:
-        """Run a long Kaggle command with bounded memory and optional live TTY output."""
+    def _run_streaming(
+        self,
+        command: Sequence[str],
+        *,
+        desc: str = "Kaggle upload",
+    ) -> tuple[int, str]:
+        """Run Kaggle with bounded output and publish its transfer progress."""
+        if self.progress is not None:
+            self.progress.start_activity(
+                key="upload",
+                desc=f"{desc}: preparing",
+                total=None,
+                unit="B",
+            )
         try:
             process = subprocess.Popen(
                 list(command),
@@ -1056,24 +1216,61 @@ class KaggleCliUploader(DatasetUploader):
             raise RuntimeError(f"Required executable was not found: {command[0]}") from exc
         assert process.stdout is not None
         tail = bytearray()
-        while chunk := process.stdout.read(64 * 1024):
+        progress_buffer = ""
+        transfer_total: int | None = None
+        transfer_current = 0
+        transfer_part = 0
+
+        def publish_progress(line: str) -> None:
+            nonlocal transfer_total, transfer_current, transfer_part
+            matches = tuple(_KAGGLE_TRANSFER_PROGRESS.finditer(line))
+            if not matches or self.progress is None:
+                return
+            match = matches[-1]
+            current = _scaled_transfer_bytes(
+                match.group("current"), match.group("current_unit")
+            )
+            total = _scaled_transfer_bytes(
+                match.group("total"), match.group("total_unit")
+            )
+            if total <= 0:
+                return
+            if transfer_total != total or current < transfer_current:
+                transfer_part += 1
+                self.progress.start_activity(
+                    key="upload",
+                    desc=f"{desc} part={transfer_part}",
+                    total=total,
+                    unit="B",
+                )
+            transfer_total = total
+            transfer_current = min(current, total)
+            self.progress.update_activity(
+                key="upload",
+                current=transfer_current,
+                total=transfer_total,
+                desc=f"{desc} part={transfer_part}",
+            )
+
+        read_chunk = getattr(process.stdout, "read1", process.stdout.read)
+        while chunk := read_chunk(16 * 1024):
             tail.extend(chunk)
             if len(tail) > 12_000:
                 del tail[:-12_000]
-            if sys.stderr.isatty():
-                sys.stderr.write(chunk.decode("utf-8", errors="replace"))
-                sys.stderr.flush()
-        return process.wait(), bytes(tail).decode("utf-8", errors="replace")
-
-    def _files_command(self, dataset_ref: str) -> list[str]:
-        return [
-            self.executable,
-            "datasets",
-            "files",
-            dataset_ref,
-            "--page-size",
-            "200",
-        ]
+            progress_buffer += chunk.decode("utf-8", errors="replace")
+            rows = re.split(r"[\r\n]", progress_buffer)
+            progress_buffer = rows.pop()
+            for row in rows:
+                publish_progress(row)
+        if progress_buffer:
+            publish_progress(progress_buffer)
+        return_code = process.wait()
+        if self.progress is not None:
+            if return_code == 0:
+                self.progress.complete_activity(key="upload", desc=f"{desc}: sent")
+            else:
+                self.progress.update_activity(key="upload", desc=f"{desc}: failed")
+        return return_code, bytes(tail).decode("utf-8", errors="replace")
 
     @staticmethod
     def _parse_ready_status(output: str) -> str | None:
@@ -1083,16 +1280,3 @@ class KaggleCliUploader(DatasetUploader):
             if line == "ready" or line in {"status: ready", "status=ready"}:
                 return "ready"
         return None
-
-    @staticmethod
-    def _parse_file_names(output: str) -> list[str]:
-        names: list[str] = []
-        for raw_line in output.splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("-") or line.lower().startswith("name "):
-                continue
-            name = line.split()[0]
-            if name in {"No", "files"}:
-                continue
-            names.append(name)
-        return sorted(set(names))

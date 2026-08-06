@@ -1,17 +1,18 @@
 """Dependency-injected orchestration for one or more archive-derived lots."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import shutil
 import sys
-import copy
+from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from pathlib import PurePosixPath
+from threading import Lock
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from preprocess.batch.archive_extractor import ArchiveExtractor, ZipArchiveExtractor
@@ -1649,11 +1650,38 @@ class BatchOrchestrator:
             None,
         )
         background_strategy = self.embedding.for_background()
-        pending: tuple[
-            VideoAsset,
-            str,
-            Future[EmbeddingBatchResult],
-        ] | None = None
+        pending: deque[
+            tuple[VideoAsset, str, Future[EmbeddingBatchResult]]
+        ] = deque()
+        progressed_video_ids: set[str] = set()
+        progress_lock = Lock()
+        self.progress.start_activity(
+            key="embedding",
+            desc=f"embed {layout.lot_id}",
+            total=len(assets),
+            unit="video",
+        )
+
+        def mark_embedding_progress(video_id: str) -> None:
+            with progress_lock:
+                if video_id in progressed_video_ids:
+                    return
+                progressed_video_ids.add(video_id)
+            self.progress.update_activity(key="embedding", advance=1)
+
+        def embedding_future_finished(
+            asset: VideoAsset,
+            future: Future[EmbeddingBatchResult],
+        ) -> None:
+            if future.cancelled() or future.exception() is not None:
+                return
+            batch = future.result()
+            if (
+                batch.dimension == self.config.embedding.expected_dim
+                and len(batch.videos) == 1
+                and batch.videos[0].video_id == asset.video_id
+            ):
+                mark_embedding_progress(asset.video_id)
 
         def write_embedding_report() -> EmbeddingBatchResult:
             ordered = tuple(
@@ -1699,18 +1727,26 @@ class BatchOrchestrator:
                 payload=video.to_dict(),
             )
             write_embedding_report()
+            mark_embedding_progress(asset.video_id)
 
-        def drain_pending() -> None:
-            nonlocal pending
-            if pending is None:
+        def drain_one() -> None:
+            if not pending:
                 return
-            pending_asset, video_fingerprint, future = pending
-            pending = None
-            accept_embedding(
-                pending_asset,
-                video_fingerprint,
-                future.result(),
-            )
+            pending_asset, video_fingerprint, future = pending.popleft()
+            try:
+                batch = future.result()
+            except BaseException:
+                # Prevent queued work from consuming more GPU time after the
+                # first failure. A task already running may finish and publish
+                # its journal, which is safe to restore on the next run.
+                for _, _, queued in pending:
+                    queued.cancel()
+                raise
+            accept_embedding(pending_asset, video_fingerprint, batch)
+
+        def drain_all() -> None:
+            while pending:
+                drain_one()
 
         with ThreadPoolExecutor(
             max_workers=1,
@@ -1753,28 +1789,36 @@ class BatchOrchestrator:
                     if restored_cache is not None:
                         report_cache = restored_cache
                     write_embedding_report()
+                    mark_embedding_progress(asset.video_id)
                     continue
 
-                # A single pending future means the foreground can render the
-                # next video, but cannot queue unbounded keyframe directories.
-                drain_pending()
+                # Backpressure is applied after rendering the current video:
+                # no more than the configured number of running/queued GPU
+                # tasks can be submitted to the single embedding worker.
+                if (
+                    len(pending)
+                    >= self.config.scheduling.max_pending_embeddings
+                ):
+                    drain_one()
                 checkpoints.start_video(
                     "embedding",
                     asset.video_id,
                     fingerprint=video_fingerprint,
                 )
-                pending = (
+                future = executor.submit(
+                    self._run_background_embedding,
+                    background_strategy,
+                    layout,
                     asset,
+                    processing_result,
                     video_fingerprint,
-                    executor.submit(
-                        self._run_background_embedding,
-                        background_strategy,
-                        layout,
-                        asset,
-                        processing_result,
-                        video_fingerprint,
-                    ),
                 )
+                future.add_done_callback(
+                    lambda completed, current_asset=asset: embedding_future_finished(
+                        current_asset, completed
+                    )
+                )
+                pending.append((asset, video_fingerprint, future))
 
             self._write_json(
                 layout.reports_dir / "processing.json",
@@ -1795,7 +1839,7 @@ class BatchOrchestrator:
             )
             checkpoints.transition(BatchState.EMBEDDING)
             self.progress.start_stage(name="embedding", lot_id=request.lot_id)
-            drain_pending()
+            drain_all()
 
         result = write_embedding_report()
         if len(result.videos) != len(assets):
@@ -1814,6 +1858,9 @@ class BatchOrchestrator:
         checkpoints.complete_stage(
             "embedding",
             fingerprint=embedding_fingerprint,
+        )
+        self.progress.complete_activity(
+            key="embedding", desc=f"embed {layout.lot_id}:done"
         )
         self.progress.complete_stage(name="embedding", lot_id=request.lot_id)
         return processed, result
@@ -1966,6 +2013,12 @@ class BatchOrchestrator:
         videos: list[EmbeddingVideoResult] = []
         encoder_provenance = self._existing_encoder_provenance(layout)
         report_cache = getattr(getattr(self.embedding, "pipeline", None), "cache_fingerprint", None)
+        self.progress.start_activity(
+            key="embedding",
+            desc=f"embed {layout.lot_id}",
+            total=len(assets),
+            unit="video",
+        )
         for asset, processing_result in self.progress.iterate(
             zip(assets, processed, strict=True),
             total=len(assets),
@@ -1995,6 +2048,7 @@ class BatchOrchestrator:
                             reason=f"artifact restore failed: {exc}",
                         )
                     else:
+                        self.progress.update_activity(key="embedding", advance=1)
                         continue
             checkpoints.start_video("embedding", asset.video_id, fingerprint=video_fingerprint)
             single = self.embedding.embed(
@@ -2020,6 +2074,7 @@ class BatchOrchestrator:
                 encoder_provenance=encoder_provenance,
             )
             self._write_json(layout.reports_dir / "embedding.json", partial.to_dict())
+            self.progress.update_activity(key="embedding", advance=1)
         result = EmbeddingBatchResult(
             videos=tuple(videos),
             dimension=self.config.embedding.expected_dim,
@@ -2028,6 +2083,9 @@ class BatchOrchestrator:
         )
         self._write_json(layout.reports_dir / "embedding.json", result.to_dict())
         checkpoints.transition(BatchState.EMBEDDED, payload={"embedding": result.to_dict()})
+        self.progress.complete_activity(
+            key="embedding", desc=f"embed {layout.lot_id}:done"
+        )
         return result
 
     def _run_upload_stages(
@@ -2211,7 +2269,15 @@ def build_default_orchestrator(config: BatchConfig) -> BatchOrchestrator:
                 scene_segments_dir=config.processing.scene_segments_dir,
                 provenance_context={"config": config.to_dict()},
             )
-    uploader = KaggleCliUploader(config.tools.kaggle, config.upload) if config.upload.enabled else None
+    uploader = (
+        KaggleCliUploader(
+            config.tools.kaggle,
+            config.upload,
+            progress=progress,
+        )
+        if config.upload.enabled
+        else None
+    )
     return BatchOrchestrator(
         config,
         downloader=Aria2ArchiveDownloader(

@@ -5,6 +5,7 @@ import csv
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -338,6 +339,34 @@ class ProgressReporter(ABC):
     def finish_pipeline(self) -> None:
         return None
 
+    def start_activity(
+        self,
+        *,
+        key: str,
+        desc: str,
+        total: int | None,
+        unit: str,
+        initial: int = 0,
+    ) -> None:
+        """Start or reset one independently updated progress row."""
+        return None
+
+    def update_activity(
+        self,
+        *,
+        key: str,
+        advance: int = 0,
+        current: int | None = None,
+        total: int | None = None,
+        desc: str | None = None,
+    ) -> None:
+        """Update an independently managed row from foreground or worker threads."""
+        return None
+
+    def complete_activity(self, *, key: str, desc: str | None = None) -> None:
+        """Mark an independently managed row complete without removing it."""
+        return None
+
 
 @dataclass
 class _DetailState:
@@ -351,12 +380,13 @@ class _DetailState:
 
 
 class TqdmProgressReporter(ProgressReporter):
-    """Render three metric rows and two reusable progress bars.
+    """Render metrics, pipeline/detail bars, and concurrent activity bars.
 
-    Interactive terminals always keep the same five rows: lot/stage context,
-    CPU/GPU metrics, disk metrics, full-pipeline progress, and the currently
-    active operation. Nested iterators reuse the operation row and restore
-    their parent afterwards.
+    Interactive terminals keep five base rows: lot/stage context, CPU/GPU
+    metrics, disk metrics, full-pipeline progress, and the currently active
+    operation. Embedding and upload use two stable additional rows so they
+    remain visible while foreground work continues. Nested iterators reuse the
+    operation row and restore their parent afterwards.
     """
 
     _DESCRIPTION_WIDTH = 24
@@ -376,6 +406,10 @@ class TqdmProgressReporter(ProgressReporter):
         self._status_bars: list[object] = []
         self._pipeline_bar: object | None = None
         self._detail_bar: object | None = None
+        self._activities: dict[str, _DetailState] = {}
+        self._activity_bars: dict[str, object] = {}
+        self._activity_order = ("embedding", "upload")
+        self._render_lock = threading.RLock()
         self._pipeline_completed = 0
         self._lot_context = "lot=--"
         self._stage_context = "stage=idle"
@@ -466,11 +500,14 @@ class TqdmProgressReporter(ProgressReporter):
             bar.refresh()
 
     def _refresh_bars(self) -> None:
-        self._refresh_status()
-        if self._pipeline_bar is not None:
-            self._pipeline_bar.refresh()
-        if self._detail_bar is not None:
-            self._detail_bar.refresh()
+        with self._render_lock:
+            self._refresh_status()
+            if self._pipeline_bar is not None:
+                self._pipeline_bar.refresh()
+            if self._detail_bar is not None:
+                self._detail_bar.refresh()
+            for bar in self._activity_bars.values():
+                bar.refresh()
 
     def _refresh_current_operation(self, *, force: bool = False) -> None:
         """Refresh status and detail rows without redrawing unchanged pipeline state."""
@@ -482,9 +519,12 @@ class TqdmProgressReporter(ProgressReporter):
         ):
             return
         self._last_interactive_refresh_at = now
-        self._refresh_status()
-        if self._detail_bar is not None:
-            self._detail_bar.refresh()
+        with self._render_lock:
+            self._refresh_status()
+            if self._detail_bar is not None:
+                self._detail_bar.refresh()
+            for bar in self._activity_bars.values():
+                bar.refresh()
 
     def _ensure_status_bars(self, tqdm) -> None:
         if self._status_bars:
@@ -528,6 +568,46 @@ class TqdmProgressReporter(ProgressReporter):
             refresh=False,
         )
         self._detail_bar.refresh()
+
+    def _activity_position(self, key: str) -> int:
+        base = 5 if self._pipeline_bar is not None else 4
+        if key in self._activity_order:
+            return base + self._activity_order.index(key)
+        extras = sorted(
+            candidate
+            for candidate in self._activities
+            if candidate not in self._activity_order
+        )
+        return base + len(self._activity_order) + extras.index(key)
+
+    def _ensure_activity_bar(self, tqdm, key: str, state: _DetailState) -> None:
+        self._ensure_status_bars(tqdm)
+        bar = self._activity_bars.get(key)
+        if bar is None:
+            self._activity_bars[key] = tqdm(
+                total=state.total,
+                initial=state.current,
+                desc=self._compact_text(state.desc, self._DESCRIPTION_WIDTH),
+                unit=state.unit,
+                unit_scale=state.unit == "B",
+                position=self._activity_position(key),
+                leave=self.config.leave,
+                mininterval=self.config.min_interval_seconds,
+                dynamic_ncols=True,
+                bar_format=self._bar_format(),
+            )
+            return
+        if bar.total != state.total:
+            bar.total = state.total
+        bar.n = state.current
+        bar.last_print_n = min(bar.last_print_n, state.current)
+        bar.unit = state.unit
+        bar.unit_scale = state.unit == "B"
+        bar.set_description_str(
+            self._compact_text(state.desc, self._DESCRIPTION_WIDTH),
+            refresh=False,
+        )
+        bar.refresh()
 
     @staticmethod
     def _ascii_bar(current: int, total: int | None, width: int) -> str:
@@ -599,6 +679,10 @@ class TqdmProgressReporter(ProgressReporter):
         return f"{elapsed}<{eta} ({rate})"
 
     def _render_plain(self, *, force: bool = False) -> None:
+        with self._render_lock:
+            self._render_plain_locked(force=force)
+
+    def _render_plain_locked(self, *, force: bool = False) -> None:
         if not self.config.enabled or not self._plain_mode:
             return
         now = time.monotonic()
@@ -640,6 +724,25 @@ class TqdmProgressReporter(ProgressReporter):
                 f"{self._plain_stage_current}/{self._plain_stage_total} {stage_timing}"
             )
         parts.append(stage)
+        activity_keys = [
+            key for key in self._activity_order if key in self._activities
+        ] + sorted(
+            key for key in self._activities if key not in self._activity_order
+        )
+        for key in activity_keys:
+            activity = self._activities[key]
+            activity_timing = self._timing_text(
+                activity.current,
+                activity.total,
+                activity.started_at,
+                activity.unit,
+            )
+            parts.append(
+                f"{activity.desc} "
+                f"{self._ascii_bar(activity.current, activity.total, bar_width)} "
+                f"{activity.current}/{activity.total if activity.total is not None else '?'} "
+                f"{activity_timing}"
+            )
         line = " | ".join(parts)
         if len(line) < self._plain_last_line_length:
             line = line.ljust(self._plain_last_line_length)
@@ -743,6 +846,10 @@ class TqdmProgressReporter(ProgressReporter):
         self._refresh_bars()
 
     def finish_pipeline(self) -> None:
+        for bar in reversed(tuple(self._activity_bars.values())):
+            bar.close()
+        self._activity_bars.clear()
+        self._activities.clear()
         if self._detail_bar is not None:
             self._detail_bar.close()
             self._detail_bar = None
@@ -760,6 +867,90 @@ class TqdmProgressReporter(ProgressReporter):
         self._plain_last_line_length = 0
         self._plain_pipeline_started_at = None
         self._plain_pipeline_started = False
+
+    def start_activity(
+        self,
+        *,
+        key: str,
+        desc: str,
+        total: int | None,
+        unit: str,
+        initial: int = 0,
+    ) -> None:
+        if not self.config.enabled:
+            return
+        if not key:
+            raise ValueError("activity key must not be empty")
+        if initial < 0 or (total is not None and (total < 0 or initial > total)):
+            raise ValueError("activity progress bounds are invalid")
+        state = _DetailState(desc, total, initial, unit, time.monotonic())
+        with self._render_lock:
+            self._activities[key] = state
+            if self._plain_mode:
+                self._render_plain(force=True)
+                return
+            tqdm = self._load_tqdm()
+            if tqdm is not None:
+                existing = self._activity_bars.get(key)
+                if existing is not None:
+                    existing.reset(total=total)
+                self._ensure_activity_bar(tqdm, key, state)
+                self._refresh_bars()
+
+    def update_activity(
+        self,
+        *,
+        key: str,
+        advance: int = 0,
+        current: int | None = None,
+        total: int | None = None,
+        desc: str | None = None,
+    ) -> None:
+        if not self.config.enabled:
+            return
+        with self._render_lock:
+            state = self._activities.get(key)
+            if state is None:
+                return
+            if total is not None:
+                if total < 0:
+                    raise ValueError("activity total must not be negative")
+                state.total = total
+            next_current = current if current is not None else state.current + advance
+            if next_current < 0:
+                raise ValueError("activity current must not be negative")
+            if state.total is not None:
+                next_current = min(next_current, state.total)
+            state.current = next_current
+            if desc is not None:
+                state.desc = desc
+            if self._plain_mode:
+                self._render_plain()
+                return
+            tqdm = self._load_tqdm()
+            if tqdm is not None:
+                self._ensure_activity_bar(tqdm, key, state)
+                self._refresh_current_operation()
+
+    def complete_activity(self, *, key: str, desc: str | None = None) -> None:
+        if not self.config.enabled:
+            return
+        with self._render_lock:
+            state = self._activities.get(key)
+            if state is None:
+                return
+            if state.total is None:
+                state.total = max(1, state.current)
+            state.current = state.total
+            if desc is not None:
+                state.desc = desc
+            if self._plain_mode:
+                self._render_plain(force=True)
+                return
+            tqdm = self._load_tqdm()
+            if tqdm is not None:
+                self._ensure_activity_bar(tqdm, key, state)
+                self._refresh_bars()
 
     def iterate(
         self,
