@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -66,6 +67,61 @@ class RenderingAndProgressTests(unittest.TestCase):
         self.assertIn("L21_V001: scan", output.getvalue())
         self.assertIn("<", output.getvalue())
         self.assertIn("(", output.getvalue())
+
+    def test_progress_plain_mode_keeps_embedding_and_upload_visible(self) -> None:
+        output = io.StringIO()
+        with patch("preprocess.progress.sys.stderr", output):
+            reporter = TqdmProgressReporter(
+                ProgressConfig(show_system_metrics=False, min_interval_seconds=0.001)
+            )
+            reporter.start_pipeline(total_units=2, total_lots=1, stage_names=("process",))
+            reporter.start_activity(
+                key="embedding",
+                desc="embed L21_a",
+                total=4,
+                unit="video",
+            )
+            reporter.update_activity(key="embedding", advance=1)
+            reporter.start_activity(
+                key="upload",
+                desc="upload L20_a",
+                total=100,
+                unit="B",
+            )
+            reporter.update_activity(key="upload", current=50)
+            reporter.complete_activity(key="embedding")
+            reporter.finish_pipeline()
+
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count("\n"), 1)
+        self.assertIn("embed L21_a", rendered)
+        self.assertIn("upload L20_a", rendered)
+
+    def test_concurrent_activity_updates_are_not_lost(self) -> None:
+        output = io.StringIO()
+        with patch("preprocess.progress.sys.stderr", output):
+            reporter = TqdmProgressReporter(
+                ProgressConfig(show_system_metrics=False, min_interval_seconds=60)
+            )
+            reporter.start_activity(
+                key="embedding",
+                desc="embed",
+                total=100,
+                unit="video",
+            )
+
+            def advance() -> None:
+                for _ in range(50):
+                    reporter.update_activity(key="embedding", advance=1)
+
+            workers = [threading.Thread(target=advance) for _ in range(2)]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join()
+
+            self.assertEqual(reporter._activities["embedding"].current, 100)
+            reporter.finish_pipeline()
 
     def test_progress_interactive_status_has_three_metric_rows(self) -> None:
         reporter = TqdmProgressReporter(

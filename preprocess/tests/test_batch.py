@@ -730,6 +730,18 @@ class BatchModuleTests(unittest.TestCase):
             ["L21_a", "L22_a"],
         )
 
+    def test_pending_embedding_queue_accepts_one_through_ten_videos(self) -> None:
+        for value in (1, 10):
+            config = BatchConfig.from_mapping(
+                {"scheduling": {"max_pending_embeddings": value}}
+            )
+            self.assertEqual(config.scheduling.max_pending_embeddings, value)
+        for value in (0, 11):
+            with self.assertRaises(ValueError):
+                BatchConfig.from_mapping(
+                    {"scheduling": {"max_pending_embeddings": value}}
+                )
+
     def test_render_embedding_overlap_is_bounded_and_checkpointed(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator
 
@@ -739,13 +751,13 @@ class BatchModuleTests(unittest.TestCase):
         class FakeProcessor:
             def __init__(self) -> None:
                 self.calls: list[str] = []
-                self.rendered_second_during_embedding = False
+                self.rendered_ahead_during_embedding = False
 
             def process(self, assets, layout):
                 asset = assets[0]
                 self.calls.append(asset.video_id)
-                if asset.video_id == "L21_V002":
-                    self.rendered_second_during_embedding = embedding_started.wait(
+                if asset.video_id == "L21_V004":
+                    self.rendered_ahead_during_embedding = embedding_started.wait(
                         timeout=2
                     )
                     allow_embedding.set()
@@ -804,7 +816,7 @@ class BatchModuleTests(unittest.TestCase):
                     if asset.video_id == "L21_V001":
                         embedding_started.set()
                         if not allow_embedding.wait(timeout=2):
-                            raise RuntimeError("second render did not overlap embedding")
+                            raise RuntimeError("render queue did not advance during embedding")
                     source_dir = layout.dataset_dir / "keyframes" / asset.video_id
                     output_dir = (
                         layout.dataset_dir / "PECore-features" / asset.video_id
@@ -848,14 +860,22 @@ class BatchModuleTests(unittest.TestCase):
                 {
                     "data_root": str(root / "data"),
                     "embedding": {"enabled": True, "expected_dim": 4},
-                    "scheduling": {"overlap_render_embedding": True},
+                    "scheduling": {
+                        "overlap_render_embedding": True,
+                        "max_pending_embeddings": 3,
+                    },
                 },
                 base_dir=root,
             )
             layout = LotLayout(config.data_root, "L21_a")
             layout.create_runtime_dirs()
             assets = []
-            for video_id in ("L21_V001", "L21_V002"):
+            for video_id in (
+                "L21_V001",
+                "L21_V002",
+                "L21_V003",
+                "L21_V004",
+            ):
                 source = layout.source_root / f"{video_id}.mp4"
                 source.parent.mkdir(parents=True, exist_ok=True)
                 source.write_bytes(video_id.encode())
@@ -897,14 +917,17 @@ class BatchModuleTests(unittest.TestCase):
                 / "L21_V001.json"
             ).is_file()
 
-        self.assertTrue(orchestrator.processor.rendered_second_during_embedding)
+        self.assertTrue(orchestrator.processor.rendered_ahead_during_embedding)
         self.assertEqual(orchestrator.embedding.max_active, 1)
-        self.assertEqual(orchestrator.embedding.calls, ["L21_V001", "L21_V002"])
+        self.assertEqual(
+            orchestrator.embedding.calls,
+            ["L21_V001", "L21_V002", "L21_V003", "L21_V004"],
+        )
         self.assertEqual(
             [item.asset.video_id for item in processed],
-            ["L21_V001", "L21_V002"],
+            ["L21_V001", "L21_V002", "L21_V003", "L21_V004"],
         )
-        self.assertEqual(embedding.image_count, 2)
+        self.assertEqual(embedding.image_count, 4)
         self.assertEqual(state["stages"]["process_validate"]["status"], "completed")
         self.assertEqual(state["stages"]["embedding"]["status"], "completed")
         self.assertTrue(journal_exists)
@@ -1912,6 +1935,42 @@ class BatchModuleTests(unittest.TestCase):
             ],
         )
 
+    def test_kaggle_streaming_updates_dedicated_upload_progress(self) -> None:
+        config = UploadConfig(enabled=True, dataset_ref="owner/test", mode="version")
+        progress = Mock()
+        uploader = KaggleCliUploader("kaggle", config, progress=progress)
+        stdout = Mock()
+        stdout.read1.side_effect = [
+            (
+                b" 50%|#####     | 5.00M/10.0M [00:01<00:01, 5.00MB/s]\r"
+                b"100%|##########| 10.0M/10.0M [00:02<00:00, 5.00MB/s]\n"
+            ),
+            b"",
+        ]
+        process = Mock(stdout=stdout)
+        process.wait.return_value = 0
+
+        with patch(
+            "preprocess.batch.kaggle_uploader.subprocess.Popen",
+            return_value=process,
+        ):
+            return_code, output = uploader._run_streaming(
+                ["kaggle", "datasets", "version"],
+                desc="upload owner/test",
+            )
+
+        self.assertEqual(return_code, 0)
+        self.assertIn("10.0M/10.0M", output)
+        progress.update_activity.assert_any_call(
+            key="upload",
+            current=10_000_000,
+            total=10_000_000,
+            desc="upload owner/test part=1",
+        )
+        progress.complete_activity.assert_called_once_with(
+            key="upload", desc="upload owner/test: sent"
+        )
+
     def test_kaggle_status_verify_uses_cli_compatible_command(self) -> None:
         config = UploadConfig(
             enabled=True,
@@ -2030,32 +2089,104 @@ class BatchModuleTests(unittest.TestCase):
                 require_remote_inventory=True,
             )
             uploader = KaggleCliUploader("kaggle", config)
+            provenance_payload = {"payload_digest": digest}
             status = type(
                 "Completed",
                 (),
                 {"returncode": 0, "stdout": "ready\n", "stderr": ""},
             )()
-            files = type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "name size creationDate\nprovenance.json 12 today\n",
-                    "stderr": "",
-                },
-            )()
             with patch(
                 "preprocess.batch.kaggle_uploader.subprocess.run",
-                side_effect=[status, files],
+                return_value=status,
             ):
-                evidence = uploader._verify_evidence(
-                    expected_payload_digest=digest,
-                    provenance_path=staging / "provenance.json",
-                )
+                with patch.object(
+                    uploader,
+                    "_download_remote_provenance",
+                    return_value=(provenance_payload, "downloaded provenance"),
+                ):
+                    evidence = uploader._verify_evidence(
+                        expected_payload_digest=digest,
+                        provenance_path=staging / "provenance.json",
+                    )
 
         self.assertTrue(evidence["verified"])
         self.assertEqual(evidence["status"], "ready")
         self.assertIn("provenance.json", evidence["files"])
+
+    def test_kaggle_remote_evidence_downloads_exact_provenance_file(self) -> None:
+        uploader = KaggleCliUploader(
+            "kaggle",
+            UploadConfig(enabled=True, dataset_ref="owner/test"),
+        )
+        commands: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(list(command))
+            destination = Path(command[command.index("--path") + 1])
+            atomic_json_write(
+                destination / "provenance.json",
+                {"payload_digest": "abc"},
+            )
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": "", "stderr": ""},
+            )()
+
+        with patch(
+            "preprocess.batch.kaggle_uploader.subprocess.run",
+            side_effect=fake_run,
+        ):
+            payload, output = uploader._download_remote_provenance("owner/test")
+
+        self.assertEqual(payload, {"payload_digest": "abc"})
+        self.assertEqual(output, "")
+        self.assertEqual(commands[0][:4], ["kaggle", "datasets", "download", "owner/test"])
+        self.assertIn("--file", commands[0])
+        self.assertNotIn("files", commands[0])
+
+    def test_kaggle_reuses_matching_remote_payload_after_verify_interruption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            staging_dir = Path(temporary) / "staging"
+            staging_dir.mkdir()
+            provenance_path = staging_dir / "provenance.json"
+            atomic_json_write(provenance_path, {"payload_digest": "digest-1"})
+            staging = StagingResult(
+                staging_dir=staging_dir,
+                files=(provenance_path,),
+                target=None,
+                payload_digest="digest-1",
+                provenance_path=provenance_path,
+            )
+            uploader = KaggleCliUploader(
+                "kaggle",
+                UploadConfig(enabled=True, dataset_ref="owner/test", mode="version"),
+            )
+            ready = type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": "ready\n", "stderr": ""},
+            )()
+            with patch(
+                "preprocess.batch.kaggle_uploader.subprocess.run",
+                return_value=ready,
+            ):
+                with patch.object(
+                    uploader,
+                    "_download_remote_provenance",
+                    return_value=({"payload_digest": "digest-1"}, "downloaded"),
+                ):
+                    result = uploader._reuse_matching_remote_payload(
+                        staging,
+                        dataset_ref="owner/test",
+                        mode="version",
+                    )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(result.verified)
+        self.assertEqual(result.command, ())
+        self.assertIn("transfer skipped", result.output_tail)
 
     def test_kaggle_local_audit_rejects_inventory_path_outside_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2086,29 +2217,11 @@ class BatchModuleTests(unittest.TestCase):
                     verify_poll_seconds=1,
                 ),
             )
-            status = type(
-                "Completed",
-                (),
-                {"returncode": 0, "stdout": "ready\n", "stderr": ""},
-            )()
-            files = type(
-                "Completed",
-                (),
-                {
-                    "returncode": 0,
-                    "stdout": "name size creationDate\nprovenance.json 12 today\n",
-                    "stderr": "",
-                },
-            )()
-            with patch(
-                "preprocess.batch.kaggle_uploader.subprocess.run",
-                side_effect=[status, files],
-            ):
-                evidence = uploader._verify_evidence(
-                    expected_payload_digest=digest,
-                    provenance_path=staging / "provenance.json",
-                    audit_local_payload=True,
-                )
+            evidence = uploader._verify_evidence(
+                expected_payload_digest=digest,
+                provenance_path=staging / "provenance.json",
+                audit_local_payload=True,
+            )
 
         self.assertFalse(evidence["verified"])
         self.assertEqual(evidence["status"], "local_payload_changed")

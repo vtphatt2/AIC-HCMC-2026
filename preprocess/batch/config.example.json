@@ -130,7 +130,7 @@
     "overlap_upload": false,
     "overlap_render_embedding": false,
     "max_pending_uploads": 1,
-    "max_pending_embeddings": 1
+    "max_pending_embeddings": 10
   },
   "minimum_free_bytes": 10737418240
 }
