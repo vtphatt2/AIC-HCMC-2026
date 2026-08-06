@@ -89,7 +89,7 @@ resolve ở runtime hoặc được yêu cầu rõ bằng config.
 - [x] Cập nhật README dataflow, performance profiles, resume và tmux workflow.
 - [x] Docs rõ filename `dataset-metadata.json` nguồn và file staging.
 - [x] Docs rõ transcript layout theo lot và PNG/JPEG extension.
-- [x] Chạy unit tests, compileall, pip check và lint/static check: 72 tests,
+- [x] Chạy unit tests, compileall, pip check và lint/static check: 75 tests,
   `compileall`, `pip check`, `ruff check`, config parse, CLI help và
   `git diff --check` đều pass.
 - [x] Chạy benchmark nhẹ cho hash cache, FFmpeg timeline/render và embedding
@@ -105,9 +105,9 @@ resolve ở runtime hoặc được yêu cầu rõ bằng config.
   ưu tiên checkpoint/restore atomically theo video; persistent worker của
   PyTorch không thể đổi dataset an toàn sau khi worker đã fork nếu không đổi
   sang một lot-wide sampler.
-- [ ] Overlap render CPU và embedding GPU trong cùng lot. Việc này cần state
-  writer/progress đa luồng và bounded artifact queue riêng; không bật vội vì có
-  thể làm hỏng checkpoint đang là guarantee chính của SSH resume.
+- [x] Overlap render CPU và embedding GPU trong cùng lot bằng một GPU worker và
+  backlog chưa embed giới hạn một task. Main thread là writer duy nhất của `state.json`;
+  worker dùng completion journal atomic theo video để resume an toàn.
 - [ ] Download lại `provenance.json` từ Kaggle để byte-compare remote. CLI
   `datasets files` hiện chỉ cho status/inventory, không trả checksum nội dung.
 
