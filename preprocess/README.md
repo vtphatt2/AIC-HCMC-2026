@@ -420,7 +420,8 @@ repository-root/
         ├── dataset/
         ├── kaggle-staging/            # snapshot riêng lot; xóa sau upload verify
         ├── reports/
-        │   └── decoder-timelines/   # cache frame n + PTS theo source fingerprint
+        │   ├── decoder-timelines/      # cache frame n + PTS theo source fingerprint
+        │   └── embedding-completions/ # journal atomic từng video khi overlap
         ├── receipts/
         ├── upload-state.json
         ├── upload.lock
@@ -595,7 +596,9 @@ shot_boundary.threshold               = 0.5
 shot_boundary.window_batch_size       = 1 # TransNet windows/GPU call; tự tune theo host
 shot_boundary.overwrite               = false # reuse valid manifests
 scheduling.overlap_upload             = false # lot N upload cùng lúc xử lý lot N+1
+scheduling.overlap_render_embedding   = false # render video N+1 khi embed video N
 scheduling.max_pending_uploads        = 1 # hiện cố định 1 để bound disk
+scheduling.max_pending_embeddings     = 1 # một GPU task; backlog chưa embed bị giới hạn
 ```
 
 Progress bar dùng `tqdm` và hiển thị đúng năm dòng cố định trong terminal/tmux:
@@ -969,7 +972,9 @@ Trong config, kiểm tra tối thiểu:
   },
   "scheduling": {
     "overlap_upload": false,
-    "max_pending_uploads": 1
+    "overlap_render_embedding": true,
+    "max_pending_uploads": 1,
+    "max_pending_embeddings": 1
   }
 }
 ```
@@ -1108,7 +1113,12 @@ kèm fingerprint, artifact result và thời lượng. Stage `embedding` cũng c
 `state.json.stages.embedding.videos.<video_id>`; do đó ngắt sau video nào thì
 vector video đó được validate/restore thay vì infer lại. PE-Core provenance mới
 được gom tại `dataset/PECore-features/<video_id>/provenance.json`; sidecar legacy
-vẫn đọc được. Checkpoint được ghi trước và sau từng stage cũng như từng video;
+vẫn đọc được. Khi `scheduling.overlap_render_embedding=true`, worker GPU còn
+ghi journal atomically tại
+`reports/embedding-completions/<video_id>.json`. Worker không ghi `state.json`;
+main thread nhận kết quả rồi mới cập nhật checkpoint và report tổng. Nếu SSH bị
+ngắt đúng khoảng giữa hai thao tác này, lần chạy sau validate journal và nhận
+lại feature thay vì infer lại. Checkpoint được ghi trước và sau từng stage cũng như từng video;
 nếu SSH bị mất hoặc nhấn `Ctrl-C`, lần chạy
 `run` tiếp theo sẽ:
 
@@ -1139,11 +1149,31 @@ process đang hoạt động. Các thao tác upload có lock riêng theo lot t�
 `upload.lock`; vì vậy không chạy hai lệnh upload cùng lot song song, cũng không
 chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Mặc định pipeline
 chính upload tuần tự sau processing/embedding của từng lot. Nếu
+`scheduling.overlap_render_embedding=true`, sau khi video N render + validate,
+pipeline submit đúng một GPU task để embed N rồi tiếp tục render N+1 bằng
+FFmpeg/CPU. Trước khi submit thêm task, foreground phải nhận xong task cũ; vì
+vậy queue không tăng vô hạn và tối đa chỉ có một video đã render đang chờ GPU
+ngoài video GPU đang xử lý. Keyframe đã embed vẫn được giữ để upload nên tổng
+dung lượng keyframe của lot không giảm bởi option này. Progress worker bị tắt để không tranh terminal;
+detail bar foreground dùng nhãn `render+embed`, còn GPU utilization/memory vẫn
+được system metrics cập nhật. Custom embedding strategy có mutable progress/UI
+nên override `BatchEmbeddingStrategy.for_background()` để trả worker view độc
+lập. PECore worker overlap buộc DataLoader `num_workers=0` dù config đặt lớn
+hơn: tạo process bằng `fork` từ background thread trên Linux có thể deadlock.
+`batch_size`, `pin_memory`, precision/autocast và model vẫn giữ nguyên; nếu cần
+DataLoader nhiều process thì tắt overlap để dùng embedding stage tuần tự.
+
+Nếu
 `scheduling.overlap_upload=true`, upload/cleanup lot N chạy trong một worker
 nền trong khi lot N+1 được xử lý; chỉ một upload pending được phép, và dataset
 cumulative vẫn serialize bằng dataset lock. Chế độ này giữ tối đa artifact của
 lot đang xử lý cộng một lot đang upload, nên phải để đủ disk reserve. Progress
 nền không vẽ đè terminal; `state.json`/`upload-state.json` vẫn tách biệt.
+
+Hai overlap có thể bật cùng lúc: trong lot hiện tại CPU render song song GPU
+embedding, đồng thời network upload lot trước. Nếu disk, CPU preprocessing hoặc
+network cùng tranh tài nguyên, hãy tắt `overlap_upload` trước; render–embed chỉ
+giữ một GPU task pending và thường là phần có lợi trực tiếp hơn.
 
 `run.lock` bảo vệ pipeline chính; upload/cleanup dùng thêm `upload.lock`. Với
 legacy cumulative staging, `kaggle-dataset-upload.lock` bảo vệ dataset chung và

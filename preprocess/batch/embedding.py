@@ -1,7 +1,9 @@
 """Embedding strategies that connect visual encoders to a lot layout."""
 from __future__ import annotations
 
+import copy
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from pathlib import Path
 from typing import Sequence
 
@@ -14,7 +16,7 @@ from preprocess.pecore.embedding import (
     PECoreEmbeddingPipeline,
     VisualEmbeddingEncoder,
 )
-from preprocess.progress import ProgressReporter
+from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
 
 
 class BatchEmbeddingStrategy(ABC):
@@ -28,6 +30,15 @@ class BatchEmbeddingStrategy(ABC):
         results: Sequence[ProcessingResult],
     ) -> EmbeddingBatchResult:
         raise NotImplementedError
+
+    def for_background(self) -> "BatchEmbeddingStrategy":
+        """Return an isolated worker view when the strategy owns mutable UI state.
+
+        Stateless custom strategies can reuse themselves. Strategies with an
+        internal progress reporter should override this method, as PECore does,
+        so the worker never mutates the foreground terminal state.
+        """
+        return self
 
 
 class PECoreEmbeddingStrategy(BatchEmbeddingStrategy):
@@ -68,6 +79,20 @@ class PECoreEmbeddingStrategy(BatchEmbeddingStrategy):
             layout.dataset_dir / self.config.features_dir_name,
             video_ids=video_ids,
         )
+
+    def for_background(self) -> "PECoreEmbeddingStrategy":
+        """Share the encoder but isolate pipeline/progress state for one GPU worker."""
+        worker = copy.copy(self)
+        worker.pipeline = copy.copy(self.pipeline)
+        worker.pipeline.dataloader = replace(
+            self.pipeline.dataloader,
+            num_workers=0,
+            persistent_workers=False,
+        )
+        worker.pipeline.progress = TqdmProgressReporter(
+            ProgressConfig(enabled=False, show_system_metrics=False)
+        )
+        return worker
 
 
 def default_pecore_embedding_strategy(

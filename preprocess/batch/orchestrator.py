@@ -373,26 +373,39 @@ class BatchOrchestrator:
                     restore=lambda: self._restore_shot_boundaries(assets),
                 )
 
-            processed = self._execute_stage(
-                checkpoints,
-                request,
-                "process_validate",
-                action=lambda: self._process_and_validate(request, assets, layout, checkpoints),
-                restore=lambda: self._restore_processed(assets, layout),
-            )
-
-            if self.embedding is not None:
-                embedding = self._execute_stage(
-                    checkpoints,
+            if (
+                self.embedding is not None
+                and self.config.scheduling.overlap_render_embedding
+            ):
+                processed, embedding = self._process_and_embed_overlapped(
                     request,
-                    "embedding",
-                    action=lambda: self._embed(
-                        request, assets, processed, layout, checkpoints
-                    ),
-                    restore=lambda: self._restore_embedding(layout),
+                    assets,
+                    layout,
+                    checkpoints,
                 )
             else:
-                embedding = None
+                processed = self._execute_stage(
+                    checkpoints,
+                    request,
+                    "process_validate",
+                    action=lambda: self._process_and_validate(
+                        request, assets, layout, checkpoints
+                    ),
+                    restore=lambda: self._restore_processed(assets, layout),
+                )
+
+                if self.embedding is not None:
+                    embedding = self._execute_stage(
+                        checkpoints,
+                        request,
+                        "embedding",
+                        action=lambda: self._embed(
+                            request, assets, processed, layout, checkpoints
+                        ),
+                        restore=lambda: self._restore_embedding(layout),
+                    )
+                else:
+                    embedding = None
 
             if self.config.upload.enabled and not defer_upload:
                 with self._upload_locks(layout, request.lot_id):
@@ -1503,42 +1516,16 @@ class BatchOrchestrator:
             desc=f"{layout.lot_id}: videos",
             unit="video",
         ):
-            video_fingerprint = self._video_checkpoint_fingerprint(stage_fingerprint, asset)
-            if checkpoints.video_is_complete("process_validate", asset.video_id, video_fingerprint):
-                payload = checkpoints.video_payload("process_validate", asset.video_id)
-                if payload is not None:
-                    try:
-                        processed.append(self._restore_processed_video(asset, layout, payload))
-                    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
-                        checkpoints.invalidate_video(
-                            "process_validate",
-                            asset.video_id,
-                            reason=f"artifact restore failed: {exc}",
-                        )
-                    else:
-                        continue
-
-            checkpoints.start_video(
-                "process_validate",
-                asset.video_id,
-                fingerprint=video_fingerprint,
+            result = self._process_or_restore_video(
+                asset,
+                layout,
+                checkpoints,
+                stage_fingerprint,
             )
-            metadata = load_video_metadata(self.metadata_provider, asset.video_id)
-            result = self.processor.process([asset], layout)[0]
-            report = self.video_validator.validate(VideoValidationContext(asset, metadata, result))
-            self._write_json(layout.reports_dir / "validation" / f"{asset.video_id}.json", report.to_dict())
-            if not report.passed:
-                raise RuntimeError(f"Validation failed for {asset.video_id}")
             processed.append(result)
             self._write_json(
                 layout.reports_dir / "processing.json",
                 {"videos": [item.to_dict() for item in processed]},
-            )
-            checkpoints.complete_video(
-                "process_validate",
-                asset.video_id,
-                fingerprint=video_fingerprint,
-                payload=result.to_dict(),
             )
         self._write_json(
             layout.reports_dir / "processing.json",
@@ -1550,6 +1537,417 @@ class BatchOrchestrator:
         )
         checkpoints.transition(BatchState.VALIDATED)
         return processed
+
+    def _process_or_restore_video(
+        self,
+        asset: VideoAsset,
+        layout: LotLayout,
+        checkpoints: CheckpointStore,
+        stage_fingerprint: str,
+    ) -> ProcessingResult:
+        """Render/validate one video while keeping all state writes on the caller."""
+        video_fingerprint = self._video_checkpoint_fingerprint(stage_fingerprint, asset)
+        if checkpoints.video_is_complete(
+            "process_validate", asset.video_id, video_fingerprint
+        ):
+            payload = checkpoints.video_payload("process_validate", asset.video_id)
+            if payload is not None:
+                try:
+                    return self._restore_processed_video(asset, layout, payload)
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                    checkpoints.invalidate_video(
+                        "process_validate",
+                        asset.video_id,
+                        reason=f"artifact restore failed: {exc}",
+                    )
+
+        checkpoints.start_video(
+            "process_validate",
+            asset.video_id,
+            fingerprint=video_fingerprint,
+        )
+        metadata = load_video_metadata(self.metadata_provider, asset.video_id)
+        result = self.processor.process([asset], layout)[0]
+        report = self.video_validator.validate(
+            VideoValidationContext(asset, metadata, result)
+        )
+        self._write_json(
+            layout.reports_dir / "validation" / f"{asset.video_id}.json",
+            report.to_dict(),
+        )
+        if not report.passed:
+            raise RuntimeError(f"Validation failed for {asset.video_id}")
+        checkpoints.complete_video(
+            "process_validate",
+            asset.video_id,
+            fingerprint=video_fingerprint,
+            payload=result.to_dict(),
+        )
+        return result
+
+    def _process_and_embed_overlapped(
+        self,
+        request: ArchiveInput,
+        assets: Sequence[VideoAsset],
+        layout: LotLayout,
+        checkpoints: CheckpointStore,
+    ) -> tuple[list[ProcessingResult], EmbeddingBatchResult]:
+        """Pipeline foreground render/validation with one background GPU worker.
+
+        Only this foreground thread mutates ``state.json`` and aggregate
+        reports. The worker writes feature artifacts for one video plus an
+        atomic completion journal, which makes a finish-before-interrupt event
+        recoverable without introducing concurrent checkpoint writers.
+        """
+        if self.embedding is None:
+            raise RuntimeError("Render/embedding overlap requires an embedding strategy")
+
+        process_fingerprint = self._stage_fingerprint(request, "process_validate")
+        embedding_fingerprint = self._stage_fingerprint(request, "embedding")
+        self.progress.start_stage(name="process_validate", lot_id=request.lot_id)
+
+        if checkpoints.stage_is_complete("process_validate", process_fingerprint):
+            try:
+                processed = self._restore_processed(assets, layout)
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                checkpoints.invalidate_stage(
+                    "process_validate", reason=f"artifact restore failed: {exc}"
+                )
+            else:
+                self.progress.complete_stage(
+                    name="process_validate", lot_id=request.lot_id
+                )
+                embedding = self._execute_stage(
+                    checkpoints,
+                    request,
+                    "embedding",
+                    action=lambda: self._embed(
+                        request, assets, processed, layout, checkpoints
+                    ),
+                    restore=lambda: self._restore_embedding(layout),
+                )
+                if embedding is None:
+                    raise RuntimeError("Embedding strategy unexpectedly returned no result")
+                return processed, embedding
+
+        checkpoints.start_stage(
+            "process_validate", fingerprint=process_fingerprint
+        )
+        checkpoints.start_stage("embedding", fingerprint=embedding_fingerprint)
+        checkpoints.transition(BatchState.PROCESSING)
+        self.progress.start_stage(
+            name="process_validate+embedding",
+            lot_id=request.lot_id,
+        )
+
+        processed: list[ProcessingResult] = []
+        embedded_by_id: dict[str, EmbeddingVideoResult] = {}
+        encoder_provenance = self._existing_encoder_provenance(layout)
+        report_cache = getattr(
+            getattr(self.embedding, "pipeline", None),
+            "cache_fingerprint",
+            None,
+        )
+        background_strategy = self.embedding.for_background()
+        pending: tuple[
+            VideoAsset,
+            str,
+            Future[EmbeddingBatchResult],
+        ] | None = None
+
+        def write_embedding_report() -> EmbeddingBatchResult:
+            ordered = tuple(
+                embedded_by_id[asset.video_id]
+                for asset in assets
+                if asset.video_id in embedded_by_id
+            )
+            partial = EmbeddingBatchResult(
+                videos=ordered,
+                dimension=self.config.embedding.expected_dim,
+                cache_fingerprint=(str(report_cache) if report_cache else None),
+                encoder_provenance=encoder_provenance,
+            )
+            self._write_json(
+                layout.reports_dir / "embedding.json",
+                partial.to_dict(),
+            )
+            return partial
+
+        def accept_embedding(
+            asset: VideoAsset,
+            video_fingerprint: str,
+            batch: EmbeddingBatchResult,
+        ) -> None:
+            nonlocal encoder_provenance, report_cache
+            if (
+                batch.dimension != self.config.embedding.expected_dim
+                or len(batch.videos) != 1
+                or batch.videos[0].video_id != asset.video_id
+            ):
+                raise ValueError(
+                    f"Embedding strategy returned an invalid result for {asset.video_id}"
+                )
+            video = batch.videos[0]
+            embedded_by_id[asset.video_id] = video
+            encoder_provenance = dict(batch.encoder_provenance)
+            if batch.cache_fingerprint is not None:
+                report_cache = batch.cache_fingerprint
+            checkpoints.complete_video(
+                "embedding",
+                asset.video_id,
+                fingerprint=video_fingerprint,
+                payload=video.to_dict(),
+            )
+            write_embedding_report()
+
+        def drain_pending() -> None:
+            nonlocal pending
+            if pending is None:
+                return
+            pending_asset, video_fingerprint, future = pending
+            pending = None
+            accept_embedding(
+                pending_asset,
+                video_fingerprint,
+                future.result(),
+            )
+
+        with ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="preprocess-embedding",
+        ) as executor:
+            for asset in self.progress.iterate(
+                assets,
+                total=len(assets),
+                desc=f"{layout.lot_id}: render+embed",
+                unit="video",
+            ):
+                processing_result = self._process_or_restore_video(
+                    asset,
+                    layout,
+                    checkpoints,
+                    process_fingerprint,
+                )
+                processed.append(processing_result)
+                self._write_json(
+                    layout.reports_dir / "processing.json",
+                    {"videos": [item.to_dict() for item in processed]},
+                )
+
+                video_fingerprint = self._embedding_video_fingerprint(
+                    embedding_fingerprint,
+                    processing_result,
+                )
+                restored = self._restore_overlapped_embedding_video(
+                    asset,
+                    layout,
+                    checkpoints,
+                    video_fingerprint,
+                    report_cache,
+                )
+                if restored is not None:
+                    video, restored_provenance, restored_cache = restored
+                    embedded_by_id[asset.video_id] = video
+                    if restored_provenance:
+                        encoder_provenance = restored_provenance
+                    if restored_cache is not None:
+                        report_cache = restored_cache
+                    write_embedding_report()
+                    continue
+
+                # A single pending future means the foreground can render the
+                # next video, but cannot queue unbounded keyframe directories.
+                drain_pending()
+                checkpoints.start_video(
+                    "embedding",
+                    asset.video_id,
+                    fingerprint=video_fingerprint,
+                )
+                pending = (
+                    asset,
+                    video_fingerprint,
+                    executor.submit(
+                        self._run_background_embedding,
+                        background_strategy,
+                        layout,
+                        asset,
+                        processing_result,
+                        video_fingerprint,
+                    ),
+                )
+
+            self._write_json(
+                layout.reports_dir / "processing.json",
+                {"videos": [item.to_dict() for item in processed]},
+            )
+            checkpoints.transition(
+                BatchState.PROCESSED,
+                payload={"processed": [item.to_dict() for item in processed]},
+            )
+            checkpoints.transition(BatchState.VALIDATED)
+            checkpoints.complete_stage(
+                "process_validate",
+                fingerprint=process_fingerprint,
+            )
+            self.progress.complete_stage(
+                name="process_validate",
+                lot_id=request.lot_id,
+            )
+            checkpoints.transition(BatchState.EMBEDDING)
+            self.progress.start_stage(name="embedding", lot_id=request.lot_id)
+            drain_pending()
+
+        result = write_embedding_report()
+        if len(result.videos) != len(assets):
+            missing = [
+                asset.video_id
+                for asset in assets
+                if asset.video_id not in embedded_by_id
+            ]
+            raise RuntimeError(
+                "Embedding overlap completed with missing videos: " + ", ".join(missing)
+            )
+        checkpoints.transition(
+            BatchState.EMBEDDED,
+            payload={"embedding": result.to_dict()},
+        )
+        checkpoints.complete_stage(
+            "embedding",
+            fingerprint=embedding_fingerprint,
+        )
+        self.progress.complete_stage(name="embedding", lot_id=request.lot_id)
+        return processed, result
+
+    def _embedding_video_fingerprint(
+        self,
+        stage_fingerprint: str,
+        processing_result: ProcessingResult,
+    ) -> str:
+        rendered_record = file_record(processing_result.rendered_manifest_path)
+        encoded = json.dumps(
+            {
+                "stage": stage_fingerprint,
+                "video_id": processing_result.asset.video_id,
+                "rendered_manifest": rendered_record,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _run_background_embedding(
+        self,
+        strategy: BatchEmbeddingStrategy,
+        layout: LotLayout,
+        asset: VideoAsset,
+        processing_result: ProcessingResult,
+        video_fingerprint: str,
+    ) -> EmbeddingBatchResult:
+        """Embed one video and atomically publish a crash-recovery journal."""
+        batch = strategy.embed(layout, [asset], [processing_result])
+        if len(batch.videos) != 1 or batch.videos[0].video_id != asset.video_id:
+            raise ValueError(
+                f"Embedding strategy returned an invalid result for {asset.video_id}"
+            )
+        self._write_json(
+            self._embedding_completion_path(layout, asset.video_id),
+            {
+                "schema_version": 1,
+                "video_id": asset.video_id,
+                "fingerprint": video_fingerprint,
+                "dimension": batch.dimension,
+                "cache_fingerprint": batch.cache_fingerprint,
+                "encoder_provenance": dict(batch.encoder_provenance),
+                "result": batch.videos[0].to_dict(),
+            },
+        )
+        return batch
+
+    @staticmethod
+    def _embedding_completion_path(layout: LotLayout, video_id: str) -> Path:
+        return layout.reports_dir / "embedding-completions" / f"{video_id}.json"
+
+    def _restore_overlapped_embedding_video(
+        self,
+        asset: VideoAsset,
+        layout: LotLayout,
+        checkpoints: CheckpointStore,
+        video_fingerprint: str,
+        report_cache: object,
+    ) -> tuple[EmbeddingVideoResult, dict[str, Any], str | None] | None:
+        if checkpoints.video_is_complete(
+            "embedding", asset.video_id, video_fingerprint
+        ):
+            record = checkpoints.video_payload("embedding", asset.video_id)
+            if record is not None:
+                try:
+                    return (
+                        self._restore_embedding_video(
+                            layout,
+                            record,
+                            self.config.embedding.expected_dim,
+                            report_cache,
+                        ),
+                        {},
+                        str(record["cache_fingerprint"])
+                        if record.get("cache_fingerprint")
+                        else None,
+                    )
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                    checkpoints.invalidate_video(
+                        "embedding",
+                        asset.video_id,
+                        reason=f"artifact restore failed: {exc}",
+                    )
+
+        completion_path = self._embedding_completion_path(layout, asset.video_id)
+        if not completion_path.is_file():
+            return None
+        try:
+            completion = self._read_json(completion_path)
+            if (
+                completion.get("schema_version") != 1
+                or completion.get("video_id") != asset.video_id
+                or completion.get("fingerprint") != video_fingerprint
+                or int(completion.get("dimension"))
+                != self.config.embedding.expected_dim
+            ):
+                return None
+            record = completion.get("result")
+            if not isinstance(record, Mapping):
+                return None
+            video = self._restore_embedding_video(
+                layout,
+                record,
+                self.config.embedding.expected_dim,
+                completion.get("cache_fingerprint") or report_cache,
+            )
+            checkpoints.complete_video(
+                "embedding",
+                asset.video_id,
+                fingerprint=video_fingerprint,
+                payload=video.to_dict(),
+            )
+            provenance = completion.get("encoder_provenance")
+            cache = completion.get("cache_fingerprint")
+            return (
+                video,
+                dict(provenance) if isinstance(provenance, Mapping) else {},
+                str(cache) if cache is not None else None,
+            )
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            return None
+
+    def _existing_encoder_provenance(self, layout: LotLayout) -> dict[str, Any]:
+        path = layout.reports_dir / "embedding.json"
+        if not path.is_file():
+            return {}
+        try:
+            payload = self._read_json(path)
+            provenance = payload.get("encoder_provenance")
+            return dict(provenance) if isinstance(provenance, Mapping) else {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            return {}
 
     def _embed(
         self,
@@ -1566,16 +1964,7 @@ class BatchOrchestrator:
             raise ValueError("Embedding requires one processing result per video asset")
         stage_fingerprint = self._stage_fingerprint(request, "embedding")
         videos: list[EmbeddingVideoResult] = []
-        encoder_provenance: dict[str, Any] = {}
-        existing_report_path = layout.reports_dir / "embedding.json"
-        if existing_report_path.is_file():
-            try:
-                existing_report = self._read_json(existing_report_path)
-                existing_provenance = existing_report.get("encoder_provenance")
-                if isinstance(existing_provenance, Mapping):
-                    encoder_provenance = dict(existing_provenance)
-            except (OSError, ValueError, json.JSONDecodeError):
-                pass
+        encoder_provenance = self._existing_encoder_provenance(layout)
         report_cache = getattr(getattr(self.embedding, "pipeline", None), "cache_fingerprint", None)
         for asset, processing_result in self.progress.iterate(
             zip(assets, processed, strict=True),
@@ -1583,17 +1972,10 @@ class BatchOrchestrator:
             desc=f"{layout.lot_id}: embedding videos",
             unit="video",
         ):
-            rendered_record = file_record(processing_result.rendered_manifest_path)
-            encoded = json.dumps(
-                {
-                    "stage": stage_fingerprint,
-                    "video_id": asset.video_id,
-                    "rendered_manifest": rendered_record,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8")
-            video_fingerprint = hashlib.sha256(encoded).hexdigest()
+            video_fingerprint = self._embedding_video_fingerprint(
+                stage_fingerprint,
+                processing_result,
+            )
             if checkpoints.video_is_complete("embedding", asset.video_id, video_fingerprint):
                 payload = checkpoints.video_payload("embedding", asset.video_id)
                 if payload is not None:

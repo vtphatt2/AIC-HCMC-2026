@@ -730,6 +730,185 @@ class BatchModuleTests(unittest.TestCase):
             ["L21_a", "L22_a"],
         )
 
+    def test_render_embedding_overlap_is_bounded_and_checkpointed(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        embedding_started = threading.Event()
+        allow_embedding = threading.Event()
+
+        class FakeProcessor:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.rendered_second_during_embedding = False
+
+            def process(self, assets, layout):
+                asset = assets[0]
+                self.calls.append(asset.video_id)
+                if asset.video_id == "L21_V002":
+                    self.rendered_second_during_embedding = embedding_started.wait(
+                        timeout=2
+                    )
+                    allow_embedding.set()
+                keyframes = layout.dataset_dir / "keyframes" / asset.video_id
+                keyframes.mkdir(parents=True, exist_ok=True)
+                (keyframes / "000001.jpg").write_bytes(asset.video_id.encode())
+                rendered = keyframes / "manifest.json"
+                rendered.write_text("{}", encoding="utf-8")
+                selection = (
+                    layout.dataset_dir
+                    / "selection-manifests"
+                    / f"{asset.video_id}.json"
+                )
+                selection.parent.mkdir(parents=True, exist_ok=True)
+                selection.write_text("{}", encoding="utf-8")
+                return [
+                    ProcessingResult(
+                        asset,
+                        {"duration_ms": 1},
+                        1,
+                        selection,
+                        rendered,
+                    )
+                ]
+
+        class PassingValidator:
+            @staticmethod
+            def validate(_context):
+                return type(
+                    "Report",
+                    (),
+                    {"passed": True, "to_dict": lambda self: {"passed": True}},
+                )()
+
+        class FakeEmbedding:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+                self.pipeline = type(
+                    "Pipeline", (), {"cache_fingerprint": "fake-cache"}
+                )()
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
+
+            def for_background(self):
+                return self
+
+            def embed(self, layout, assets, results):
+                del results
+                asset = assets[0]
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    self.calls.append(asset.video_id)
+                    if asset.video_id == "L21_V001":
+                        embedding_started.set()
+                        if not allow_embedding.wait(timeout=2):
+                            raise RuntimeError("second render did not overlap embedding")
+                    source_dir = layout.dataset_dir / "keyframes" / asset.video_id
+                    output_dir = (
+                        layout.dataset_dir / "PECore-features" / asset.video_id
+                    )
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    feature = output_dir / "000001.npy"
+                    np.save(feature, np.array([1, 0, 0, 0], dtype=np.float32))
+                    NpyFeatureWriter(4).write_video_metadata(
+                        output_dir,
+                        {
+                            "000001": {
+                                "schema_version": 1,
+                                "image_sha256": sha256_file(
+                                    source_dir / "000001.jpg"
+                                ),
+                                "cache_fingerprint": "fake-cache",
+                            }
+                        },
+                    )
+                    video = EmbeddingVideoResult(
+                        asset.video_id,
+                        source_dir,
+                        output_dir,
+                        1,
+                        1,
+                        0,
+                        4,
+                        (feature,),
+                        "fake-cache",
+                    )
+                    return EmbeddingBatchResult(
+                        (video,), 4, "fake-cache", {"worker": "fake"}
+                    )
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "embedding": {"enabled": True, "expected_dim": 4},
+                    "scheduling": {"overlap_render_embedding": True},
+                },
+                base_dir=root,
+            )
+            layout = LotLayout(config.data_root, "L21_a")
+            layout.create_runtime_dirs()
+            assets = []
+            for video_id in ("L21_V001", "L21_V002"):
+                source = layout.source_root / f"{video_id}.mp4"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(video_id.encode())
+                assets.append(VideoAsset(video_id, source, "L21_a", source.name))
+            request = ArchiveInput(
+                "https://example.test/Videos_L21_a.zip",
+                "Videos_L21_a.zip",
+                "L21_a",
+                1,
+            )
+            checkpoints = CheckpointStore(layout.state_path)
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.embedding = FakeEmbedding()
+            orchestrator.processor = FakeProcessor()
+            orchestrator.video_validator = PassingValidator()
+            orchestrator.metadata_provider = object()
+            orchestrator.shot_boundary_detector = None
+            orchestrator.progress = TqdmProgressReporter(
+                ProgressConfig(enabled=False)
+            )
+            orchestrator._cached_runtime_signature = {"test": "runtime"}
+            orchestrator._initialize_state(checkpoints, request)
+
+            with patch(
+                "preprocess.batch.orchestrator.load_video_metadata",
+                return_value={},
+            ):
+                processed, embedding = orchestrator._process_and_embed_overlapped(
+                    request,
+                    assets,
+                    layout,
+                    checkpoints,
+                )
+            state = checkpoints.load()
+            journal_exists = (
+                layout.reports_dir
+                / "embedding-completions"
+                / "L21_V001.json"
+            ).is_file()
+
+        self.assertTrue(orchestrator.processor.rendered_second_during_embedding)
+        self.assertEqual(orchestrator.embedding.max_active, 1)
+        self.assertEqual(orchestrator.embedding.calls, ["L21_V001", "L21_V002"])
+        self.assertEqual(
+            [item.asset.video_id for item in processed],
+            ["L21_V001", "L21_V002"],
+        )
+        self.assertEqual(embedding.image_count, 2)
+        self.assertEqual(state["stages"]["process_validate"]["status"], "completed")
+        self.assertEqual(state["stages"]["embedding"]["status"], "completed")
+        self.assertTrue(journal_exists)
+
     def test_run_all_does_not_skip_completed_lot_for_changed_request(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator
 
@@ -1236,6 +1415,113 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(first.image_count, 1)
         self.assertEqual(second.image_count, 1)
         self.assertEqual(third.image_count, 1)
+
+    def test_embedding_completion_journal_recovers_before_state_commit(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FakeEmbedding:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.pipeline = type(
+                    "Pipeline", (), {"cache_fingerprint": "fake-cache"}
+                )()
+
+            def embed(self, layout, assets, results):
+                del results
+                self.calls += 1
+                asset = assets[0]
+                source_dir = layout.dataset_dir / "keyframes" / asset.video_id
+                output_dir = (
+                    layout.dataset_dir / "PECore-features" / asset.video_id
+                )
+                output_dir.mkdir(parents=True, exist_ok=True)
+                feature = output_dir / "000001.npy"
+                np.save(feature, np.array([1, 0, 0, 0], dtype=np.float32))
+                NpyFeatureWriter(4).write_video_metadata(
+                    output_dir,
+                    {
+                        "000001": {
+                            "schema_version": 1,
+                            "image_sha256": sha256_file(
+                                source_dir / "000001.jpg"
+                            ),
+                            "cache_fingerprint": "fake-cache",
+                        }
+                    },
+                )
+                result = EmbeddingVideoResult(
+                    asset.video_id,
+                    source_dir,
+                    output_dir,
+                    1,
+                    1,
+                    0,
+                    4,
+                    (feature,),
+                    "fake-cache",
+                )
+                return EmbeddingBatchResult(
+                    (result,), 4, "fake-cache", {"worker": "fake"}
+                )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "embedding": {"enabled": True, "expected_dim": 4},
+                },
+                base_dir=root,
+            )
+            layout = LotLayout(config.data_root, "L21_a")
+            layout.create_runtime_dirs()
+            source = layout.source_root / "L21_V001.mp4"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"video")
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V001"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000001.jpg").write_bytes(b"image")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text("{}", encoding="utf-8")
+            selection = (
+                layout.dataset_dir
+                / "selection-manifests"
+                / "L21_V001.json"
+            )
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}", encoding="utf-8")
+            asset = VideoAsset("L21_V001", source, "L21_a", source.name)
+            processed = ProcessingResult(asset, {}, 1, selection, rendered)
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.embedding = FakeEmbedding()
+            checkpoints = CheckpointStore(layout.state_path)
+            checkpoints.start_stage("embedding", fingerprint="embedding-stage")
+            checkpoints.start_video(
+                "embedding", asset.video_id, fingerprint="video-fingerprint"
+            )
+
+            orchestrator._run_background_embedding(
+                orchestrator.embedding,
+                layout,
+                asset,
+                processed,
+                "video-fingerprint",
+            )
+            restored = orchestrator._restore_overlapped_embedding_video(
+                asset,
+                layout,
+                checkpoints,
+                "video-fingerprint",
+                "fake-cache",
+            )
+            checkpoint_completed = checkpoints.video_is_complete(
+                "embedding", asset.video_id, "video-fingerprint"
+            )
+
+        self.assertIsNotNone(restored)
+        self.assertEqual(orchestrator.embedding.calls, 1)
+        self.assertTrue(checkpoint_completed)
 
     def test_staging_excludes_source_video(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

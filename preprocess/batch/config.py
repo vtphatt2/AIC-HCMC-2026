@@ -338,15 +338,22 @@ class ReproducibilityConfig:
 
 @dataclass(frozen=True)
 class SchedulingConfig:
-    """Bounded cross-lot scheduling; disabled by default for simple hosts."""
+    """Bounded within-lot and cross-lot scheduling; disabled by default."""
 
     overlap_upload: bool = False
+    overlap_render_embedding: bool = False
     max_pending_uploads: int = 1
+    max_pending_embeddings: int = 1
 
     def __post_init__(self) -> None:
         if self.max_pending_uploads != 1:
             raise ValueError(
                 "scheduling.max_pending_uploads currently must be 1 to bound disk usage"
+            )
+        if self.max_pending_embeddings != 1:
+            raise ValueError(
+                "scheduling.max_pending_embeddings currently must be 1 to keep "
+                "GPU work serialized and bound the unembedded-video backlog"
             )
 
 

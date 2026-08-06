@@ -67,6 +67,23 @@ class PreparedFakeVisualEncoder(VisualEmbeddingEncoder):
 
 
 class PECoreEmbeddingTests(unittest.TestCase):
+    def test_background_strategy_isolates_progress_but_shares_encoder(self) -> None:
+        encoder = FakeVisualEncoder()
+        strategy = PECoreEmbeddingStrategy(
+            encoder,
+            PECoreEmbeddingConfig(enabled=True, expected_dim=4),
+            input_profile_id="keyframes",
+        )
+
+        worker = strategy.for_background()
+
+        self.assertIsNot(worker, strategy)
+        self.assertIsNot(worker.pipeline, strategy.pipeline)
+        self.assertIs(worker.pipeline.encoder, strategy.pipeline.encoder)
+        self.assertEqual(worker.pipeline.dataloader.num_workers, 0)
+        self.assertFalse(worker.pipeline.dataloader.persistent_workers)
+        self.assertFalse(worker.pipeline.progress.config.enabled)
+
     def test_feature_provenance_is_recorded_per_image(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
