@@ -4,6 +4,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -13,6 +14,7 @@ from preprocess.pecore.embedding import (
     OpenClipPECoreEncoder,
     PECoreEmbeddingConfig,
     PECoreEmbeddingPipeline,
+    PECoreEmbeddingUnavailable,
     TF32Config,
     VisualEmbeddingEncoder,
 )
@@ -77,17 +79,14 @@ class PECoreEmbeddingTests(unittest.TestCase):
                 root / "keyframes",
                 root / "PECore-features",
             )
-            metadata = {
-                frame_id: json.loads(
-                    (
-                        root
-                        / "PECore-features"
-                        / "L21_V030"
-                        / f"{frame_id}.npy.meta.json"
-                    ).read_text(encoding="utf-8")
-                )
-                for frame_id in ("000001", "000002")
-            }
+            metadata = json.loads(
+                (
+                    root
+                    / "PECore-features"
+                    / "L21_V030"
+                    / "provenance.json"
+                ).read_text(encoding="utf-8")
+            )["frames"]
 
         self.assertNotEqual(
             metadata["000001"]["image_sha256"],
@@ -97,6 +96,25 @@ class PECoreEmbeddingTests(unittest.TestCase):
             metadata["000001"]["cache_fingerprint"],
             metadata["000002"]["cache_fingerprint"],
         )
+
+    def test_source_image_is_hashed_once_per_embedding_attempt(self) -> None:
+        from preprocess.batch.provenance import sha256_file as real_sha256_file
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            keyframes = root / "keyframes" / "L21_V030"
+            keyframes.mkdir(parents=True)
+            for frame_id in ("000001", "000002"):
+                (keyframes / f"{frame_id}.jpg").write_bytes(frame_id.encode())
+            with patch(
+                "preprocess.pecore.embedding.sha256_file",
+                wraps=real_sha256_file,
+            ) as digest:
+                PECoreEmbeddingPipeline(FakeVisualEncoder(), batch_size=2).embed_all(
+                    root / "keyframes",
+                    root / "features",
+                )
+        self.assertEqual(digest.call_count, 2)
 
     def test_configurable_encoder_writes_sample_compatible_npy_and_resumes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -154,6 +172,17 @@ class PECoreEmbeddingTests(unittest.TestCase):
         self.assertEqual(config.model_id, "hf-hub:timm/PE-Core-bigG-14-448")
         self.assertEqual(config.expected_dim, 1280)
         self.assertEqual(config.features_dir_name, "PECore-features")
+
+    def test_explicit_cuda_fails_when_runtime_has_no_cuda(self) -> None:
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return False
+
+        fake_torch = type("FakeTorch", (), {"cuda": FakeCuda()})()
+        encoder = OpenClipPECoreEncoder(PECoreEmbeddingConfig(device="cuda:1"))
+        with self.assertRaisesRegex(PECoreEmbeddingUnavailable, "CUDA is unavailable"):
+            encoder._resolve_device(fake_torch)
 
     def test_bfloat16_and_autocast_are_runtime_configurations(self) -> None:
         config = PECoreEmbeddingConfig(

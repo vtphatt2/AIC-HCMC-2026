@@ -13,8 +13,8 @@ banner. No transcript windowing or raw TXT parsing occurs in this script.
 
 Example:
 
-  preprocess/.venv/bin/python \
-      preprocess/transcript/add_transcript_banner.py --video-id L03_V002
+  preprocess/.venv/bin/python -m \
+      preprocess.transcript.add_transcript_banner --video-id L03_V002
 """
 from __future__ import annotations
 

@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from preprocess.batch.config import ProcessingConfig, ToolConfig
 from preprocess.batch.metadata import MetadataProvider
 from preprocess.batch.models import ProcessingResult, ValidationReport, VideoAsset
-from preprocess.batch.provenance import sha256_file
+from preprocess.batch.provenance import file_fingerprint_matches, sha256_file
 from preprocess.keyframes.contracts import RenderProfile
 
 
@@ -174,17 +174,11 @@ class ArtifactRule(ValidationRule):
 
         source_fingerprint = selection.get("source", {}).get("fingerprint", {})
         if source_fingerprint:
-            current_stat = context.asset.path.stat()
-            if source_fingerprint.get("size_bytes") != current_stat.st_size:
-                report.add_error("artifacts.source_changed", "Source video size differs from selection fingerprint")
-            expected_hash = source_fingerprint.get("sha256")
-            if expected_hash is not None and str(expected_hash) != sha256_file(context.asset.path):
-                report.add_error("artifacts.source_changed", "Source video content differs from selection fingerprint")
-            elif expected_hash is None and source_fingerprint.get("mtime_ns") != current_stat.st_mtime_ns:
-                # Legacy manifests had no content digest. Keep their timestamp
-                # check as a conservative fallback; new manifests are portable
-                # across filesystems because content is authoritative.
-                report.add_error("artifacts.source_mtime_changed", "Source video mtime differs from legacy selection fingerprint")
+            if not file_fingerprint_matches(context.asset.path, source_fingerprint):
+                report.add_error(
+                    "artifacts.source_changed",
+                    "Source video differs from selection fingerprint",
+                )
 
     @staticmethod
     def _load_json(path: Path, report: ValidationReport, label: str) -> dict[str, Any] | None:

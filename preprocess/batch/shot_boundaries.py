@@ -15,7 +15,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 from preprocess.batch.config import ShotBoundaryConfig
 from preprocess.batch.models import VideoAsset
-from preprocess.batch.provenance import atomic_json_write, sha256_file
+from preprocess.batch.provenance import (
+    atomic_json_write,
+    file_fingerprint_matches,
+    sha256_file,
+)
 from preprocess.keyframes.contracts import SceneSegment
 from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
 
@@ -121,7 +125,29 @@ class TransNetV2ShotBoundaryDetector(ShotBoundaryDetector):
                 category=UserWarning,
             )
             model = self._get_model()
-            scenes = model.detect_scenes(str(asset.path), threshold=self.config.threshold)
+            fps_value = float(model.get_video_fps(str(asset.path)))
+            fps = fps_value if fps_value > 0 else None
+            if self.config.window_batch_size == 1:
+                video_frames, single_frame_predictions, all_frame_predictions = (
+                    model.predict_video(str(asset.path), quiet=True)
+                )
+            else:
+                video_frames, single_frame_predictions, all_frame_predictions = (
+                    self._predict_video_batched(
+                        model,
+                        asset.path,
+                        self.config.window_batch_size,
+                    )
+                )
+            scenes = model.predictions_to_scenes_with_data(
+                single_frame_predictions,
+                fps=fps,
+                threshold=self.config.threshold,
+            )
+            del video_frames, single_frame_predictions, all_frame_predictions
+            cleanup_memory = getattr(model, "_cleanup_memory", None)
+            if callable(cleanup_memory):
+                cleanup_memory()
         if not isinstance(scenes, list):
             raise RuntimeError(
                 f"TransNetV2 returned an unsupported scene result for {asset.video_id}: "
@@ -135,16 +161,6 @@ class TransNetV2ShotBoundaryDetector(ShotBoundaryDetector):
                 raise RuntimeError(f"TransNetV2 returned an invalid scene for {asset.video_id}")
             segments.append(dict(value))
 
-        fps: float | None = None
-        get_fps = getattr(model, "get_video_fps", None)
-        if callable(get_fps):
-            try:
-                fps_value = float(get_fps(str(asset.path)))
-                fps = fps_value if fps_value > 0 else None
-            except (OSError, TypeError, ValueError, RuntimeError):
-                # The scene manifest remains usable through its timestamps.
-                fps = None
-
         return ShotBoundaryDetection(
             video_id=asset.video_id,
             backend=self.name,
@@ -152,6 +168,55 @@ class TransNetV2ShotBoundaryDetector(ShotBoundaryDetector):
             threshold=self.config.threshold,
             fps=fps,
         )
+
+    @staticmethod
+    def _predict_video_batched(model: Any, path: Path, batch_size: int):
+        """Run the package's 100/50 frame windows in configurable batches."""
+        try:
+            import ffmpeg
+            import numpy as np
+            import torch
+        except ImportError as exc:
+            raise RuntimeError(
+                "Batched TransNetV2 requires ffmpeg-python, numpy and torch"
+            ) from exc
+
+        stream, _ = (
+            ffmpeg.input(str(path))
+            .output("pipe:", format="rawvideo", pix_fmt="rgb24", s="48x27")
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        video = np.frombuffer(stream, np.uint8).reshape([-1, 27, 48, 3])
+        frames = torch.from_numpy(np.array(video, copy=True)).to(model.device)
+        if len(frames) == 0:
+            raise RuntimeError(f"TransNetV2 decoded no frames: {path}")
+
+        window_size = 100
+        step_size = 50
+        padding_start = 25
+        remainder = len(frames) % step_size
+        padding_end = 25 + step_size - (remainder if remainder else step_size)
+        padded = torch.cat(
+            [frames[0].unsqueeze(0)] * padding_start
+            + [frames]
+            + [frames[-1].unsqueeze(0)] * padding_end,
+            dim=0,
+        )
+        windows = [
+            padded[start : start + window_size]
+            for start in range(0, len(padded) - window_size + 1, step_size)
+        ]
+        singles = []
+        all_frames = []
+        with torch.inference_mode():
+            for start in range(0, len(windows), batch_size):
+                batch = torch.stack(windows[start : start + batch_size], dim=0)
+                single_prediction, all_prediction = model.predict_raw(batch)
+                singles.append(single_prediction[:, 25:75, 0].reshape(-1).cpu())
+                all_frames.append(all_prediction[:, 25:75, 0].reshape(-1).cpu())
+        single = torch.cat(singles, dim=0)[: len(frames)]
+        all_prediction = torch.cat(all_frames, dim=0)[: len(frames)]
+        return frames, single, all_prediction
 
 
 class ShotBoundaryDetectorRegistry:
@@ -266,6 +331,7 @@ def write_scene_boundary_manifest(
             "fingerprint": {
                 "size_bytes": stat.st_size,
                 "mtime_ns": stat.st_mtime_ns,
+                "ctime_ns": stat.st_ctime_ns,
                 "sha256": sha256_file(source.path),
             },
         }
@@ -357,13 +423,4 @@ class ShotBoundaryPipeline:
         fingerprint = source.get("fingerprint")
         if not isinstance(fingerprint, Mapping):
             return False
-        try:
-            stat = asset.path.stat()
-            if int(fingerprint.get("size_bytes")) != stat.st_size:
-                return False
-            expected_hash = fingerprint.get("sha256")
-            if expected_hash is not None:
-                return str(expected_hash) == sha256_file(asset.path)
-            return int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
-        except (OSError, TypeError, ValueError):
-            return False
+        return file_fingerprint_matches(asset.path, fingerprint)

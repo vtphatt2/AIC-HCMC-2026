@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
 import unittest
 import zipfile
+import numpy as np
+import threading
+import sys
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -40,7 +44,14 @@ from preprocess.batch.models import (
     UploadResult,
     VideoAsset,
 )
-from preprocess.batch.provenance import atomic_json_write, digest_directory
+from preprocess.pecore.embedding import EmbeddingBatchResult, EmbeddingVideoResult, NpyFeatureWriter
+from preprocess.batch.provenance import (
+    FileDigestCache,
+    atomic_json_write,
+    digest_directory,
+    file_fingerprint_matches,
+    sha256_file,
+)
 from preprocess.batch.shot_boundaries import (
     ShotBoundaryDetection,
     ShotBoundaryDetector,
@@ -75,6 +86,69 @@ class BatchModuleTests(unittest.TestCase):
         self.assertTrue(config.shot_boundary.enabled)
         self.assertEqual(config.processing.scene_segments_dir, root / "data" / "scene-segments")
         self.assertEqual(config.shot_boundary.output_dir, root / "data" / "scene-segments")
+
+    def test_transnet_window_batching_preserves_prediction_order(self) -> None:
+        import torch
+        from preprocess.batch.shot_boundaries import TransNetV2ShotBoundaryDetector
+
+        frame_count = 123
+        raw = np.zeros((frame_count, 27, 48, 3), dtype=np.uint8)
+        raw[:, 0, 0, 0] = np.arange(frame_count, dtype=np.uint8)
+
+        class FakeInput:
+            def output(self, *args, **kwargs):
+                del args, kwargs
+                return self
+
+            def run(self, **kwargs):
+                del kwargs
+                return raw.tobytes(), b""
+
+        fake_ffmpeg = type(
+            "FakeFFmpeg",
+            (),
+            {"input": staticmethod(lambda path: FakeInput())},
+        )
+
+        class FakeModel:
+            device = "cpu"
+
+            @staticmethod
+            def predict_raw(batch):
+                values = batch[:, :, 0, 0, 0].float().unsqueeze(-1) / 255.0
+                return values, values
+
+        with patch.dict(sys.modules, {"ffmpeg": fake_ffmpeg}):
+            _, single, many = TransNetV2ShotBoundaryDetector._predict_video_batched(
+                FakeModel(), Path("video.mp4"), 4
+            )
+
+        self.assertEqual(tuple(single.shape), (frame_count,))
+        self.assertTrue(torch.equal(single, many))
+        self.assertTrue(
+            torch.equal(single, torch.arange(frame_count, dtype=torch.float32) / 255.0)
+        )
+
+    def test_crc_corrupt_zip_is_never_published_by_extractor(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            archive = root / "Videos_L21_a.zip"
+            payload = b"unique-video-payload"
+            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as handle:
+                handle.writestr("video/L21_V001.mp4", payload)
+            data = bytearray(archive.read_bytes())
+            offset = data.index(payload)
+            data[offset] ^= 0x01
+            archive.write_bytes(data)
+
+            inspection = ZipArchiveValidator(
+                ArchiveConfig(video_extensions=(".mp4",))
+            ).validate(archive)
+            destination = root / "source"
+            with self.assertRaises(zipfile.BadZipFile):
+                ZipArchiveExtractor().extract(inspection, destination, "L21_a")
+
+            self.assertFalse((destination / "L21_a").exists())
 
     def test_upload_defaults_to_lot_scoped_auto_dataset_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -595,6 +669,67 @@ class BatchModuleTests(unittest.TestCase):
         self.assertEqual(orchestrator.progress.skipped, [("L29_a", 5)])
         self.assertEqual(orchestrator.progress.total_units, 10)
 
+    def test_overlap_upload_is_bounded_and_runs_during_next_lot(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator, LotRunResult
+
+        started = threading.Event()
+        allow_first_upload = threading.Event()
+
+        class FakeOrchestrator(BatchOrchestrator):
+            def _pipeline_stage_names(self):
+                return ("process", "stage_upload", "cleanup")
+
+            def _is_completed_lot(self, request):
+                del request
+                return False
+
+            def run_lot(self, request, *, defer_upload=False):
+                self.deferred.append(defer_upload)
+                if request.lot_id == "L22_a":
+                    self.overlapped = started.wait(timeout=2)
+                    allow_first_upload.set()
+                return LotRunResult(request.lot_id, (), (), None, None)
+
+            def _upload_lot_in_background(self, lot_id):
+                if lot_id == "L21_a":
+                    started.set()
+                    if not allow_first_upload.wait(timeout=2):
+                        raise RuntimeError("next lot did not overlap first upload")
+                return UploadResult(lot_id, "create", True, ("kaggle",), "ok")
+
+        config = BatchConfig.from_mapping(
+            {
+                "upload": {
+                    "enabled": True,
+                    "dataset_ref_template": "owner/test-{lot_slug}",
+                },
+                "scheduling": {"overlap_upload": True},
+            }
+        )
+        orchestrator = object.__new__(FakeOrchestrator)
+        orchestrator.config = config
+        orchestrator.progress = Mock()
+        orchestrator.deferred = []
+        orchestrator.overlapped = False
+        requests = [
+            ArchiveInput(
+                f"https://example.test/Videos_{lot_id}.zip",
+                f"Videos_{lot_id}.zip",
+                lot_id,
+                index,
+            )
+            for index, lot_id in enumerate(("L21_a", "L22_a"), start=1)
+        ]
+        with patch("preprocess.batch.orchestrator.PreflightChecker.run"):
+            results = orchestrator.run_all(requests)
+
+        self.assertEqual(orchestrator.deferred, [True, True])
+        self.assertTrue(orchestrator.overlapped)
+        self.assertEqual(
+            [result.upload.dataset_ref for result in results if result.upload],
+            ["L21_a", "L22_a"],
+        )
+
     def test_run_all_does_not_skip_completed_lot_for_changed_request(self) -> None:
         from preprocess.batch.orchestrator import BatchOrchestrator
 
@@ -628,6 +763,47 @@ class BatchModuleTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "different archive request"):
                 orchestrator._is_completed_lot(changed_request)
+
+    def test_completed_local_lot_is_reopened_when_stage_code_fingerprint_changes(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FingerprintOrchestrator(BatchOrchestrator):
+            def _pipeline_stage_names(self):
+                return ("download",)
+
+            def _stage_fingerprint(self, request, name):
+                del request, name
+                return "new-code"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig(data_root=root / "data")
+            request = ArchiveInput(
+                "https://example.test/Videos_L21_a.zip",
+                "Videos_L21_a.zip",
+                "L21_a",
+                1,
+            )
+            layout = LotLayout(config.data_root, request.lot_id)
+            layout.create_runtime_dirs()
+            orchestrator = object.__new__(FingerprintOrchestrator)
+            orchestrator.config = config
+            CheckpointStore(layout.state_path).write(
+                {
+                    "state": BatchState.COMPLETED.value,
+                    "request": request.to_dict(),
+                    "config_fingerprint": orchestrator._config_fingerprint(),
+                    "stages": {
+                        "download": {
+                            "status": "completed",
+                            "fingerprint": "old-code",
+                        }
+                    },
+                }
+            )
+            completed = orchestrator._is_completed_lot(request)
+
+        self.assertFalse(completed)
 
     def test_completed_stage_records_elapsed_seconds(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -831,7 +1007,10 @@ class BatchModuleTests(unittest.TestCase):
                 {
                     "data_root": str(data_root),
                     "metadata_root": str(metadata_root),
-                    "processing": {"scene_segments_dir": str(scene_root)},
+                    "processing": {
+                        "selector": "linear-rulebase",
+                        "scene_segments_dir": str(scene_root),
+                    },
                 },
                 base_dir=root,
             )
@@ -867,12 +1046,196 @@ class BatchModuleTests(unittest.TestCase):
             )
             after_other_lot = orchestrator._stage_fingerprint(request, "process_validate")
             after_other_scene = orchestrator._stage_fingerprint(request, "shot_boundaries")
+            (scene_root / "L21_V001.json").write_text(
+                "{\"segments\":[{\"start_ms\":0,\"end_ms\":1500}]}",
+                encoding="utf-8",
+            )
+            after_current_scene = orchestrator._stage_fingerprint(request, "process_validate")
+            shot_after_current_scene = orchestrator._stage_fingerprint(request, "shot_boundaries")
             (metadata_root / "L21_V001.json").write_text("{\"fps\":24}", encoding="utf-8")
             after_current_lot = orchestrator._stage_fingerprint(request, "process_validate")
 
         self.assertEqual(before, after_other_lot)
         self.assertEqual(before_scene, after_other_scene)
+        self.assertNotEqual(before, after_current_scene)
+        self.assertEqual(before_scene, shot_after_current_scene)
         self.assertNotEqual(before, after_current_lot)
+
+    def test_stage_runtime_signature_only_changes_for_relevant_source(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        config = BatchConfig()
+        orchestrator = object.__new__(BatchOrchestrator)
+        orchestrator.config = config
+        changed = {"shot_boundaries.py": False}
+
+        def fake_inventory(root, *, include=None, exclude_names=None):
+            del root, exclude_names
+            records = []
+            for path in include or []:
+                records.append(
+                    {
+                        "path": path.name,
+                        "size_bytes": 1,
+                        "sha256": (
+                            "changed"
+                            if path.name == "shot_boundaries.py"
+                            and changed["shot_boundaries.py"]
+                            else "stable"
+                        ),
+                    }
+                )
+            return records
+
+        with patch("preprocess.batch.orchestrator.inventory", side_effect=fake_inventory), patch(
+            "preprocess.batch.orchestrator.package_versions", return_value={}
+        ), patch("preprocess.batch.orchestrator.tool_versions", return_value={}):
+            before_shot = orchestrator._stage_runtime_signature("shot_boundaries")
+            before_embedding = orchestrator._stage_runtime_signature("embedding")
+            changed["shot_boundaries.py"] = True
+            orchestrator._cached_stage_runtime_signatures = {}
+            after_shot = orchestrator._stage_runtime_signature("shot_boundaries")
+            after_embedding = orchestrator._stage_runtime_signature("embedding")
+
+        self.assertNotEqual(before_shot, after_shot)
+        self.assertEqual(before_embedding, after_embedding)
+
+    def test_file_digest_cache_reuses_digest_until_stat_identity_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "video.mp4"
+            path.write_bytes(b"first")
+            cache = FileDigestCache(minimum_cache_bytes=0)
+            with patch(
+                "preprocess.batch.provenance.hashlib.sha256",
+                wraps=hashlib.sha256,
+            ) as sha_factory:
+                first = cache.digest(path)
+                second = cache.digest(path)
+                previous = path.stat()
+                path.write_bytes(b"other")
+                os.utime(
+                    path,
+                    ns=(previous.st_atime_ns, previous.st_mtime_ns + 1_000_000),
+                )
+                third = cache.digest(path)
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, third)
+        self.assertEqual(sha_factory.call_count, 2)
+
+    def test_file_fingerprint_uses_stat_then_hash_after_timestamp_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "artifact.bin"
+            path.write_bytes(b"payload")
+            stat = path.stat()
+            fingerprint = {
+                "size_bytes": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+                "sha256": sha256_file(path),
+            }
+            with patch("preprocess.batch.provenance.sha256_file") as digest:
+                self.assertTrue(file_fingerprint_matches(path, fingerprint))
+                digest.assert_not_called()
+
+            os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+            self.assertTrue(file_fingerprint_matches(path, fingerprint))
+
+    def test_embedding_resumes_from_per_video_checkpoint(self) -> None:
+        from preprocess.batch.orchestrator import BatchOrchestrator
+
+        class FakeEmbedding:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.pipeline = type("Pipeline", (), {"cache_fingerprint": "fake-cache"})()
+
+            def embed(self, layout, assets, results):
+                del results
+                self.calls += 1
+                asset = assets[0]
+                source_dir = layout.dataset_dir / "keyframes" / asset.video_id
+                output_dir = layout.dataset_dir / "PECore-features" / asset.video_id
+                output_dir.mkdir(parents=True, exist_ok=True)
+                feature = output_dir / "000001.npy"
+                np.save(feature, np.array([1, 0, 0, 0], dtype=np.float32))
+                NpyFeatureWriter(4).write_video_metadata(
+                    output_dir,
+                    {
+                        "000001": {
+                            "schema_version": 1,
+                            "image_sha256": sha256_file(source_dir / "000001.jpg"),
+                            "cache_fingerprint": "fake-cache",
+                        }
+                    },
+                )
+                video = EmbeddingVideoResult(
+                    asset.video_id,
+                    source_dir,
+                    output_dir,
+                    1,
+                    1,
+                    0,
+                    4,
+                    (feature,),
+                    "fake-cache",
+                )
+                return EmbeddingBatchResult((video,), 4, "fake-cache", {"fake": True})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = BatchConfig.from_mapping(
+                {
+                    "data_root": str(root / "data"),
+                    "embedding": {"enabled": True, "expected_dim": 4},
+                },
+                base_dir=root,
+            )
+            layout = LotLayout(config.data_root, "L21_a")
+            layout.create_runtime_dirs()
+            source = layout.source_root / "L21_V001.mp4"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"video")
+            keyframes = layout.dataset_dir / "keyframes" / "L21_V001"
+            keyframes.mkdir(parents=True)
+            (keyframes / "000001.jpg").write_bytes(b"image")
+            rendered = keyframes / "manifest.json"
+            rendered.write_text("{}", encoding="utf-8")
+            selection = layout.dataset_dir / "selection-manifests" / "L21_V001.json"
+            selection.parent.mkdir(parents=True)
+            selection.write_text("{}", encoding="utf-8")
+            asset = VideoAsset("L21_V001", source, "L21_a", source.name)
+            processed = ProcessingResult(asset, {}, 1, selection, rendered)
+            request = ArchiveInput(
+                "https://example.test/Videos_L21_a.zip",
+                "Videos_L21_a.zip",
+                "L21_a",
+                1,
+            )
+            orchestrator = object.__new__(BatchOrchestrator)
+            orchestrator.config = config
+            orchestrator.embedding = FakeEmbedding()
+            orchestrator.shot_boundary_detector = None
+            orchestrator.progress = TqdmProgressReporter(ProgressConfig(enabled=False))
+            orchestrator._cached_runtime_signature = {"test": "runtime"}
+            checkpoints = CheckpointStore(layout.state_path)
+            stage_fingerprint = orchestrator._stage_fingerprint(request, "embedding")
+
+            checkpoints.start_stage("embedding", fingerprint=stage_fingerprint)
+            first = orchestrator._embed(request, [asset], [processed], layout, checkpoints)
+            checkpoints.complete_stage("embedding", fingerprint=stage_fingerprint)
+            checkpoints.start_stage("embedding", fingerprint=stage_fingerprint)
+            second = orchestrator._embed(request, [asset], [processed], layout, checkpoints)
+            checkpoints.complete_stage("embedding", fingerprint=stage_fingerprint)
+            feature_path = (
+                layout.dataset_dir / "PECore-features" / asset.video_id / "000001.npy"
+            )
+            np.save(feature_path, np.zeros(4, dtype=np.float32))
+            checkpoints.start_stage("embedding", fingerprint=stage_fingerprint)
+            third = orchestrator._embed(request, [asset], [processed], layout, checkpoints)
+
+        self.assertEqual(orchestrator.embedding.calls, 2)
+        self.assertEqual(first.image_count, 1)
+        self.assertEqual(second.image_count, 1)
+        self.assertEqual(third.image_count, 1)
 
     def test_staging_excludes_source_video(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -892,6 +1255,26 @@ class BatchModuleTests(unittest.TestCase):
             validation = layout.reports_dir / "validation" / "L21_V030.json"
             validation.parent.mkdir(parents=True)
             validation.write_text("{}", encoding="utf-8")
+            feature_dir = layout.dataset_dir / "PECore-features" / "L21_V030"
+            feature_dir.mkdir(parents=True)
+            feature = feature_dir / "000000.npy"
+            np.save(feature, np.ones(4, dtype=np.float32))
+            (feature_dir / "provenance.json").write_text(
+                '{"schema_version":1,"frames":{}}\n', encoding="utf-8"
+            )
+            (layout.reports_dir / "embedding.json").write_text(
+                json.dumps(
+                    {
+                        "videos": [
+                            {
+                                "video_id": "L21_V030",
+                                "feature_files": [str(feature)],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
             source_video = layout.source_root / "L21_V030.mp4"
             source_video.parent.mkdir(parents=True)
             source_video.write_bytes(b"raw-video")
@@ -910,6 +1293,8 @@ class BatchModuleTests(unittest.TestCase):
             )
         self.assertIn("dataset-metadata.json", staged_paths)
         self.assertIn("keyframes/L21_V030/000000.jpg", staged_paths)
+        self.assertIn("PECore-features/L21_V030/000000.npy", staged_paths)
+        self.assertIn("PECore-features/L21_V030/provenance.json", staged_paths)
         self.assertIn("manifests/rendered/L21_V030.json", staged_paths)
         self.assertNotIn("videos/L21_V030.mp4", staged_paths)
         self.assertNotIn("source/L29_a/L21_V030.mp4", staged_paths)
@@ -1293,11 +1678,6 @@ class BatchModuleTests(unittest.TestCase):
             (),
             {"returncode": 1, "stdout": "", "stderr": "not found"},
         )()
-        created = type(
-            "Completed",
-            (),
-            {"returncode": 0, "stdout": "created", "stderr": ""},
-        )()
         ready = type(
             "Completed",
             (),
@@ -1306,19 +1686,47 @@ class BatchModuleTests(unittest.TestCase):
 
         with patch(
             "preprocess.batch.kaggle_uploader.subprocess.run",
-            side_effect=[missing, created, ready],
-        ) as run:
-            result = uploader.upload_and_verify(staging)
+            side_effect=[missing, ready],
+        ):
+            with patch.object(
+                uploader,
+                "_run_streaming",
+                return_value=(0, "created"),
+            ) as upload_command:
+                result = uploader.upload_and_verify(staging)
 
         self.assertEqual(result.dataset_ref, "owner/aic2026-hcmc-l22-a")
         self.assertEqual(result.mode, "create")
-        self.assertEqual(run.call_args_list[1].args[0][:4], [
+        self.assertEqual(upload_command.call_args.args[0][:4], [
             "kaggle",
             "datasets",
             "create",
             "-p",
         ])
-        self.assertNotIn("--private", run.call_args_list[1].args[0])
+        self.assertNotIn("--private", upload_command.call_args.args[0])
+
+    def test_kaggle_auto_mode_treats_legacy_forbidden_status_as_create(self) -> None:
+        config = UploadConfig(
+            enabled=True,
+            dataset_ref_template="owner/aic-{lot_slug}",
+            mode="auto",
+        )
+        uploader = KaggleCliUploader("kaggle", config)
+        forbidden = type(
+            "Completed",
+            (),
+            {
+                "returncode": 1,
+                "stdout": "",
+                "stderr": "403 Client Error: Forbidden for url: status/owner/aic-l25-a",
+            },
+        )()
+        with patch(
+            "preprocess.batch.kaggle_uploader.subprocess.run",
+            return_value=forbidden,
+        ):
+            mode = uploader._resolve_mode(config.target_for_lot("L25_a"))
+        self.assertEqual(mode, "create")
 
     def test_kaggle_evidence_requires_remote_provenance_and_local_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1362,6 +1770,62 @@ class BatchModuleTests(unittest.TestCase):
         self.assertTrue(evidence["verified"])
         self.assertEqual(evidence["status"], "ready")
         self.assertIn("provenance.json", evidence["files"])
+
+    def test_kaggle_local_audit_rejects_inventory_path_outside_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            staging.mkdir()
+            (root / "secret.bin").write_bytes(b"not-a-staging-file")
+            digest = "0" * 64
+            atomic_json_write(
+                staging / "provenance.json",
+                {
+                    "payload_digest": digest,
+                    "files": [
+                        {
+                            "path": "../secret.bin",
+                            "size_bytes": 18,
+                            "sha256": sha256_file(root / "secret.bin"),
+                        }
+                    ],
+                },
+            )
+            uploader = KaggleCliUploader(
+                "kaggle",
+                UploadConfig(
+                    enabled=True,
+                    dataset_ref="owner/test",
+                    verify_timeout_seconds=1,
+                    verify_poll_seconds=1,
+                ),
+            )
+            status = type(
+                "Completed",
+                (),
+                {"returncode": 0, "stdout": "ready\n", "stderr": ""},
+            )()
+            files = type(
+                "Completed",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "name size creationDate\nprovenance.json 12 today\n",
+                    "stderr": "",
+                },
+            )()
+            with patch(
+                "preprocess.batch.kaggle_uploader.subprocess.run",
+                side_effect=[status, files],
+            ):
+                evidence = uploader._verify_evidence(
+                    expected_payload_digest=digest,
+                    provenance_path=staging / "provenance.json",
+                    audit_local_payload=True,
+                )
+
+        self.assertFalse(evidence["verified"])
+        self.assertEqual(evidence["status"], "local_payload_changed")
 
     def test_cumulative_transaction_recovery_publishes_ready_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

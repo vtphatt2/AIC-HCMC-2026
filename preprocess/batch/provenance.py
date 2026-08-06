@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -16,13 +17,119 @@ from typing import Any, Iterable, Mapping
 PROVENANCE_FILE_NAME = "provenance.json"
 
 
-def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
-    """Return the SHA256 digest of a file without loading it into memory."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
+class FileDigestCache:
+    """Cache content digests while a file's stat identity remains unchanged.
+
+    The cache is process-local by design.  It avoids repeatedly streaming large
+    videos and staging payloads during one run without trusting a path alone:
+    replacement, resize, timestamp changes and inode changes all produce a new
+    key.  A before/after stat check prevents publishing a digest for a file that
+    changed while it was being read.
+    """
+
+    def __init__(self, *, minimum_cache_bytes: int = 1024 * 1024) -> None:
+        self._digests: dict[tuple[str, int, int, int, int, int], str] = {}
+        self._lock = threading.Lock()
+        self.minimum_cache_bytes = minimum_cache_bytes
+
+    @staticmethod
+    def _identity(path: Path, stat: os.stat_result) -> tuple[str, int, int, int, int, int]:
+        return (
+            str(path.resolve()),
+            int(stat.st_dev),
+            int(stat.st_ino),
+            int(stat.st_size),
+            int(stat.st_mtime_ns),
+            int(stat.st_ctime_ns),
+        )
+
+    def digest(
+        self,
+        path: Path,
+        *,
+        chunk_size: int = 1024 * 1024,
+        cache_result: bool = False,
+    ) -> str:
+        path = Path(path)
+        before = path.stat()
+        identity = self._identity(path, before)
+        with self._lock:
+            cached = (
+                self._digests.get(identity)
+                if cache_result or before.st_size >= self.minimum_cache_bytes
+                else None
+            )
+        if cached is not None:
+            return cached
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while chunk := handle.read(chunk_size):
+                digest.update(chunk)
+        after = path.stat()
+        if self._identity(path, after) != identity:
+            raise RuntimeError(f"File changed while hashing: {path}")
+
+        value = digest.hexdigest()
+        if cache_result or after.st_size >= self.minimum_cache_bytes:
+            with self._lock:
+                self._digests[identity] = value
+        return value
+
+    def clear(self) -> None:
+        """Clear cached values; primarily useful for bounded test lifetimes."""
+        with self._lock:
+            self._digests.clear()
+
+
+_FILE_DIGEST_CACHE = FileDigestCache()
+
+
+def sha256_file(
+    path: Path,
+    *,
+    chunk_size: int = 1024 * 1024,
+    cache_result: bool = False,
+) -> str:
+    """Return a cached SHA256 digest without loading the file into memory."""
+    return _FILE_DIGEST_CACHE.digest(
+        path,
+        chunk_size=chunk_size,
+        cache_result=cache_result,
+    )
+
+
+def file_fingerprint_matches(
+    path: Path,
+    fingerprint: Mapping[str, Any],
+    *,
+    full_audit: bool = False,
+) -> bool:
+    """Validate a file using stat first and SHA256 only when necessary.
+
+    New manifests carry both mtime and a content hash.  On the same filesystem,
+    equal size and mtime are a cheap resume check.  If the timestamp changed
+    (for example after copying artifacts to another host), the content digest
+    remains authoritative.  ``full_audit`` always verifies content when a hash
+    is available.
+    """
+    try:
+        stat = path.stat()
+        if int(fingerprint.get("size_bytes")) != stat.st_size:
+            return False
+        expected_hash = fingerprint.get("sha256")
+        expected_mtime = fingerprint.get("mtime_ns")
+        expected_ctime = fingerprint.get("ctime_ns")
+        if not full_audit and expected_mtime is not None:
+            if int(expected_mtime) == stat.st_mtime_ns and (
+                expected_ctime is None or int(expected_ctime) == stat.st_ctime_ns
+            ):
+                return True
+        if expected_hash is not None:
+            return str(expected_hash) == sha256_file(path)
+        return expected_mtime is not None and int(expected_mtime) == stat.st_mtime_ns
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
 
 
 def file_record(path: Path, *, relative_to: Path | None = None) -> dict[str, Any]:
@@ -116,9 +223,9 @@ def git_revision(start: Path) -> str | None:
     return revision if completed.returncode == 0 and revision else None
 
 
-def package_versions() -> dict[str, str]:
+def package_versions(distributions: Iterable[str] | None = None) -> dict[str, str]:
     """Return versions of packages that can affect generated artifacts."""
-    distributions = (
+    selected = tuple(distributions) if distributions is not None else (
         "numpy",
         "Pillow",
         "tqdm",
@@ -130,7 +237,7 @@ def package_versions() -> dict[str, str]:
         "huggingface_hub",
     )
     versions: dict[str, str] = {}
-    for distribution in distributions:
+    for distribution in selected:
         try:
             versions[distribution] = importlib.metadata.version(distribution)
         except importlib.metadata.PackageNotFoundError:

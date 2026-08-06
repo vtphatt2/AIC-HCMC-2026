@@ -2,8 +2,8 @@
 
 Run from the repository root:
 
-    preprocess/.venv/bin/python \
-        preprocess/transcript/build_keyframe_index.py --force
+    preprocess/.venv/bin/python -m \
+        preprocess.transcript.build_keyframe_index --force
 """
 from __future__ import annotations
 

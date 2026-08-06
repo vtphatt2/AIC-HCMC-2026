@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import re
 import tempfile
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -155,8 +156,10 @@ class PECoreEmbeddingConfig:
 
         if not model_id:
             raise ValueError("model_id must not be empty")
-        if device not in {"auto", "cpu", "cuda", "mps"}:
-            raise ValueError("device must be one of: auto, cpu, cuda, mps")
+        if device not in {"auto", "cpu", "cuda", "mps"} and re.fullmatch(
+            r"cuda:\d+", device
+        ) is None:
+            raise ValueError("device must be one of: auto, cpu, cuda, cuda:<index>, mps")
         if precision not in {"fp32", "fp16", "bf16"}:
             raise ValueError("precision must be one of: fp32, fp16, bf16")
         if self.expected_dim <= 0:
@@ -274,8 +277,33 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             "requested_device": self.config.device,
             "resolved_device": self._resolved_device,
             "resolved_model_revision": self._resolved_model_revision,
+            "device_capabilities": self._device_capabilities(),
             "cache_fingerprint": self.cache_fingerprint,
         }
+
+    def _device_capabilities(self) -> dict[str, Any]:
+        torch = self._torch
+        resolved = self._resolved_device
+        if torch is None or resolved is None:
+            return {}
+        device = torch.device(resolved)
+        capabilities: dict[str, Any] = {"type": device.type}
+        if device.type == "cuda":
+            index = device.index
+            if index is None:
+                index = torch.cuda.current_device()
+            properties = torch.cuda.get_device_properties(index)
+            capabilities.update(
+                {
+                    "index": index,
+                    "name": str(properties.name),
+                    "compute_capability": list(torch.cuda.get_device_capability(index)),
+                    "total_memory_bytes": int(properties.total_memory),
+                    "bf16_supported": self._cuda_supports_bfloat16(torch, index=index),
+                    "tf32_supported": self._cuda_supports_tf32(torch, index=index),
+                }
+            )
+        return capabilities
 
     def embed(self, image_paths: Sequence[Path]) -> np.ndarray:
         if not image_paths:
@@ -361,16 +389,18 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
 
     def _validate_runtime_capabilities(self, torch, device: str) -> None:
         """Validate dtype features only after the actual device is resolved."""
-        device_type = torch.device(device).type
+        resolved_device = torch.device(device)
+        device_type = resolved_device.type
+        device_index = resolved_device.index
         if device_type == "cuda" and self.config.precision == "bf16":
-            if not self._cuda_supports_bfloat16(torch):
+            if not self._cuda_supports_bfloat16(torch, index=device_index):
                 raise PECoreEmbeddingUnavailable(
                     "PECore precision bf16 was requested, but the selected CUDA "
                     "device does not support bfloat16. Use fp16/fp32 or a supported GPU."
                 )
 
         if self.config.tf32.enabled and device_type == "cuda":
-            if not self._cuda_supports_tf32(torch):
+            if not self._cuda_supports_tf32(torch, index=device_index):
                 raise PECoreEmbeddingUnavailable(
                     "PECore tf32 was requested, but the selected CUDA device does not "
                     "support TF32 (requires compute capability 8.0 or newer). "
@@ -393,7 +423,7 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
         if not self.config.autocast.enabled:
             return
         if device_type == "cuda" and self.config.autocast.dtype == "bf16":
-            if not self._cuda_supports_bfloat16(torch):
+            if not self._cuda_supports_bfloat16(torch, index=device_index):
                 raise PECoreEmbeddingUnavailable(
                     "PECore autocast dtype bf16 was requested, but the selected CUDA "
                     "device does not support bfloat16. Use autocast dtype fp16."
@@ -404,20 +434,20 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             )
 
     @staticmethod
-    def _cuda_supports_bfloat16(torch) -> bool:
+    def _cuda_supports_bfloat16(torch, *, index: int | None = None) -> bool:
         checker = getattr(torch.cuda, "is_bf16_supported", None)
-        if callable(checker):
+        if index is None and callable(checker):
             return bool(checker())
         try:
-            major, _ = torch.cuda.get_device_capability()
+            major, _ = torch.cuda.get_device_capability(index)
         except (AttributeError, RuntimeError):
             return False
         return major >= 8
 
     @staticmethod
-    def _cuda_supports_tf32(torch) -> bool:
+    def _cuda_supports_tf32(torch, *, index: int | None = None) -> bool:
         try:
-            major, _ = torch.cuda.get_device_capability()
+            major, _ = torch.cuda.get_device_capability(index)
         except (AttributeError, RuntimeError):
             return False
         return major >= 8
@@ -497,8 +527,18 @@ class OpenClipPECoreEncoder(VisualEmbeddingEncoder):
             if mps is not None and mps.is_available():
                 return "mps"
             return "cpu"
-        if requested == "cuda" and not torch.cuda.is_available():
-            raise PECoreEmbeddingUnavailable("PECore device cuda was requested but CUDA is unavailable.")
+        if requested.startswith("cuda"):
+            if not torch.cuda.is_available():
+                raise PECoreEmbeddingUnavailable(
+                    f"PECore device {requested} was requested but CUDA is unavailable."
+                )
+            if ":" in requested:
+                index = int(requested.partition(":")[2])
+                if index >= torch.cuda.device_count():
+                    raise PECoreEmbeddingUnavailable(
+                        f"PECore device {requested} does not exist; "
+                        f"CUDA device count is {torch.cuda.device_count()}."
+                    )
         if requested == "mps":
             mps = getattr(getattr(torch, "backends", None), "mps", None)
             if mps is None or not mps.is_available():
@@ -548,6 +588,43 @@ class NpyFeatureWriter:
     @staticmethod
     def metadata_path(feature_path: Path) -> Path:
         return feature_path.with_suffix(".npy.meta.json")
+
+    @staticmethod
+    def video_metadata_path(output_dir: Path) -> Path:
+        return output_dir / "provenance.json"
+
+    def load_video_metadata(self, output_dir: Path) -> dict[str, dict[str, Any]]:
+        path = self.video_metadata_path(output_dir)
+        if not path.is_file():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read feature provenance: {path}") from exc
+        frames = payload.get("frames") if isinstance(payload, Mapping) else None
+        if not isinstance(frames, Mapping):
+            raise ValueError(f"Feature provenance has invalid frames: {path}")
+        return {
+            str(frame_id): dict(metadata)
+            for frame_id, metadata in frames.items()
+            if isinstance(metadata, Mapping)
+        }
+
+    def write_video_metadata(
+        self,
+        output_dir: Path,
+        metadata_by_frame: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        atomic_json_write(
+            self.video_metadata_path(output_dir),
+            {
+                "schema_version": 1,
+                "frames": {
+                    frame_id: dict(metadata)
+                    for frame_id, metadata in sorted(metadata_by_frame.items())
+                },
+            },
+        )
 
     def can_skip(self, path: Path, *, metadata: Mapping[str, Any] | None = None) -> bool:
         """Return true only for an existing, valid sample-compatible vector."""
@@ -739,7 +816,9 @@ class PECoreEmbeddingPipeline:
 
         output_dir = output_root / video_id
         output_dir.mkdir(parents=True, exist_ok=True)
-        pending: list[tuple[Path, Path]] = []
+        video_metadata = self.writer.load_video_metadata(output_dir)
+        metadata_by_frame: dict[str, dict[str, Any]] = {}
+        pending: list[tuple[Path, Path, str]] = []
         feature_files: list[Path] = []
         skipped_count = 0
         expected_feature_names = {image_path.stem for image_path in image_paths}
@@ -747,33 +826,46 @@ class PECoreEmbeddingPipeline:
             if stale_path.stem not in expected_feature_names:
                 stale_path.unlink(missing_ok=True)
                 self.writer.metadata_path(stale_path).unlink(missing_ok=True)
+                video_metadata.pop(stale_path.stem, None)
         for stale_metadata in output_dir.glob("*.npy.meta.json"):
             frame_name = stale_metadata.name.removesuffix(".npy.meta.json")
             if frame_name not in expected_feature_names:
                 stale_metadata.unlink(missing_ok=True)
         for image_path in image_paths:
             target = self.writer.target_for(output_dir, image_path.stem)
+            image_digest = sha256_file(image_path)
             expected_metadata = {
                 "schema_version": 1,
-                "image_sha256": sha256_file(image_path),
+                "image_sha256": image_digest,
                 "cache_fingerprint": self.cache_fingerprint,
             }
             if not self.overwrite and target.exists():
+                actual_metadata = video_metadata.get(image_path.stem)
+                if actual_metadata is None:
+                    legacy_path = self.writer.metadata_path(target)
+                    if legacy_path.is_file():
+                        try:
+                            legacy = json.loads(legacy_path.read_text(encoding="utf-8"))
+                            actual_metadata = dict(legacy) if isinstance(legacy, Mapping) else None
+                        except (OSError, json.JSONDecodeError):
+                            actual_metadata = None
                 try:
                     self.writer.validate_file(target)
+                    can_skip = actual_metadata == expected_metadata
                 except ValueError as exc:
                     raise FileExistsError(
                         f"Existing feature is invalid: {target}; use overwrite to replace it"
                     ) from exc
-                if self.writer.can_skip(target, metadata=expected_metadata):
+                if can_skip:
                     skipped_count += 1
                     feature_files.append(target)
+                    metadata_by_frame[image_path.stem] = expected_metadata
                 else:
                     target.unlink()
                     self.writer.metadata_path(target).unlink(missing_ok=True)
-                    pending.append((image_path, target))
+                    pending.append((image_path, target, image_digest))
             else:
-                pending.append((image_path, target))
+                pending.append((image_path, target, image_digest))
 
         embedded_count = 0
         if pending:
@@ -784,7 +876,7 @@ class PECoreEmbeddingPipeline:
                         "Embedding strategy returned shape "
                         f"{tuple(vectors.shape)}; expected {(len(chunk), self.encoder.dimension)}"
                     )
-                for (image_path, _), vector in zip(chunk, vectors, strict=True):
+                for (image_path, _, image_digest), vector in zip(chunk, vectors, strict=True):
                     target, written = self.writer.write(
                         output_dir,
                         image_path.stem,
@@ -792,16 +884,18 @@ class PECoreEmbeddingPipeline:
                         overwrite=self.overwrite,
                     )
                     feature_files.append(target)
-                    self.writer.write_metadata(
-                        target,
-                        {
-                            "schema_version": 1,
-                            "image_sha256": sha256_file(image_path),
-                            "cache_fingerprint": self.cache_fingerprint,
-                        },
-                    )
+                    metadata_by_frame[image_path.stem] = {
+                        "schema_version": 1,
+                        "image_sha256": image_digest,
+                        "cache_fingerprint": self.cache_fingerprint,
+                    }
                     if written:
                         embedded_count += 1
+                self.writer.write_video_metadata(output_dir, metadata_by_frame)
+
+        self.writer.write_video_metadata(output_dir, metadata_by_frame)
+        for legacy_metadata in output_dir.glob("*.npy.meta.json"):
+            legacy_metadata.unlink(missing_ok=True)
 
         return EmbeddingVideoResult(
             video_id=video_id,
@@ -818,7 +912,7 @@ class PECoreEmbeddingPipeline:
     def _embed_pending(
         self,
         video_id: str,
-        pending: Sequence[tuple[Path, Path]],
+        pending: Sequence[tuple[Path, Path, str]],
     ):
         if self._supports_prepared_batches():
             yield from self._embed_pending_with_dataloader(video_id, pending)
@@ -833,12 +927,12 @@ class PECoreEmbeddingPipeline:
             unit="batch",
         ):
             chunk = pending[start : start + self.batch_size]
-            yield start, np.asarray(self.encoder.embed([image for image, _ in chunk]))
+            yield start, np.asarray(self.encoder.embed([image for image, _, _ in chunk]))
 
     def _embed_pending_with_dataloader(
         self,
         video_id: str,
-        pending: Sequence[tuple[Path, Path]],
+        pending: Sequence[tuple[Path, Path, str]],
     ):
         try:
             from torch.utils.data import DataLoader
@@ -848,14 +942,18 @@ class PECoreEmbeddingPipeline:
                 "Install preprocess/requirements.txt in the preprocess venv."
             ) from exc
 
-        image_paths = [image for image, _ in pending]
+        image_paths = [image for image, _, _ in pending]
         transform = getattr(self.encoder, "image_transform")()
+        resolved_device = str(getattr(self.encoder, "resolved_device", "") or "")
+        effective_pin_memory = (
+            self.dataloader.pin_memory and resolved_device.startswith("cuda")
+        )
         dataset = _ImageTransformDataset(image_paths, transform)
         loader_kwargs: dict[str, Any] = {
             "batch_size": self.batch_size,
             "shuffle": False,
             "num_workers": self.dataloader.num_workers,
-            "pin_memory": self.dataloader.pin_memory,
+            "pin_memory": effective_pin_memory,
         }
         if self.dataloader.num_workers > 0:
             loader_kwargs["persistent_workers"] = self.dataloader.persistent_workers
@@ -872,7 +970,7 @@ class PECoreEmbeddingPipeline:
             vectors = np.asarray(
                 embed_batch(
                     prepared_batch,
-                    non_blocking=self.dataloader.pin_memory,
+                    non_blocking=effective_pin_memory,
                 )
             )
             yield start, vectors
@@ -907,11 +1005,20 @@ class PECoreEmbeddingPipeline:
         ):
             results_list.append(self.embed_video(video_id, keyframes_root / video_id, output_root))
         results = tuple(results_list)
+        encoder_provenance = dict(getattr(self.encoder, "provenance", {}))
+        encoder_provenance["dataloader"] = {
+            **asdict(self.dataloader),
+            "batch_size": self.batch_size,
+            "effective_pin_memory": (
+                self.dataloader.pin_memory
+                and str(getattr(self.encoder, "resolved_device", "") or "").startswith("cuda")
+            ),
+        }
         return EmbeddingBatchResult(
             videos=results,
             dimension=self.encoder.dimension,
             cache_fingerprint=self.cache_fingerprint,
-            encoder_provenance=dict(getattr(self.encoder, "provenance", {})),
+            encoder_provenance=encoder_provenance,
         )
 
     def _discover_images(self, keyframe_dir: Path) -> list[Path]:

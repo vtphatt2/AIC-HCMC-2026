@@ -110,7 +110,7 @@ class RenderingAndProgressTests(unittest.TestCase):
             )
             render_calls: list[tuple[int, ...]] = []
 
-            def fake_render(_source, frame_numbers, destination_dir):
+            def fake_render(_source, frame_numbers, destination_dir, **_options):
                 render_calls.append(tuple(frame_numbers))
                 destination_dir.mkdir(parents=True, exist_ok=True)
                 count = 1 if len(render_calls) == 1 else len(frame_numbers)
@@ -135,7 +135,9 @@ class RenderingAndProgressTests(unittest.TestCase):
                 extractor,
                 "_map_selected_to_decoder_indexes",
                 return_value=[110, 220],
-            ):
+            ), patch(
+                "preprocess.keyframes.extractors.ffmpeg.render_image"
+            ) as pillow_render:
                 result = extractor.materialize(
                     source,
                     VideoInfo("L21_V001", 3_000, 25.0, 4, 4, 75, "h264"),
@@ -144,6 +146,7 @@ class RenderingAndProgressTests(unittest.TestCase):
                 )
 
             self.assertEqual(render_calls, [(10, 20), (110, 220)])
+            pillow_render.assert_not_called()
             self.assertEqual(
                 [frame.ref.source_frame_number for frame in result.written],
                 [10, 20],
@@ -155,19 +158,11 @@ class RenderingAndProgressTests(unittest.TestCase):
         extractor = FFmpegKeyframeExtractor(
             progress=TqdmProgressReporter(ProgressConfig(enabled=False))
         )
-        completed = type(
-            "Completed",
-            (),
-            {
-                "stderr": (
-                    "[Parsed_showinfo_0 @ 0x1] n:   0 pts:      0 "
-                    "pts_time:0 pos:0\n"
-                    "[Parsed_showinfo_0 @ 0x1] n:  12 pts:    480 "
-                    "pts_time:0.5 pos:1\n"
-                )
-            },
-        )()
-        with patch.object(extractor, "_run", return_value=completed):
+        with patch.object(
+            extractor,
+            "_stream_decoder_timeline",
+            return_value=iter([(0, 0.0), (12, 0.5)]),
+        ):
             timeline = extractor._authoritative_decoder_timeline(
                 VideoSource("L21_V001", Path("video.mp4"))
             )
@@ -181,7 +176,7 @@ class RenderingAndProgressTests(unittest.TestCase):
         video = VideoInfo("L21_V001", 2_000, None, 4, 4, 99, "h264")
         with patch.object(
             extractor,
-            "_authoritative_decoder_timeline",
+            "_load_timeline_cache",
             return_value=[(0, 0.0), (4, 0.5)],
         ):
             candidates = list(extractor.scan(source, video))
@@ -189,6 +184,40 @@ class RenderingAndProgressTests(unittest.TestCase):
             [candidate.ref.source_frame_number for candidate in candidates],
             [0, 4],
         )
+
+    def test_ffmpeg_scan_persists_and_reuses_decoder_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            video_path = root / "video.mp4"
+            video_path.write_bytes(b"video-content")
+            cache_path = root / "timeline.json"
+            source = VideoSource(
+                "L21_V001",
+                video_path,
+                metadata={"timeline_cache_path": str(cache_path)},
+            )
+            video = VideoInfo("L21_V001", 1_000, 25.0, 4, 4, 2, "h264")
+            extractor = FFmpegKeyframeExtractor(
+                progress=TqdmProgressReporter(ProgressConfig(enabled=False))
+            )
+            with patch.object(
+                extractor,
+                "_stream_decoder_timeline",
+                return_value=iter([(0, 0.0), (1, 0.04)]),
+            ) as stream:
+                first = list(extractor.scan(source, video))
+            with patch.object(
+                extractor,
+                "_stream_decoder_timeline",
+                side_effect=AssertionError("timeline should be restored"),
+            ):
+                second = list(extractor.scan(source, video))
+            cache_exists = cache_path.is_file()
+
+        self.assertEqual(len(first), 2)
+        self.assertEqual(len(second), 2)
+        stream.assert_called_once()
+        self.assertTrue(cache_exists)
 
 
 if __name__ == "__main__":
