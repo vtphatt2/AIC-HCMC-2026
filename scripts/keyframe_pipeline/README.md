@@ -105,6 +105,38 @@ one place if the extra speed is worth it later.
 Batch size does not matter here — PE-Core-bigG-14-448 fp32 on a T4 is compute-bound, not
 I/O or batching-bound (`../../REPORT.md` task 4).
 
+## Processing videos straight out of a zip archive (no extraction)
+
+The raw video corpus ships as zips of many videos (e.g. `data/raw_zip/Videos_L30_a.zip`:
+96 videos, 4.1GB). Extracting the whole archive first wastes disk for no reason, and won't
+scale to the much larger archives still to come — some of which may not even fit on disk
+fully extracted.
+
+`zip_source.py` resolves one video entry inside a zip to an ffmpeg `subfile` URL
+(`subfile,,start,N,end,M,,:archive.zip`) that ffmpeg reads as if it were a standalone file,
+directly out of the archive. Pass that URL as `--video` to `local_extract_frames.py` /
+`local_extract_keyframes.py` instead of a real path — **zero bytes are ever extracted to
+disk**, not even to a temp file. Verified pixel-exact (max_abs_diff=0) against
+extract-then-decode on a real archive, and 3162 frames decoded in 1.6s straight out of a
+4.1GB zip.
+
+```
+python zip_source.py --zip archive.zip --list                              # see what's in it
+url=$(python zip_source.py --zip archive.zip --entry video/L30_V001.mp4)
+python local_extract_frames.py --video "$url" --out-dir OUT/frames
+```
+
+This only works when the entry is **ZIP_STORED** (uncompressed) — true here because the
+videos are already h264/mp4-compressed, so the zip tool that made these archives didn't
+bother compressing them again (`zip_source.py --list` flags any entry where this doesn't
+hold). If a future archive *does* use DEFLATE, this trick doesn't apply — a compressed
+entry must be decompressed sequentially from byte 0, so there's no byte-range to point
+ffmpeg at. Fall back to extracting just that one entry to a temp file, processing it, then
+deleting it (`zipfile.ZipFile.extract()` + cleanup) — still only ever holds one video's
+worth of disk space regardless of the archive's total size, which is the same property that
+makes the subfile trick worth having in the first place: memory/disk usage stays flat as
+archives get bigger, since nothing is ever proportional to the whole archive.
+
 ## Not part of this pipeline
 
 `../pe_core_optimize/` holds the Triton/CUDA custom-kernel experiments ("Emulated FP32") and

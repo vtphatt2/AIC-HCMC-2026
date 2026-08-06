@@ -44,7 +44,10 @@ STDERR_CAP_BYTES = 1 << 16  # cap in case ffmpeg is unexpectedly chatty
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", type=Path, required=True)
+    p.add_argument(
+        "--video", required=True,
+        help="Video file path, or a zip_source.py subfile URL to decode straight out of a zip",
+    )
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--start", type=int, default=0, help="First frame index (inclusive)")
     p.add_argument("--end", type=int, default=None, help="Last frame index (exclusive); default = end of video")
@@ -64,7 +67,7 @@ def mean_abs_diff(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.abs(a.astype(np.int16) - b.astype(np.int16)).mean())
 
 
-def probe_fps(ffprobe_bin: str, video: Path) -> float:
+def probe_fps(ffprobe_bin: str, video: str) -> float:
     out = subprocess.run(
         [
             ffprobe_bin, "-v", "error", "-select_streams", "v:0",
@@ -97,7 +100,7 @@ def read_exact(pipe, n: int) -> bytes | None:
 
 def main() -> None:
     args = parse_args()
-    if not args.video.is_file():
+    if not args.video.startswith("subfile,,") and not Path(args.video).is_file():
         raise FileNotFoundError(f"Video not found: {args.video}")
     args.out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -33,7 +33,10 @@ GROUP_SIZE = 80  # stays comfortably under the ~100-200 chained eq(n,X) limit
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--video", type=Path, required=True)
+    p.add_argument(
+        "--video", required=True,
+        help="Video file path, or a zip_source.py subfile URL to decode straight out of a zip",
+    )
     p.add_argument("--keyframes", type=Path, required=True, help="keyframes.json from select_keyframes.py")
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--jpeg-quality", type=int, default=2, help="ffmpeg -q:v (2=high quality, lower=better)")
@@ -47,7 +50,7 @@ def chunked(items: list[int], size: int) -> list[list[int]]:
 
 def main() -> None:
     args = parse_args()
-    if not args.video.is_file():
+    if not args.video.startswith("subfile,,") and not Path(args.video).is_file():
         raise FileNotFoundError(f"Video not found: {args.video}")
     data = json.loads(args.keyframes.read_text())
     frame_numbers = sorted({kf["frame_number"] for kf in data["keyframes"]})
