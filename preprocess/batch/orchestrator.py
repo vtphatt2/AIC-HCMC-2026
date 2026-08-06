@@ -4,6 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import sys
+import copy
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import replace
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,8 +37,9 @@ from preprocess.batch.provenance import (
     atomic_json_write,
     digest_directory,
     digest_records,
+    file_fingerprint_matches,
+    file_record,
     inventory,
-    git_revision,
     package_versions,
     sha256_file,
     tool_versions,
@@ -145,30 +150,99 @@ class BatchOrchestrator:
             stage_names=stage_names,
         )
         results: list[LotRunResult] = []
-        try:
-            for lot_index, request in enumerate(requests, start=1):
-                self.progress.set_lot_context(
-                    lot_index=lot_index,
-                    total_lots=len(requests),
-                    lot_id=request.lot_id,
+        overlap_upload = (
+            self.config.upload.enabled
+            and self.config.scheduling.overlap_upload
+            and len(requests) > 1
+        )
+        pending: tuple[int, ArchiveInput, Future[UploadResult]] | None = None
+
+        def finish_pending() -> None:
+            nonlocal pending
+            if pending is None:
+                return
+            result_index, pending_request, future = pending
+            try:
+                upload = future.result()
+            except Exception as exc:
+                self.failed_lots.append(
+                    {
+                        "lot_id": pending_request.lot_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
                 )
-                if completed_flags[lot_index - 1]:
-                    self.progress.skip_lot(
+                if not continue_on_error:
+                    raise
+            else:
+                previous = results[result_index]
+                results[result_index] = LotRunResult(
+                    previous.lot_id,
+                    previous.assets,
+                    previous.processed,
+                    upload,
+                    previous.embedding,
+                )
+                self.progress.complete_stage(
+                    name="stage_upload", lot_id=pending_request.lot_id
+                )
+                self.progress.complete_stage(
+                    name="cleanup", lot_id=pending_request.lot_id
+                )
+            finally:
+                pending = None
+
+        try:
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="preprocess-upload") as executor:
+                for lot_index, request in enumerate(requests, start=1):
+                    self.progress.set_lot_context(
+                        lot_index=lot_index,
+                        total_lots=len(requests),
                         lot_id=request.lot_id,
-                        stage_count=len(stage_names),
                     )
-                    continue
-                try:
-                    results.append(self.run_lot(request))
-                except Exception as exc:
-                    self.failed_lots.append(
-                        {"lot_id": request.lot_id, "error": f"{type(exc).__name__}: {exc}"}
-                    )
-                    if not continue_on_error:
-                        raise
+                    if completed_flags[lot_index - 1]:
+                        self.progress.skip_lot(
+                            lot_id=request.lot_id,
+                            stage_count=len(stage_names),
+                        )
+                        continue
+                    try:
+                        result = (
+                            self.run_lot(request, defer_upload=True)
+                            if overlap_upload
+                            else self.run_lot(request)
+                        )
+                        results.append(result)
+                        if overlap_upload:
+                            # At most one uploaded-but-not-cleaned lot may coexist
+                            # with the lot currently being processed.
+                            finish_pending()
+                            pending = (
+                                len(results) - 1,
+                                request,
+                                executor.submit(self._upload_lot_in_background, request.lot_id),
+                            )
+                    except Exception as exc:
+                        self.failed_lots.append(
+                            {"lot_id": request.lot_id, "error": f"{type(exc).__name__}: {exc}"}
+                        )
+                        if not continue_on_error:
+                            raise
+                finish_pending()
         finally:
             self.progress.finish_pipeline()
         return results
+
+    def _upload_lot_in_background(self, lot_id: str) -> UploadResult:
+        """Use isolated progress/cache state while sharing immutable adapters."""
+        worker = copy.copy(self)
+        worker.progress = TqdmProgressReporter(
+            replace(self.config.progress, enabled=False),
+            disk_root=self.config.data_root,
+            device_hint="cpu",
+        )
+        worker.failed_lots = []
+        worker._cached_stage_runtime_signatures = {}
+        return worker.upload_lot(lot_id)
 
     def _is_completed_lot(self, request: ArchiveInput) -> bool:
         """Return true when a lot is terminal and still represents this request."""
@@ -185,7 +259,36 @@ class BatchOrchestrator:
         stored_config = state.get("config_fingerprint")
         # Very old checkpoints predate config fingerprints. Preserve their
         # terminal-lot skip behavior; any new/updated checkpoint is strict.
-        return stored_config is None or stored_config == self._config_fingerprint()
+        config_matches = stored_config is None or stored_config == self._config_fingerprint()
+        if not config_matches:
+            return False
+        if self.config.upload.enabled:
+            upload_store = CheckpointStore(layout.upload_state_path)
+            if not layout.upload_state_path.is_file():
+                return False
+            return self._upload_state_is_complete(
+                upload_store,
+                request,
+                layout,
+            )
+        stages = state.get("stages")
+        if isinstance(stages, Mapping) and stages:
+            processing_stages = tuple(
+                name
+                for name in self._pipeline_stage_names()
+                if name not in {"stage_upload", "cleanup"}
+            )
+            for name in processing_stages:
+                record = stages.get(name)
+                if not isinstance(record, Mapping):
+                    return False
+                if (
+                    record.get("status") != "completed"
+                    or record.get("fingerprint")
+                    != self._stage_fingerprint(request, name)
+                ):
+                    return False
+        return True
 
     @staticmethod
     def _same_request(previous: object, current: ArchiveInput) -> bool:
@@ -209,13 +312,23 @@ class BatchOrchestrator:
             stages.append("cleanup")
         return tuple(stages)
 
-    def run_lot(self, request: ArchiveInput) -> LotRunResult:
+    def run_lot(
+        self,
+        request: ArchiveInput,
+        *,
+        defer_upload: bool = False,
+    ) -> LotRunResult:
         """Run one lot while excluding concurrent upload/cleanup operations."""
         layout = LotLayout(self.config.data_root, request.lot_id)
         with ExclusiveFileLock(layout.run_lock_path, purpose=f"pipeline for {request.lot_id}"):
-            return self._run_lot_locked(request)
+            return self._run_lot_locked(request, defer_upload=defer_upload)
 
-    def _run_lot_locked(self, request: ArchiveInput) -> LotRunResult:
+    def _run_lot_locked(
+        self,
+        request: ArchiveInput,
+        *,
+        defer_upload: bool = False,
+    ) -> LotRunResult:
         layout = LotLayout(self.config.data_root, request.lot_id)
         layout.create_runtime_dirs()
         checkpoints = CheckpointStore(layout.state_path)
@@ -273,13 +386,15 @@ class BatchOrchestrator:
                     checkpoints,
                     request,
                     "embedding",
-                    action=lambda: self._embed(assets, processed, layout, checkpoints),
+                    action=lambda: self._embed(
+                        request, assets, processed, layout, checkpoints
+                    ),
                     restore=lambda: self._restore_embedding(layout),
                 )
             else:
                 embedding = None
 
-            if self.config.upload.enabled:
+            if self.config.upload.enabled and not defer_upload:
                 with self._upload_locks(layout, request.lot_id):
                     upload_checkpoints = self._initialize_upload_state(
                         CheckpointStore(layout.upload_state_path),
@@ -658,10 +773,6 @@ class BatchOrchestrator:
             stage_config = {
                 "shot_boundary": config["shot_boundary"],
                 "scene_segments_dir": config["processing"]["scene_segments_dir"],
-                "scene_segments": self._scoped_directory_digest(
-                    self.config.processing.scene_segments_dir,
-                    request,
-                ),
             }
         elif name == "process_validate":
             stage_config = {
@@ -672,6 +783,14 @@ class BatchOrchestrator:
                 "metadata": self._scoped_directory_digest(
                     self.config.metadata_root,
                     request,
+                ),
+                "scene_segments": (
+                    self._scoped_directory_digest(
+                        self.config.processing.scene_segments_dir,
+                        request,
+                    )
+                    if selector_requires_scene_boundaries(self.config.processing.selector)
+                    else None
                 ),
             }
         elif name == "embedding":
@@ -689,6 +808,9 @@ class BatchOrchestrator:
                 ),
                 "embedding_dependency": self._completed_stage_fingerprint(
                     request, "embedding"
+                ),
+                "metadata_template": self._optional_file_record(
+                    self.config.upload.metadata_template
                 ),
             }
         elif name == "cleanup":
@@ -725,24 +847,105 @@ class BatchOrchestrator:
             "request": request.to_dict(),
             "stage": name,
             "config": stage_config,
-            "runtime": self._runtime_signature(),
+            "runtime": self._stage_runtime_signature(name),
             "dependencies": [self._stage_fingerprint(request, dependency) for dependency in dependencies],
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def _runtime_signature(self) -> dict[str, Any]:
+    def _stage_runtime_signature(self, name: str) -> dict[str, Any]:
+        """Fingerprint only code and runtime dependencies relevant to a stage."""
         cached = getattr(self, "_cached_runtime_signature", None)
         if isinstance(cached, Mapping):
+            # Compatibility for injected test signatures and older callers.
             return dict(cached)
-        tools = self.config.to_dict().get("tools", {})
-        signature = {
-            "git_revision": git_revision(Path(__file__).resolve().parents[2]),
-            "packages": package_versions(),
-            "tools": tool_versions(tools if isinstance(tools, Mapping) else None),
+
+        cached_by_stage = getattr(self, "_cached_stage_runtime_signatures", None)
+        if not isinstance(cached_by_stage, dict):
+            cached_by_stage = {}
+            self._cached_stage_runtime_signatures = cached_by_stage
+        if name in cached_by_stage:
+            return dict(cached_by_stage[name])
+
+        stage_sources: dict[str, tuple[str, ...]] = {
+            "download": ("batch/downloader.py", "batch/models.py"),
+            "archive_validate": ("batch/archive_validator.py",),
+            "extract": ("batch/archive_extractor.py", "batch/layout.py"),
+            "discover": ("batch/video_discovery.py", "batch/models.py"),
+            "shot_boundaries": (
+                "batch/shot_boundaries.py",
+            ),
+            "process_validate": (
+                "batch/processor.py",
+                "batch/validators.py",
+                "keyframes/contracts.py",
+                "keyframes/manifest.py",
+                "keyframes/rendering.py",
+                "keyframes/extractors/ffmpeg.py",
+                "keyframes/selectors/linear_rulebase.py",
+                "keyframes/selectors/scene_segments.py",
+                "keyframes/selectors/uniform.py",
+            ),
+            "embedding": (
+                "batch/embedding.py",
+                "pecore/embedding.py",
+            ),
+            "stage_upload": (
+                "batch/kaggle_uploader.py",
+                "batch/provenance.py",
+            ),
+            "cleanup": ("batch/cleanup.py", "batch/kaggle_uploader.py"),
         }
-        self._cached_runtime_signature = signature
+        stage_packages: dict[str, tuple[str, ...]] = {
+            "shot_boundaries": ("transnetv2-pytorch", "torch", "numpy"),
+            "process_validate": ("Pillow", "numpy"),
+            "embedding": (
+                "torch",
+                "torchvision",
+                "open_clip_torch",
+                "huggingface_hub",
+                "numpy",
+                "Pillow",
+            ),
+            "stage_upload": ("kaggle",),
+            "cleanup": ("kaggle",),
+        }
+        stage_tools: dict[str, tuple[str, ...]] = {
+            "download": ("aria2c",),
+            "shot_boundaries": ("ffmpeg", "ffprobe"),
+            "process_validate": ("ffmpeg", "ffprobe"),
+            "stage_upload": ("kaggle",),
+            "cleanup": ("kaggle",),
+        }
+        preprocess_root = Path(__file__).resolve().parents[1]
+        source_records = inventory(
+            preprocess_root,
+            include=[preprocess_root / path for path in stage_sources[name]],
+        )
+        configured_tools = self.config.to_dict().get("tools", {})
+        selected_tools = {
+            tool_name: configured_tools[tool_name]
+            for tool_name in stage_tools.get(name, ())
+            if isinstance(configured_tools, Mapping) and tool_name in configured_tools
+        }
+        signature = {
+            "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+            "code_digest": digest_records(source_records),
+            "packages": package_versions(stage_packages.get(name, ())),
+            "tools": tool_versions(selected_tools),
+        }
+        cached_by_stage[name] = signature
         return signature
+
+    def _runtime_signature(self) -> dict[str, Any]:
+        """Backward-compatible aggregate signature for external integrations."""
+        return self._stage_runtime_signature("process_validate")
+
+    @staticmethod
+    def _optional_file_record(path: Path | None) -> dict[str, Any] | None:
+        if path is None or not path.is_file():
+            return None
+        return file_record(path)
 
     def _completed_stage_fingerprint(self, request: ArchiveInput, name: str) -> str | None:
         state = CheckpointStore(LotLayout(self.config.data_root, request.lot_id).state_path).load()
@@ -810,7 +1013,8 @@ class BatchOrchestrator:
             "stage": stage_fingerprint,
             "video_id": asset.video_id,
             "size_bytes": stat.st_size,
-            "sha256": sha256_file(asset.path),
+            "mtime_ns": stat.st_mtime_ns,
+            "ctime_ns": stat.st_ctime_ns,
         }
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
@@ -1022,7 +1226,6 @@ class BatchOrchestrator:
         report_path = layout.reports_dir / "embedding.json"
         payload = self._read_json(report_path)
         dimension = int(payload["dimension"])
-        writer = NpyFeatureWriter(dimension)
         expected_cache = getattr(getattr(self.embedding, "pipeline", None), "cache_fingerprint", None)
         report_cache = payload.get("cache_fingerprint")
         if expected_cache is not None and report_cache is not None and str(report_cache) != str(expected_cache):
@@ -1030,59 +1233,13 @@ class BatchOrchestrator:
         records = payload.get("videos")
         if not isinstance(records, list):
             raise ValueError(f"Embedding report is invalid: {report_path}")
-        restored: list[EmbeddingVideoResult] = []
-        for record in records:
-            if not isinstance(record, Mapping):
-                raise ValueError(f"Invalid embedding record: {report_path}")
-            feature_files = tuple(Path(str(path)) for path in record.get("feature_files", []))
-            image_count = int(record["image_count"])
-            if len(feature_files) != image_count:
-                raise ValueError(f"Embedding report has incomplete feature list: {report_path}")
-            for feature_file in feature_files:
-                self._ensure_path_inside(feature_file, layout.dataset_dir, "embedding feature")
-                writer.validate_file(feature_file)
-                metadata_path = writer.metadata_path(feature_file)
-                if not metadata_path.is_file():
-                    raise FileNotFoundError(f"Embedding provenance is missing: {metadata_path}")
-                metadata = self._read_json(metadata_path)
-                expected_feature_cache = record.get("cache_fingerprint") or report_cache
-                if (
-                    metadata.get("schema_version") != 1
-                    or (
-                        expected_feature_cache is not None
-                        and metadata.get("cache_fingerprint") != expected_feature_cache
-                    )
-                ):
-                    raise ValueError(f"Embedding feature provenance changed: {feature_file}")
-                source_dir = self._resolve_artifact_path(record["source_dir"], layout.dataset_dir)
-                self._ensure_path_inside(source_dir, layout.dataset_dir, "embedding source")
-                image_path = next(
-                    (
-                        candidate
-                        for candidate in sorted(source_dir.glob(f"{feature_file.stem}.*"))
-                        if candidate.suffix.lower() in {".jpg", ".jpeg", ".png"}
-                    ),
-                    None,
-                )
-                if image_path is None or metadata.get("image_sha256") != sha256_file(image_path):
-                    raise ValueError(f"Embedding source provenance changed: {feature_file}")
-            restored.append(
-                EmbeddingVideoResult(
-                    video_id=str(record["video_id"]),
-                    source_dir=Path(str(record["source_dir"])),
-                    output_dir=self._resolve_artifact_path(record["output_dir"], layout.dataset_dir),
-                    image_count=image_count,
-                    embedded_count=int(record["embedded_count"]),
-                    skipped_count=int(record["skipped_count"]),
-                    dimension=int(record["dimension"]),
-                    feature_files=feature_files,
-                    cache_fingerprint=(
-                        str(record["cache_fingerprint"])
-                        if record.get("cache_fingerprint")
-                        else None
-                    ),
-                )
-            )
+        restored = [
+            self._restore_embedding_video(layout, record, dimension, report_cache)
+            for record in records
+            if isinstance(record, Mapping)
+        ]
+        if len(restored) != len(records):
+            raise ValueError(f"Invalid embedding record: {report_path}")
         result = EmbeddingBatchResult(
             videos=tuple(restored),
             dimension=dimension,
@@ -1096,6 +1253,68 @@ class BatchOrchestrator:
         if result.embedded_count + result.skipped_count != result.image_count:
             raise ValueError(f"Embedding report counts are inconsistent: {report_path}")
         return result
+
+    def _restore_embedding_video(
+        self,
+        layout: LotLayout,
+        record: Mapping[str, Any],
+        dimension: int,
+        report_cache: object,
+    ) -> EmbeddingVideoResult:
+        writer = NpyFeatureWriter(dimension)
+        feature_files = tuple(Path(str(path)) for path in record.get("feature_files", []))
+        image_count = int(record["image_count"])
+        if len(feature_files) != image_count:
+            raise ValueError("Embedding video has an incomplete feature list")
+        source_dir = self._resolve_artifact_path(record["source_dir"], layout.dataset_dir)
+        self._ensure_path_inside(source_dir, layout.dataset_dir, "embedding source")
+        output_dir = self._resolve_artifact_path(record["output_dir"], layout.dataset_dir)
+        video_metadata = writer.load_video_metadata(output_dir)
+        for feature_file in feature_files:
+            self._ensure_path_inside(feature_file, layout.dataset_dir, "embedding feature")
+            writer.validate_file(feature_file)
+            metadata = video_metadata.get(feature_file.stem)
+            if metadata is None:
+                metadata_path = writer.metadata_path(feature_file)
+                if not metadata_path.is_file():
+                    raise FileNotFoundError(
+                        f"Embedding provenance is missing for: {feature_file}"
+                    )
+                metadata = self._read_json(metadata_path)
+            expected_feature_cache = record.get("cache_fingerprint") or report_cache
+            if (
+                metadata.get("schema_version") != 1
+                or (
+                    expected_feature_cache is not None
+                    and metadata.get("cache_fingerprint") != expected_feature_cache
+                )
+            ):
+                raise ValueError(f"Embedding feature provenance changed: {feature_file}")
+            image_path = next(
+                (
+                    candidate
+                    for candidate in sorted(source_dir.glob(f"{feature_file.stem}.*"))
+                    if candidate.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                ),
+                None,
+            )
+            if image_path is None or metadata.get("image_sha256") != sha256_file(image_path):
+                raise ValueError(f"Embedding source provenance changed: {feature_file}")
+        return EmbeddingVideoResult(
+            video_id=str(record["video_id"]),
+            source_dir=source_dir,
+            output_dir=output_dir,
+            image_count=image_count,
+            embedded_count=int(record["embedded_count"]),
+            skipped_count=int(record["skipped_count"]),
+            dimension=int(record["dimension"]),
+            feature_files=feature_files,
+            cache_fingerprint=(
+                str(record["cache_fingerprint"])
+                if record.get("cache_fingerprint")
+                else None
+            ),
+        )
 
     def _restore_upload(self, layout: LotLayout) -> UploadResult:
         path = layout.receipts_dir / "upload.json"
@@ -1167,16 +1386,7 @@ class BatchOrchestrator:
 
     @staticmethod
     def _source_fingerprint_matches(path: Path, fingerprint: Mapping[str, Any]) -> bool:
-        try:
-            stat = path.stat()
-            if int(fingerprint.get("size_bytes")) != stat.st_size:
-                return False
-            expected_hash = fingerprint.get("sha256")
-            if expected_hash is not None:
-                return str(expected_hash) == sha256_file(path)
-            return int(fingerprint.get("mtime_ns")) == stat.st_mtime_ns
-        except (OSError, TypeError, ValueError):
-            return False
+        return file_fingerprint_matches(path, fingerprint)
 
     def _download(self, request: ArchiveInput, layout: LotLayout, checkpoints: CheckpointStore) -> Path:
         archive_path = layout.archive_dir / request.archive_name
@@ -1343,6 +1553,7 @@ class BatchOrchestrator:
 
     def _embed(
         self,
+        request: ArchiveInput,
         assets: Sequence[VideoAsset],
         processed: Sequence[ProcessingResult],
         layout: LotLayout,
@@ -1351,7 +1562,88 @@ class BatchOrchestrator:
         if self.embedding is None:
             return None
         checkpoints.transition(BatchState.EMBEDDING)
-        result = self.embedding.embed(layout, assets, processed)
+        if len(assets) != len(processed):
+            raise ValueError("Embedding requires one processing result per video asset")
+        stage_fingerprint = self._stage_fingerprint(request, "embedding")
+        videos: list[EmbeddingVideoResult] = []
+        encoder_provenance: dict[str, Any] = {}
+        existing_report_path = layout.reports_dir / "embedding.json"
+        if existing_report_path.is_file():
+            try:
+                existing_report = self._read_json(existing_report_path)
+                existing_provenance = existing_report.get("encoder_provenance")
+                if isinstance(existing_provenance, Mapping):
+                    encoder_provenance = dict(existing_provenance)
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+        report_cache = getattr(getattr(self.embedding, "pipeline", None), "cache_fingerprint", None)
+        for asset, processing_result in self.progress.iterate(
+            zip(assets, processed, strict=True),
+            total=len(assets),
+            desc=f"{layout.lot_id}: embedding videos",
+            unit="video",
+        ):
+            rendered_record = file_record(processing_result.rendered_manifest_path)
+            encoded = json.dumps(
+                {
+                    "stage": stage_fingerprint,
+                    "video_id": asset.video_id,
+                    "rendered_manifest": rendered_record,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ).encode("utf-8")
+            video_fingerprint = hashlib.sha256(encoded).hexdigest()
+            if checkpoints.video_is_complete("embedding", asset.video_id, video_fingerprint):
+                payload = checkpoints.video_payload("embedding", asset.video_id)
+                if payload is not None:
+                    try:
+                        videos.append(
+                            self._restore_embedding_video(
+                                layout,
+                                payload,
+                                self.config.embedding.expected_dim,
+                                report_cache,
+                            )
+                        )
+                    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                        checkpoints.invalidate_video(
+                            "embedding",
+                            asset.video_id,
+                            reason=f"artifact restore failed: {exc}",
+                        )
+                    else:
+                        continue
+            checkpoints.start_video("embedding", asset.video_id, fingerprint=video_fingerprint)
+            single = self.embedding.embed(
+                layout,
+                [asset],
+                [processing_result],
+            )
+            if len(single.videos) != 1 or single.videos[0].video_id != asset.video_id:
+                raise ValueError(f"Embedding strategy returned an invalid result for {asset.video_id}")
+            video_result = single.videos[0]
+            videos.append(video_result)
+            encoder_provenance = dict(single.encoder_provenance)
+            checkpoints.complete_video(
+                "embedding",
+                asset.video_id,
+                fingerprint=video_fingerprint,
+                payload=video_result.to_dict(),
+            )
+            partial = EmbeddingBatchResult(
+                videos=tuple(videos),
+                dimension=single.dimension,
+                cache_fingerprint=single.cache_fingerprint,
+                encoder_provenance=encoder_provenance,
+            )
+            self._write_json(layout.reports_dir / "embedding.json", partial.to_dict())
+        result = EmbeddingBatchResult(
+            videos=tuple(videos),
+            dimension=self.config.embedding.expected_dim,
+            cache_fingerprint=(str(report_cache) if report_cache else None),
+            encoder_provenance=encoder_provenance,
+        )
         self._write_json(layout.reports_dir / "embedding.json", result.to_dict())
         checkpoints.transition(BatchState.EMBEDDED, payload={"embedding": result.to_dict()})
         return result
@@ -1378,7 +1670,9 @@ class BatchOrchestrator:
             checkpoints,
             request,
             "cleanup",
-            action=lambda: self._cleanup(layout, upload, checkpoints),
+            action=lambda: self._cleanup(
+                layout, upload, checkpoints, reverify=False
+            ),
             restore=lambda: self._restore_cleanup(layout),
             reuse_completed=reuse_completed,
         )
@@ -1402,6 +1696,29 @@ class BatchOrchestrator:
             shutil.rmtree(layout.staging_dir)
         staging = self.stager.stage(layout, assets, processed)
         self._write_json(layout.reports_dir / "staging.json", staging.to_dict())
+        logical_payload_bytes = sum(
+            path.stat().st_size for path in staging.files if path.is_file()
+        )
+        temporary_reserve_bytes = round(
+            logical_payload_bytes * self.config.upload.temporary_space_multiplier
+        )
+        free_bytes = shutil.disk_usage(staging.staging_dir).free
+        disk_budget = {
+            "logical_payload_bytes": logical_payload_bytes,
+            "temporary_space_multiplier": self.config.upload.temporary_space_multiplier,
+            "temporary_reserve_bytes": temporary_reserve_bytes,
+            "minimum_free_bytes": self.config.minimum_free_bytes,
+            "free_bytes": free_bytes,
+        }
+        self._write_json(layout.reports_dir / "upload-disk-budget.json", disk_budget)
+        required_free = temporary_reserve_bytes + self.config.minimum_free_bytes
+        if free_bytes < required_free:
+            raise RuntimeError(
+                "Insufficient free disk space for Kaggle packaging: "
+                f"{free_bytes} < {required_free} bytes; adjust "
+                "upload.temporary_space_multiplier only if the installed CLI "
+                "does not create a local package copy"
+            )
         checkpoints.transition(BatchState.STAGED, payload=staging.to_dict())
         checkpoints.transition(BatchState.UPLOADING)
         upload = self.uploader.upload_and_verify(staging)
@@ -1412,10 +1729,17 @@ class BatchOrchestrator:
         checkpoints.transition(BatchState.UPLOADED_VERIFIED, payload={"upload": upload.to_dict()})
         return upload
 
-    def _cleanup(self, layout: LotLayout, upload: UploadResult, checkpoints: CheckpointStore) -> None:
+    def _cleanup(
+        self,
+        layout: LotLayout,
+        upload: UploadResult,
+        checkpoints: CheckpointStore,
+        *,
+        reverify: bool = True,
+    ) -> None:
         checkpoints.transition(BatchState.CLEANING)
         verified_upload = upload
-        if self.uploader is not None:
+        if reverify and self.uploader is not None:
             provenance_path = layout.staging_dir / "provenance.json"
             if self.config.upload.staging_scope == "dataset":
                 staging_root = (

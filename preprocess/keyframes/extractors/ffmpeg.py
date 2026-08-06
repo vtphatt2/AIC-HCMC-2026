@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import bisect
+from collections import deque
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -26,7 +28,11 @@ from preprocess.keyframes.contracts import (
 )
 from preprocess.keyframes.manifest import source_fingerprint, write_rendered_manifest
 from preprocess.keyframes.rendering import render_image
-from preprocess.batch.provenance import sha256_file
+from preprocess.batch.provenance import (
+    atomic_json_write,
+    file_fingerprint_matches,
+    sha256_file,
+)
 from preprocess.progress import ProgressConfig, ProgressReporter, TqdmProgressReporter
 
 
@@ -47,10 +53,14 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
         ffprobe_bin: str = "ffprobe",
         *,
         progress: ProgressReporter | None = None,
+        threads: int = 0,
     ) -> None:
+        if threads < 0:
+            raise ValueError("threads must be zero (auto) or positive")
         self.ffmpeg_bin = ffmpeg_bin
         self.ffprobe_bin = ffprobe_bin
         self.progress = progress or TqdmProgressReporter(ProgressConfig())
+        self.threads = threads
 
     def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         try:
@@ -93,14 +103,17 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
         disagree on VFR or damaged files.  ``showinfo`` gives both the filter
         ``n`` value and PTS from the decoder that later evaluates ``select``.
         """
-        del video  # The authoritative FFmpeg timeline supplies its own count.
-        timeline = self._authoritative_decoder_timeline(source)
+        cached = self._load_timeline_cache(source)
+        timeline: Iterable[tuple[int, float]]
+        timeline = cached if cached is not None else self._stream_decoder_timeline(source)
+        observed: list[tuple[int, float]] = []
         for frame_number, timestamp_seconds in self.progress.iterate(
             timeline,
-            total=len(timeline),
+            total=len(cached) if cached is not None else video.frame_count,
             desc=f"{source.video_id}: scan",
             unit="frame",
         ):
+            observed.append((frame_number, timestamp_seconds))
             yield FrameCandidate(
                 ref=FrameRef(
                     video_id=source.video_id,
@@ -109,12 +122,16 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                     pts_time_seconds=timestamp_seconds,
                 )
             )
+        if cached is None:
+            self._write_timeline_cache(source, observed)
 
     def _render_selected_frame_numbers(
         self,
         source: VideoSource,
         frame_numbers: Sequence[int],
         destination_dir: Path,
+        *,
+        png_compress_level: int = 6,
     ) -> list[Path]:
         """Decode selected FFmpeg frame indexes into a fresh temporary folder."""
         if len(set(frame_numbers)) != len(frame_numbers):
@@ -129,6 +146,8 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             "-hide_banner",
             "-v",
             "error",
+            "-threads:v",
+            str(self.threads),
             "-i",
             str(source.path),
             "-map",
@@ -138,6 +157,8 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             f"select={expression}",
             "-vsync",
             "0",
+            "-compression_level",
+            str(png_compress_level),
             str(pattern),
         ])
         return sorted(destination_dir.glob("decoded-*.png"))
@@ -153,11 +174,25 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
         FFmpeg's filter ``n``.  ``showinfo`` gives us the latter without changing
         the public frame references stored in manifests.
         """
-        result = self._run([
+        cached = self._load_timeline_cache(source)
+        if cached is not None:
+            return cached
+        timeline = list(self._stream_decoder_timeline(source))
+        self._write_timeline_cache(source, timeline)
+        return timeline
+
+    def _stream_decoder_timeline(
+        self,
+        source: VideoSource,
+    ) -> Iterable[tuple[int, float]]:
+        """Yield decoder frame identity as FFmpeg emits ``showinfo`` rows."""
+        command = [
             self.ffmpeg_bin,
             "-hide_banner",
             "-v",
             "info",
+            "-threads:v",
+            str(self.threads),
             "-i",
             str(source.path),
             "-map",
@@ -170,21 +205,92 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             "-f",
             "null",
             "-",
-        ])
-        timeline: list[tuple[int, float]] = []
-        for line in result.stderr.splitlines():
-            match = self._SHOWINFO_FRAME_RE.search(line)
-            if match is None:
-                continue
-            raw_timestamp = match.group("timestamp")
-            if raw_timestamp == "N/A":
-                continue
-            try:
-                timestamp_seconds = float(raw_timestamp)
-            except ValueError:
-                continue
-            timeline.append((int(match.group("frame")), timestamp_seconds))
-        return timeline
+        ]
+        try:
+            process = subprocess.Popen(
+                command,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Required executable was not found: {command[0]}") from exc
+        assert process.stderr is not None
+        tail: deque[str] = deque(maxlen=30)
+        completed = False
+        try:
+            for line in process.stderr:
+                tail.append(line.rstrip())
+                match = self._SHOWINFO_FRAME_RE.search(line)
+                if match is None or match.group("timestamp") == "N/A":
+                    continue
+                try:
+                    timestamp_seconds = float(match.group("timestamp"))
+                except ValueError:
+                    continue
+                yield int(match.group("frame")), timestamp_seconds
+            return_code = process.wait()
+            completed = True
+            if return_code != 0:
+                detail = "\n".join(tail).strip()
+                raise RuntimeError(detail or f"Command failed: {' '.join(command)}")
+        finally:
+            process.stderr.close()
+            if not completed and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+    @staticmethod
+    def _timeline_cache_path(source: VideoSource) -> Path | None:
+        value = source.metadata.get("timeline_cache_path")
+        return Path(str(value)) if value else None
+
+    def _load_timeline_cache(self, source: VideoSource) -> list[tuple[int, float]] | None:
+        path = self._timeline_cache_path(source)
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            fingerprint = payload.get("source_fingerprint")
+            rows = payload.get("timeline")
+            if not isinstance(fingerprint, dict) or not file_fingerprint_matches(
+                source.path, fingerprint
+            ):
+                return None
+            if not isinstance(rows, list):
+                return None
+            timeline = [(int(row[0]), float(row[1])) for row in rows]
+            if not timeline or any(
+                current[0] <= previous[0]
+                for previous, current in zip(timeline, timeline[1:])
+            ):
+                return None
+            return timeline
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+    def _write_timeline_cache(
+        self,
+        source: VideoSource,
+        timeline: Sequence[tuple[int, float]],
+    ) -> None:
+        path = self._timeline_cache_path(source)
+        if path is None or not timeline:
+            return
+        atomic_json_write(
+            path,
+            {
+                "schema_version": 1,
+                "video_id": source.video_id,
+                "source_fingerprint": source_fingerprint(source),
+                "timeline": [[frame, timestamp] for frame, timestamp in timeline],
+            },
+        )
 
     def _map_selected_to_decoder_indexes(
         self,
@@ -337,13 +443,17 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
             shutil.rmtree(destination_dir)
 
         destination_dir.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="keyframe-decode-") as temp_dir_name:
+        with tempfile.TemporaryDirectory(
+            prefix=".keyframe-decode-",
+            dir=destination_dir.parent,
+        ) as temp_dir_name:
             temp_dir = Path(temp_dir_name)
             fast_dir = temp_dir / "fast"
             decoded = self._render_selected_frame_numbers(
                 source,
                 [item.ref.source_frame_number for item in selected],
                 fast_dir,
+                png_compress_level=output.profile.png_compress_level,
             )
             render_plan: list[tuple[SelectedFrame, Path]] = []
             if len(decoded) == len(selected):
@@ -364,6 +474,7 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                     source,
                     [frame_number for _, frame_number in remapped_plan],
                     fallback_dir,
+                    png_compress_level=output.profile.png_compress_level,
                 )
                 if len(decoded) != len(selected):
                     raise RuntimeError(
@@ -386,8 +497,17 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                 unit="frame",
             ):
                 destination = destination_dir / f"{selection.ref.frame_id}{output.profile.file_extension}"
-                with Image.open(decoded_path) as image:
-                    width, height = render_image(image, destination, output.profile)
+                if (
+                    output.profile.image_format == "png"
+                    and output.profile.target_short_edge_px is None
+                ):
+                    with Image.open(decoded_path) as image:
+                        width, height = image.size
+                        image.verify()
+                    os.replace(decoded_path, destination)
+                else:
+                    with Image.open(decoded_path) as image:
+                        width, height = render_image(image, destination, output.profile)
                 extracted = ExtractedFrame(selection.ref, destination, width, height)
                 written.append(extracted)
                 manifest_frames.append({
@@ -395,7 +515,7 @@ class FFmpegKeyframeExtractor(KeyframeExtractor):
                     "path": destination.name,
                     "width": width,
                     "height": height,
-                    "sha256": sha256_file(destination),
+                    "sha256": sha256_file(destination, cache_result=True),
                     "selection": {
                         "score": selection.score,
                         "reasons": list(selection.reasons),

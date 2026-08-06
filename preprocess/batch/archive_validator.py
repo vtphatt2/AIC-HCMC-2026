@@ -60,9 +60,9 @@ class ZipArchiveValidator:
                             raise ValueError(
                                 f"ZIP member compression ratio exceeds limit: {info.filename}"
                             )
-                corrupt_member = archive.testzip()
-                if corrupt_member is not None:
-                    raise ValueError(f"ZIP CRC validation failed for {corrupt_member}")
+                # CRC is checked while the extractor streams every member into
+                # its temporary directory. Avoid a full decompression pass here;
+                # atomic publish still cannot expose a CRC-corrupt extraction.
         except zipfile.BadZipFile as exc:
             raise ValueError(f"Invalid ZIP archive: {archive_path}") from exc
 

@@ -41,6 +41,7 @@
     "output_dir": null,
     "device": "auto",
     "threshold": 0.5,
+    "window_batch_size": 1,
     "overwrite": false
   },
   "processing": {
@@ -59,6 +60,8 @@
     "target_short_edge_px": null,
     "image_format": "png",
     "jpeg_quality": 100,
+    "png_compress_level": 6,
+    "ffmpeg_threads": 0,
     "overwrite": false,
     "decode_checkpoints": [0.0, 0.5, 1.0]
   },
@@ -104,7 +107,8 @@
     "version_message": "preprocess batch upload",
     "public": false,
     "require_remote_inventory": true,
-    "missing_artifact_policy": "skip"
+    "missing_artifact_policy": "skip",
+    "temporary_space_multiplier": 1.0
   },
   "cleanup": {
     "enabled": true,
@@ -121,6 +125,10 @@
     "mode": "best_effort",
     "seed": 2026,
     "cublas_workspace_config": ":4096:8"
+  },
+  "scheduling": {
+    "overlap_upload": false,
+    "max_pending_uploads": 1
   },
   "minimum_free_bytes": 10737418240
 }

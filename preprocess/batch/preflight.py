@@ -57,7 +57,8 @@ class PreflightChecker:
             metadata_template = self.config.upload.metadata_template
             if metadata_template is None or not metadata_template.is_file():
                 raise RuntimeError(
-                    "upload.metadata_template must point to an existing dataset-metadata.json"
+                    "upload.metadata_template must point to an existing Kaggle "
+                    "metadata template JSON; staging will name its copy dataset-metadata.json"
                 )
             try:
                 metadata = json.loads(metadata_template.read_text(encoding="utf-8"))
@@ -87,6 +88,8 @@ class PreflightChecker:
             for distribution in ("torch", "torchvision", "open_clip_torch", "Pillow", "numpy"):
                 packages[distribution] = self._package_version(distribution)
 
+        self._check_requested_accelerators()
+
         for distribution in ("tqdm", "kaggle"):
             if distribution == "kaggle" and not self.config.upload.enabled:
                 continue
@@ -106,6 +109,43 @@ class PreflightChecker:
             free_bytes=free_bytes,
             root=Path(root),
         )
+
+    def _check_requested_accelerators(self) -> None:
+        requested: list[tuple[str, str]] = []
+        if (
+            self.config.shot_boundary.enabled
+            and selector_requires_scene_boundaries(self.config.processing.selector)
+        ):
+            requested.append(("shot_boundary.device", self.config.shot_boundary.device))
+        if self.config.embedding.enabled:
+            requested.append(("embedding.device", self.config.embedding.device))
+        explicit = [(label, value.lower()) for label, value in requested if value.lower() != "auto"]
+        if not explicit:
+            return
+        try:
+            import torch
+        except ImportError as exc:
+            if any(value.startswith(("cuda", "mps")) for _, value in explicit):
+                raise RuntimeError("Explicit accelerator selection requires PyTorch") from exc
+            return
+        for label, value in explicit:
+            if value.startswith("cuda"):
+                if not torch.cuda.is_available():
+                    raise RuntimeError(f"{label}={value!r}, but CUDA is unavailable")
+                if ":" in value:
+                    try:
+                        index = int(value.partition(":")[2])
+                    except ValueError as exc:
+                        raise RuntimeError(f"{label} has an invalid CUDA index: {value!r}") from exc
+                    if index < 0 or index >= torch.cuda.device_count():
+                        raise RuntimeError(
+                            f"{label}={value!r}, but CUDA device count is "
+                            f"{torch.cuda.device_count()}"
+                        )
+            elif value == "mps":
+                mps = getattr(getattr(torch, "backends", None), "mps", None)
+                if mps is None or not mps.is_available():
+                    raise RuntimeError(f"{label}='mps', but MPS is unavailable")
 
     @staticmethod
     def _version(executable: str) -> str:

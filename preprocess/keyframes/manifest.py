@@ -41,6 +41,7 @@ def source_fingerprint(source: VideoSource) -> dict[str, int | str]:
     return {
         "size_bytes": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
+        "ctime_ns": stat.st_ctime_ns,
         "sha256": sha256_file(source.path),
     }
 

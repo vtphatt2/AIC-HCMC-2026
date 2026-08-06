@@ -155,6 +155,7 @@ class ShotBoundaryConfig:
     output_dir: Path | None = None
     device: str = "auto"
     threshold: float = 0.5
+    window_batch_size: int = 1
     overwrite: bool = False
 
     def __post_init__(self) -> None:
@@ -164,6 +165,8 @@ class ShotBoundaryConfig:
             raise ValueError("shot boundary device must not be empty")
         if not 0.0 <= self.threshold <= 1.0:
             raise ValueError("shot boundary threshold must be between 0 and 1")
+        if self.window_batch_size <= 0:
+            raise ValueError("shot_boundary.window_batch_size must be positive")
 
 
 @dataclass(frozen=True)
@@ -178,6 +181,7 @@ class ProcessingConfig:
     image_format: str = "png"
     jpeg_quality: int = 100
     png_compress_level: int = 6
+    ffmpeg_threads: int = 0
     allow_upscale: bool = False
     overwrite: bool = False
     decode_checkpoints: tuple[float, ...] = (0.0, 0.5, 1.0)
@@ -207,6 +211,8 @@ class ProcessingConfig:
             raise ValueError("profile_id must be one safe directory name")
         if self.image_format not in {"jpeg", "png"}:
             raise ValueError("image_format must be 'jpeg' or 'png'")
+        if self.ffmpeg_threads < 0:
+            raise ValueError("ffmpeg_threads must be zero (auto) or positive")
         if not self.decode_checkpoints:
             raise ValueError("decode_checkpoints must not be empty")
         if any(not 0 <= point <= 1 for point in self.decode_checkpoints):
@@ -233,6 +239,7 @@ class UploadConfig:
     missing_artifact_policy: str = "skip"
     verify_timeout_seconds: int = 600
     verify_poll_seconds: int = 10
+    temporary_space_multiplier: float = 1.0
 
     def __post_init__(self) -> None:
         if self.mode not in {"auto", "create", "version"}:
@@ -263,6 +270,8 @@ class UploadConfig:
             )
         if self.verify_timeout_seconds <= 0 or self.verify_poll_seconds <= 0:
             raise ValueError("upload verification timings must be positive")
+        if self.temporary_space_multiplier < 0:
+            raise ValueError("upload.temporary_space_multiplier must be non-negative")
 
     def target_for_lot(self, lot_id: str) -> DatasetTarget:
         """Resolve the remote dataset target for one lot without hardcoding IDs."""
@@ -328,6 +337,20 @@ class ReproducibilityConfig:
 
 
 @dataclass(frozen=True)
+class SchedulingConfig:
+    """Bounded cross-lot scheduling; disabled by default for simple hosts."""
+
+    overlap_upload: bool = False
+    max_pending_uploads: int = 1
+
+    def __post_init__(self) -> None:
+        if self.max_pending_uploads != 1:
+            raise ValueError(
+                "scheduling.max_pending_uploads currently must be 1 to bound disk usage"
+            )
+
+
+@dataclass(frozen=True)
 class BatchConfig:
     """Top-level settings with no user-specific absolute paths."""
 
@@ -344,6 +367,7 @@ class BatchConfig:
     upload: UploadConfig = field(default_factory=UploadConfig)
     cleanup: CleanupConfig = field(default_factory=CleanupConfig)
     reproducibility: ReproducibilityConfig = field(default_factory=ReproducibilityConfig)
+    scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     minimum_free_bytes: int = 0
 
     def __post_init__(self) -> None:
@@ -353,10 +377,15 @@ class BatchConfig:
             self.reproducibility.mode == "strict"
             and self.embedding.enabled
             and self.embedding.model_id.startswith("hf-hub:")
-            and not self.embedding.model_revision
+            and (
+                self.embedding.model_revision is None
+                or re.fullmatch(r"[0-9a-fA-F]{40}", self.embedding.model_revision)
+                is None
+            )
         ):
             raise ValueError(
-                "strict reproducibility requires embedding.model_revision for hf-hub models"
+                "strict reproducibility requires embedding.model_revision to be a "
+                "40-character Hugging Face commit SHA"
             )
 
     @classmethod
@@ -447,6 +476,7 @@ class BatchConfig:
             upload=upload,
             cleanup=CleanupConfig(**dict(payload.get("cleanup", {}))),
             reproducibility=ReproducibilityConfig(**dict(payload.get("reproducibility", {}))),
+            scheduling=SchedulingConfig(**dict(payload.get("scheduling", {}))),
             minimum_free_bytes=int(payload.get("minimum_free_bytes", 0)),
         )
 

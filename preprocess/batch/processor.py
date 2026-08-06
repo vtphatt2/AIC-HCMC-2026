@@ -147,7 +147,15 @@ class KeyframeProcessingStrategy(VideoProcessingStrategy):
         self.overwrite = overwrite
 
     def process(self, asset: VideoAsset, layout: LotLayout) -> ProcessingResult:
-        source = VideoSource(video_id=asset.video_id, path=asset.path)
+        source = VideoSource(
+            video_id=asset.video_id,
+            path=asset.path,
+            metadata={
+                "timeline_cache_path": str(
+                    layout.reports_dir / "decoder-timelines" / f"{asset.video_id}.json"
+                )
+            },
+        )
         video_info = self.extractor.probe(source)
         selector = self.selector_strategy.selector_for(asset.video_id)
         selected = selector.select(video_info, self.extractor.scan(source, video_info))
@@ -213,7 +221,12 @@ def default_processing_registry() -> ProcessingStrategyRegistry:
     ) -> VideoProcessingStrategy:
         return KeyframeProcessingStrategy(
             selector_strategy,
-            extractor=FFmpegKeyframeExtractor(tools.ffmpeg, tools.ffprobe, progress=progress),
+            extractor=FFmpegKeyframeExtractor(
+                tools.ffmpeg,
+                tools.ffprobe,
+                progress=progress,
+                threads=processing_config.ffmpeg_threads,
+            ),
             profile=processing_config.render_profile(),
             overwrite=processing_config.overwrite,
         )

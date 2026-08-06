@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
@@ -32,6 +33,7 @@ from preprocess.batch.provenance import (
     PROVENANCE_FILE_NAME,
     atomic_json_write,
     digest_directory,
+    file_fingerprint_matches,
     runtime_provenance,
 )
 
@@ -107,7 +109,8 @@ class KaggleStagingStrategy(StagingStrategy):
         metadata_template = self.config.metadata_template
         if metadata_template is None or not metadata_template.is_file():
             raise FileNotFoundError(
-                "upload.metadata_template is required and must point to dataset-metadata.json"
+                "upload.metadata_template must point to an existing Kaggle metadata "
+                "template JSON; staging will name its copy dataset-metadata.json"
             )
 
         scene_segment_paths: dict[str, Path] = {}
@@ -285,6 +288,16 @@ class KaggleStagingStrategy(StagingStrategy):
             if path.suffix.lower() != ".npy":
                 raise ValueError(f"Embedding report points to a non-NPY file: {path}")
             files.append(path)
+        video_provenance = video_root / "provenance.json"
+        if video_provenance.is_file():
+            files.append(video_provenance)
+        else:
+            legacy_sidecars = sorted(video_root.glob("*.npy.meta.json"))
+            if len(legacy_sidecars) != len(files):
+                raise FileNotFoundError(
+                    f"Feature provenance is incomplete for {video_id}: {video_root}"
+                )
+            files.extend(legacy_sidecars)
         if len(set(files)) != len(files):
             raise ValueError(f"Embedding report contains duplicate feature files for {video_id}")
         return tuple(sorted(files))
@@ -736,10 +749,9 @@ class KaggleCliUploader(DatasetUploader):
             dataset_ref=target.dataset_ref,
             mode=mode,
         )
-        completed = subprocess.run(command, text=True, capture_output=True, check=False)
-        output = (completed.stdout or "") + (completed.stderr or "")
-        if completed.returncode != 0:
-            raise RuntimeError(f"Kaggle upload failed (exit {completed.returncode}): {output[-3000:]}")
+        return_code, output = self._run_streaming(command)
+        if return_code != 0:
+            raise RuntimeError(f"Kaggle upload failed (exit {return_code}): {output[-3000:]}")
         verification = self._verify_evidence(
             target.dataset_ref,
             expected_payload_digest=staging.payload_digest,
@@ -772,6 +784,7 @@ class KaggleCliUploader(DatasetUploader):
             upload.dataset_ref,
             expected_payload_digest=upload.payload_digest,
             provenance_path=provenance_path,
+            audit_local_payload=True,
         )
         if not evidence["verified"]:
             raise RuntimeError(
@@ -805,7 +818,16 @@ class KaggleCliUploader(DatasetUploader):
         if completed.returncode == 0:
             return "version"
         lowered = output.lower()
-        if any(marker in lowered for marker in ("not found", "does not exist", "not exist")):
+        if any(
+            marker in lowered
+            for marker in (
+                "not found",
+                "does not exist",
+                "not exist",
+                "403 client error",
+                "forbidden",
+            )
+        ):
             return "create"
         raise RuntimeError(
             "Could not determine whether the Kaggle dataset exists; "
@@ -885,6 +907,7 @@ class KaggleCliUploader(DatasetUploader):
         *,
         expected_payload_digest: str | None = None,
         provenance_path: Path | None = None,
+        audit_local_payload: bool = False,
     ) -> dict[str, Any]:
         effective_ref = dataset_ref or self.config.dataset_ref
         if not effective_ref:
@@ -959,27 +982,29 @@ class KaggleCliUploader(DatasetUploader):
                                 "output": "Local staging payload digest does not match provenance",
                                 "verified_at": None,
                             }
-                        try:
-                            actual_digest, _ = digest_directory(
+                        if audit_local_payload:
+                            records = local_provenance.get("files")
+                            if not isinstance(records, list) or not all(
+                                isinstance(record, Mapping) for record in records
+                            ):
+                                return {
+                                    "verified": False,
+                                    "status": "invalid_local_inventory",
+                                    "files": tuple(remote_files),
+                                    "output": "Local provenance has no valid file inventory",
+                                    "verified_at": None,
+                                }
+                            if not self._local_inventory_matches(
                                 provenance_path.parent,
-                                exclude_names={PROVENANCE_FILE_NAME},
-                            )
-                        except (OSError, ValueError) as exc:
-                            return {
-                                "verified": False,
-                                "status": "invalid_local_payload",
-                                "files": tuple(remote_files),
-                                "output": f"Could not fingerprint local staging: {exc}",
-                                "verified_at": None,
-                            }
-                        if actual_digest != expected_payload_digest:
-                            return {
-                                "verified": False,
-                                "status": "local_payload_changed",
-                                "files": tuple(remote_files),
-                                "output": "Local staging payload files changed after upload",
-                                "verified_at": None,
-                            }
+                                records,
+                            ):
+                                return {
+                                    "verified": False,
+                                    "status": "local_payload_changed",
+                                    "files": tuple(remote_files),
+                                    "output": "Local staging payload files changed after upload",
+                                    "verified_at": None,
+                                }
                     return {
                         "verified": True,
                         "status": status,
@@ -997,6 +1022,48 @@ class KaggleCliUploader(DatasetUploader):
             "output": output,
             "verified_at": None,
         }
+
+    @staticmethod
+    def _local_inventory_matches(
+        staging_root: Path,
+        records: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        """Full-audit allowlisted staging files without following paths outside it."""
+        try:
+            root = staging_root.resolve()
+            for record in records:
+                raw_path = record.get("path")
+                if not isinstance(raw_path, str) or not raw_path:
+                    return False
+                candidate = (root / raw_path).resolve()
+                candidate.relative_to(root)
+                if not file_fingerprint_matches(candidate, record, full_audit=True):
+                    return False
+            return True
+        except (OSError, RuntimeError, ValueError):
+            return False
+
+    @staticmethod
+    def _run_streaming(command: Sequence[str]) -> tuple[int, str]:
+        """Run a long Kaggle command with bounded memory and optional live TTY output."""
+        try:
+            process = subprocess.Popen(
+                list(command),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Required executable was not found: {command[0]}") from exc
+        assert process.stdout is not None
+        tail = bytearray()
+        while chunk := process.stdout.read(64 * 1024):
+            tail.extend(chunk)
+            if len(tail) > 12_000:
+                del tail[:-12_000]
+            if sys.stderr.isatty():
+                sys.stderr.write(chunk.decode("utf-8", errors="replace"))
+                sys.stderr.flush()
+        return process.wait(), bytes(tail).decode("utf-8", errors="replace")
 
     def _files_command(self, dataset_ref: str) -> list[str]:
         return [

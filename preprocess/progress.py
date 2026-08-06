@@ -182,6 +182,13 @@ class SystemResourceMonitor:
 
     def _gpu_metrics(self) -> dict[str, object]:
         torch = self._load_torch()
+        hint = self.device_hint.lower()
+        requested_cuda_index: int | None = None
+        if hint.startswith("cuda:"):
+            try:
+                requested_cuda_index = int(hint.partition(":")[2])
+            except ValueError:
+                requested_cuda_index = None
         cuda_available = False
         mps_available = False
         device_name: str | None = None
@@ -205,14 +212,18 @@ class SystemResourceMonitor:
 
             if cuda_available and cuda is not None:
                 try:
-                    index = cuda.current_device()
+                    index = (
+                        requested_cuda_index
+                        if requested_cuda_index is not None
+                        else cuda.current_device()
+                    )
                     device_name = str(cuda.get_device_name(index))
                     memory_used = int(cuda.memory_reserved(index))
                     memory_total = int(cuda.get_device_properties(index).total_memory)
                 except (RuntimeError, OSError, AttributeError):
                     pass
 
-        nvidia = self._nvidia_smi()
+        nvidia = self._nvidia_smi(requested_cuda_index)
         gpu_util = nvidia.get("utilization")
         if nvidia.get("name"):
             device_name = str(nvidia["name"])
@@ -221,7 +232,6 @@ class SystemResourceMonitor:
         if nvidia.get("memory_total") is not None:
             memory_total = int(nvidia["memory_total"])
 
-        hint = self.device_hint.lower()
         if hint.startswith("cuda"):
             device = f"CUDA:{device_name}" if cuda_available else "CUDA unavailable"
         elif hint == "mps":
@@ -246,7 +256,7 @@ class SystemResourceMonitor:
         }
 
     @staticmethod
-    def _nvidia_smi() -> dict[str, object]:
+    def _nvidia_smi(preferred_index: int | None = None) -> dict[str, object]:
         executable = shutil.which("nvidia-smi")
         if executable is None:
             return {}
@@ -268,7 +278,16 @@ class SystemResourceMonitor:
         if completed.returncode != 0 or not completed.stdout.strip():
             return {}
         try:
-            row = next(csv.reader([completed.stdout.splitlines()[0]]))
+            rows = list(csv.reader(completed.stdout.splitlines()))
+            row = next(
+                (
+                    candidate
+                    for candidate in rows
+                    if preferred_index is not None
+                    and int(candidate[0].strip()) == preferred_index
+                ),
+                rows[0],
+            )
             return {
                 "name": row[1].strip(),
                 "utilization": float(row[2].strip()),
@@ -377,6 +396,7 @@ class TqdmProgressReporter(ProgressReporter):
         self._plain_pipeline_total = 0
         self._plain_pipeline_started_at: float | None = None
         self._plain_pipeline_started = False
+        self._last_interactive_refresh_at = 0.0
         if self.config.show_system_metrics:
             self.resource_monitor = resource_monitor or SystemResourceMonitor(
                 disk_root or Path.cwd(),
@@ -452,8 +472,16 @@ class TqdmProgressReporter(ProgressReporter):
         if self._detail_bar is not None:
             self._detail_bar.refresh()
 
-    def _refresh_current_operation(self) -> None:
+    def _refresh_current_operation(self, *, force: bool = False) -> None:
         """Refresh status and detail rows without redrawing unchanged pipeline state."""
+        now = time.monotonic()
+        if (
+            not force
+            and now - self._last_interactive_refresh_at
+            < self.config.min_interval_seconds
+        ):
+            return
+        self._last_interactive_refresh_at = now
         self._refresh_status()
         if self._detail_bar is not None:
             self._detail_bar.refresh()
@@ -803,4 +831,4 @@ class TqdmProgressReporter(ProgressReporter):
             self._detail_stack.pop()
             if self._detail_stack:
                 self._ensure_detail_bar(tqdm, self._detail_stack[-1])
-            self._refresh_current_operation()
+            self._refresh_current_operation(force=True)

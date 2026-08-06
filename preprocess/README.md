@@ -36,8 +36,8 @@ không có wheel tương thích.
 Xem chính xác argument của một command:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/build_keyframe_index.py --help
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.build_keyframe_index --help
 ```
 
 ## Dataset layout và quy ước ID
@@ -111,15 +111,15 @@ Script đọc trực tiếp TXT; **không đọc và không ghi**
 Build toàn bộ:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/build_keyframe_index.py --force
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.build_keyframe_index --force
 ```
 
 Build một video:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/build_keyframe_index.py \
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.build_keyframe_index \
   --video-id L03_V002 --force
 ```
 
@@ -193,7 +193,7 @@ renderer này. Với frame có transcript, panel thêm prefix
 | Đường dẫn | Vai trò |
 | --- | --- |
 | `keyframe_transcript_index/<video_id>.json` | Nguồn `fps`, interval và text sentence. |
-| `keyframes/<video_id>/<frame_id>.jpg` | Toàn bộ ảnh source để render. Nếu không có, renderer fallback sang `keyframes_org/<video_id>/`. |
+| `keyframes/<video_id>/<frame_id>.{jpg,png}` | Toàn bộ ảnh source để render. Nếu không có, renderer fallback sang `keyframes_org/<video_id>/`. Batch SSH mặc định PNG. |
 
 Nếu thư mục keyframe không tồn tại hoặc file ảnh có stem không phải số, script
 dừng với lỗi. Không có `continue_on_error`, nhằm phát hiện dữ liệu keyframe bị
@@ -207,7 +207,7 @@ lệch ngay lập tức.
 | `--sample-root <path>` | Không | `<repo>/AIC2026_sample` | Root dataset thay thế. |
 | `--data-root <path>` | Không | — | Alias của `--sample-root`, tiện dùng với `data/`. |
 | `--output-dir <path>` | Không | `<sample-root>/subtitled_keyframes` | Root output. Script tạo thêm thư mục `<video_id>/`. |
-| `--image-extension <ext>` | Không | `.jpg` | Extension của ảnh anchor, ví dụ `.png`. |
+| `--image-extension <ext>` | Không | `.jpg` | Extension ảnh nguồn. Với keyframe từ batch SSH, truyền `.png`. |
 | `--font-path <path>` | Không | Tự tìm DejaVu/Noto/Liberation | Font Unicode `.ttf`/`.otf`. |
 | `--font-size <n>` | Không | `30` | Cỡ font pixel; phải dương. |
 | `--panel-height <n>` | Không | `200` | Chiều cao panel tối thiểu, pixel; phải dương. |
@@ -220,16 +220,16 @@ lệch ngay lập tức.
 Kiểm tra input không ghi output:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/add_transcript_banner.py \
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.add_transcript_banner \
   --video-id L03_V002 --dry-run
 ```
 
 Render với panel tự mở rộng:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/add_transcript_banner.py \
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.add_transcript_banner \
   --video-id L03_V002 \
   --panel-height 200 \
   --overflow expand
@@ -238,8 +238,8 @@ preprocess/.venv/bin/python \
 Render vào vị trí khác, không ghi đè ảnh cũ:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/transcript/add_transcript_banner.py \
+preprocess/.venv/bin/python -m \
+  preprocess.transcript.add_transcript_banner \
   --video-id L03_V002 \
   --output-dir /tmp/aic-banners \
   --existing unique
@@ -259,8 +259,7 @@ Profile mặc định giữ nguyên kích thước frame sau khi decode, không 
 `--short-edge <pixels>` hoặc đặt `processing.target_short_edge_px` trong config.
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/extract_keyframes.py \
+preprocess/.venv/bin/python -m preprocess.extract_keyframes \
   --input '/absolute/path/to/VIDEO_001.mp4' \
   --video-id VIDEO_001 \
   --output-root /absolute/path/to/keyframe-output
@@ -295,8 +294,7 @@ bucket thời lượng: scene `<=3s` lấy 1 frame, `<=10s` lấy 3 frame, và d
 lấy 5 frame. Ví dụ scene 25 giây có target 10/30/50/70/90% duration.
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/extract_keyframes.py \
+preprocess/.venv/bin/python -m preprocess.extract_keyframes \
   --input '/absolute/path/to/VIDEO_001.mp4' \
   --video-id VIDEO_001 \
   --output-root /absolute/path/to/keyframe-output \
@@ -346,8 +344,7 @@ chỉ validate rồi dùng lại file đó. Muốn dùng manifest tạo sẵn, �
 Kiểm tra media và selection mà không ghi gì:
 
 ```bash
-preprocess/.venv/bin/python \
-  preprocess/extract_keyframes.py \
+preprocess/.venv/bin/python -m preprocess.extract_keyframes \
   --input '/absolute/path/to/VIDEO_001.mp4' \
   --video-id VIDEO_001 \
   --output-root /tmp/unused-keyframe-output \
@@ -403,6 +400,7 @@ validator, staging và uploader đều có boundary để thay implementation kh
 ```text
 repository-root/
 ├── preprocess/
+│   ├── plan.md                  # checklist/refactor progress + verification
 │   └── batch/
 │       ├── cli.py
 │       ├── config.example.json
@@ -422,6 +420,7 @@ repository-root/
         ├── dataset/
         ├── kaggle-staging/            # snapshot riêng lot; xóa sau upload verify
         ├── reports/
+        │   └── decoder-timelines/   # cache frame n + PTS theo source fingerprint
         ├── receipts/
         ├── upload-state.json
         ├── upload.lock
@@ -514,15 +513,37 @@ cleanup artifact tạm
 | `ShotBoundaryPipeline` | `VideoAsset[]` + `ShotBoundaryConfig` | `scene-segments/<video_id>.json` + report | TransNetV2 chạy theo từng video; output gồm `segments`, `start_time/end_time`, threshold và backend; manifest hợp lệ được cache để resume. |
 | `MetadataProvider` | `metadata/<video_id>.json` | JSON `Mapping` | `fps` là `float` tùy chọn; metadata nằm ngoài ZIP. |
 | FFmpeg probe | File video | `VideoInfo` | `duration_ms: int`, `fps: float \| None`, `width/height: int`, `frame_count: int \| None`, `codec: str \| None`. Không có resolution/FPS cố định. |
-| Frame scanner | Video + `VideoInfo` | `FrameCandidate[]` | Mỗi candidate có `source_frame_number: int`, `timestamp_ms: int`, `pts_time_seconds: float`; `source_frame_number` và PTS lấy từ `showinfo` của chính FFmpeg decoder, không suy ra từ `nb_frames`/FPS. |
+| Frame scanner | Video + `VideoInfo` | `FrameCandidate[]` + decoder timeline cache | Mỗi candidate có `source_frame_number: int`, `timestamp_ms: int`, `pts_time_seconds: float`; `showinfo` được stream trực tiếp và cache theo fingerprint, không capture/replay stderr hoặc suy ra từ `nb_frames`/FPS. |
 | Selection strategy | `VideoInfo` + candidates | `SelectedFrame[]` | `interval_ms`, `start_ms`, `end_ms` dùng milliseconds; số frame là `int`. |
 | FFmpeg renderer | Video + selected frames | JPG/PNG + rendered manifest | Mặc định `target_short_edge_px=null`: giữ nguyên kích thước decoded; nếu đặt giá trị thì resize cạnh ngắn; frame ID là chuỗi sáu chữ số. |
 | Video validator | VideoAsset + metadata + ProcessingResult | `ValidationReport` | Kiểm tra file, media, decode checkpoint, ảnh, dimensions, mapping và fingerprint; checkpoint là tỷ lệ `0.0..1.0`. |
-| `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. |
+| `PECoreEmbeddingPipeline` | `keyframes/<video_id>/*.{jpg,jpeg,png}` | `.npy` từng frame + `provenance.json`/video | Ảnh RGB được transform vào tensor `(B, 3, 448, 448)` theo PECore; `embedding.batch_size` là số ảnh/inference batch; `embedding.dataloader` điều chỉnh worker/pin/prefetch; encoder trả `(B, 1280)`, `float32`; mỗi file là `(1280,)`, L2 norm gần `1.0`. Pipeline vẫn đọc sidecar `.npy.meta.json` legacy nhưng output mới gộp provenance theo video để giảm small-file/fsync. |
 | `KaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments | `data/<lot_id>/kaggle-staging/` | Mặc định mỗi lot một snapshot độc lập; chỉ là file allowlist, không chứa archive, source hoặc video. Scene segment được thêm khi `upload.include_scene_segments=true`. |
 | `CumulativeKaggleStagingStrategy` | Keyframes, features, metadata, manifests, scene segments của lot mới | `data/kaggle-dataset-staging/` | Legacy opt-in: merge idempotent theo `video_id`, giữ dữ liệu các lot trước và không chứa archive/source/video. |
 | `KaggleCliUploader` | `StagingResult` | `UploadResult` | `mode=auto` tự chọn `create`/`version` theo dataset ref; `verified: bool`; `dir_mode` là `skip`, `zip` hoặc `tar`. |
 | `CleanupManager` | UploadResult đã verify | `CleanupResult` | Xóa các directory được bật trong config; metadata độc lập, reports, receipts và state vẫn giữ lại. |
+
+### Traceback tiến độ và hiệu năng
+
+Checklist triển khai/kiểm tra của đợt refactor nằm tại `preprocess/plan.md`.
+Runtime không ghi vào checklist này; runtime trace được chia theo mục đích:
+
+```text
+data/<lot_id>/state.json                 # stage + checkpoint từng video
+data/<lot_id>/upload-state.json          # staging/upload/cleanup độc lập
+data/<lot_id>/reports/processing.json    # artifact từng video đã validate
+data/<lot_id>/reports/embedding.json     # feature từng video + device provenance
+data/<lot_id>/reports/decoder-timelines/ # cache FFmpeg frame n + PTS
+data/<lot_id>/reports/upload-disk-budget.json
+data/<lot_id>/receipts/upload.json       # remote status/inventory evidence
+```
+
+Mỗi stage ghi `attempt`, `started_at`, `completed_at`, `elapsed_seconds` và
+fingerprint. Fingerprint runtime được scope theo stage: thay docs không làm
+TransNet/render chạy lại; source code chưa commit vẫn được nhận qua content
+digest của module liên quan. `scene-segments` là output của TransNet nhưng là
+input của `process_validate`, nên tạo boundary lần đầu không tự invalidate
+stage TransNet ở lần chạy kế tiếp.
 
 Nếu FFmpeg render nhanh trả về ít PNG hơn số frame được chọn (thường do VFR,
 timestamp không hợp lệ hoặc decoder ordinal khác ffprobe), extractor không bỏ
@@ -538,6 +559,8 @@ download.max_concurrent_connections = 16   # connection/server
 download.split_count                  = 16   # segment/archive
 processing.interval_ms                = 1000 # milliseconds
 processing.target_short_edge_px       = null # preserve decoded dimensions
+processing.png_compress_level         = 6    # FFmpeg/Pillow PNG level 0..9
+processing.ffmpeg_threads             = 0    # 0=FFmpeg auto; không gắn số core/GPU
 processing.decode_checkpoints          = [0, 0.5, 1] # normalized position
 embedding.expected_dim                = 1280 # vector values
 embedding.batch_size                  = 8    # images/encoder call
@@ -559,6 +582,7 @@ upload.dataset_ref_template           = owner/aic2026-hcmc-{lot_slug}
 upload.metadata_template              = data/kaggle-dataset-metadata.json
 upload.require_remote_inventory       = true # status + datasets files + provenance
 upload.missing_artifact_policy        = error # error hoặc skip artifact tùy chọn
+upload.temporary_space_multiplier     = 1.0 # reserve cho package tạm của CLI
 reproducibility.mode                  = best_effort # strict để pin seed/CUBLAS
 reproducibility.seed                  = 2026
 progress.enabled                      = true # terminal/tmux progress bars
@@ -568,7 +592,10 @@ shot_boundary.enabled                 = true # auto-run when selector needs scen
 shot_boundary.backend                 = transnetv2
 shot_boundary.device                  = auto # auto/cpu/cuda/mps
 shot_boundary.threshold               = 0.5
+shot_boundary.window_batch_size       = 1 # TransNet windows/GPU call; tự tune theo host
 shot_boundary.overwrite               = false # reuse valid manifests
+scheduling.overlap_upload             = false # lot N upload cùng lúc xử lý lot N+1
+scheduling.max_pending_uploads        = 1 # hiện cố định 1 để bound disk
 ```
 
 Progress bar dùng `tqdm` và hiển thị đúng năm dòng cố định trong terminal/tmux:
@@ -587,7 +614,8 @@ CUDA lặp lại để terminal không bị rác; chế độ này không cam k�
 bit-level. Với `reproducibility.mode=strict`, pipeline đặt
 `CUBLAS_WORKSPACE_CONFIG`, seed và deterministic mode trước khi load model.
 Muốn pin model Hugging Face trong strict mode, phải đặt
-`embedding.model_revision` thành commit/revision cụ thể.
+`embedding.model_revision` thành commit SHA 40 ký tự; branch/tag như `main`
+không được coi là immutable.
 
 `embedding.precision` chỉ kiểm tra tên dtype khi đọc config; capability được
 kiểm tra sau khi `device=auto` đã resolve. `bf16` trên CUDA sẽ dừng với lỗi rõ
@@ -601,10 +629,12 @@ precision=fp32 + autocast.enabled=true  → model FP32, phép tính AMP theo dty
 precision=fp16/bf16 + autocast=false     → model được load ở low precision
 ```
 
-Khuyến nghị trên CUDA là `precision=fp32` kết hợp
-`autocast.enabled=true`; đặt `autocast.dtype=bf16` nếu GPU hỗ trợ, nếu không
-dùng `fp16`. `torch.inference_mode()` của pipeline chỉ tắt gradient, không
-phải AMP.
+Không có profile mặc định cho RTX 3060 hoặc dung lượng VRAM cụ thể. Một profile
+CUDA thường dùng là `precision=fp32` kết hợp `autocast.enabled=true`; chỉ đặt
+`autocast.dtype=bf16` nếu chính GPU được chọn hỗ trợ, nếu không dùng `fp16`.
+`torch.inference_mode()` chỉ tắt gradient, không phải AMP. `pin_memory=true`
+chỉ được áp dụng thực tế khi device đã resolve thành CUDA; trên CPU/MPS nó tự
+tắt để không tạo overhead vô ích.
 
 `tf32` là backend flag CUDA độc lập với `precision` và `autocast`. Nó không
 đổi dtype của model hoặc vector output, mà cho phép các phép toán FP32 đủ điều
@@ -629,8 +659,18 @@ CUDA_VISIBLE_DEVICES=1 \
 python -m preprocess.batch --config preprocess/batch/config.json run
 ```
 
-Trong process, GPU đó sẽ được nhìn thấy là `cuda`; pipeline hiện chưa nhận
-`cuda:1` trực tiếp trong `embedding.device`.
+Trong process, GPU đó sẽ được nhìn thấy là `cuda`. Pipeline cũng nhận
+`cuda:1` trực tiếp trong `embedding.device` và `shot_boundary.device`; preflight
+sẽ fail trước download nếu index không tồn tại. `CUDA_VISIBLE_DEVICES` vẫn hữu
+ích khi muốn cô lập process khỏi các GPU khác.
+
+`shot_boundary.window_batch_size` batch các cửa sổ TransNetV2 100 frame, bước
+50 frame. Giá trị `1` giữ đường inference gốc và dùng ít VRAM nhất. Tăng dần
+`2`, `4`, `8`, ... chỉ sau khi kiểm tra VRAM và so sánh scene output; pipeline
+không tự chọn theo tên GPU. Adapter probe FPS một lần/video và giải phóng tensor
+tạm sau video. AMP/low precision cho TransNetV2 không bật vì có thể đổi boundary
+sát threshold; PE-Core có config precision/autocast riêng và đã kiểm tra
+capability.
 
 Rule `linear-rulebase` dùng milliseconds và số frame:
 
@@ -675,6 +715,9 @@ Nếu đã có virtual environment riêng cho `preprocess`, chỉ cần activate
 chạy lại `python -m pip install -r preprocess/requirements.lock.txt`.
 `requirements.txt` là bản cài đặt tương thích tương ứng; dùng
 `requirements.lock.txt` khi muốn giữ đúng các phiên bản top-level đã kiểm thử.
+Đây là top-level lock, chưa phải lock có hash của toàn bộ dependency transitives;
+`provenance.json` ghi phiên bản thực tế. Muốn tái lập nghiêm ngặt phải giữ thêm
+image/container, CUDA driver và binary FFmpeg/aria2 của host.
 `aria2c`
 không nằm trong Python requirements vì được cài từ APT. Cách quản lý package
 bằng APT theo tài liệu Ubuntu và cách cài/auth Kaggle CLI xem
@@ -753,7 +796,12 @@ Staging được dựng trong thư mục tạm rồi đổi tên atomically. M�
 cache fingerprint và SHA-256 inventory của payload. Khi
 `require_remote_inventory=true`, upload chỉ được coi là verify sau khi status
 là `ready`, `datasets files` trả file và remote inventory có
-`provenance.json`; local payload cũng được hash lại trước cleanup.
+`provenance.json`. Trong cùng lệnh upload, payload digest được tái sử dụng và
+cleanup tin receipt vừa verify để tránh đọc lại hàng chục GB. Lệnh `cleanup`
+chạy độc lập vẫn audit inventory local và re-verify remote trước khi xóa.
+Đây là status + inventory verification; `kaggle datasets files` không trả
+remote checksum, nên receipt không tuyên bố byte-for-byte remote verification
+nếu dataset chưa được download về audit riêng.
 
 Không bật upload khi chưa kiểm tra credentials bằng `kaggle datasets list`.
 
@@ -897,11 +945,13 @@ Trong config, kiểm tra tối thiểu:
     "backend": "transnetv2",
     "device": "auto",
     "threshold": 0.5,
+    "window_batch_size": 1,
     "overwrite": false
   },
   "processing": {
     "selector": "linear-rulebase",
-    "scene_segments_dir": "../../data/scene-segments"
+    "scene_segments_dir": "../../data/scene-segments",
+    "ffmpeg_threads": 0
   },
   "embedding": {
     "enabled": true
@@ -916,14 +966,21 @@ Trong config, kiểm tra tối thiểu:
     "include_scene_segments": true,
     "require_remote_inventory": true,
     "missing_artifact_policy": "error"
+  },
+  "scheduling": {
+    "overlap_upload": false,
+    "max_pending_uploads": 1
   }
 }
 ```
 
 Nếu chỉ muốn tạo artifact local, đặt `upload.enabled=false`; khi đó pipeline
-không tự cleanup. Nếu bật upload, `dataset-metadata.json` phải tồn tại đúng
-đường dẫn và `dataset_ref_template` phải có owner Kaggle hợp lệ. Không cần tạo
-dataset thủ công; `mode=auto` tự chọn create/version.
+không tự cleanup. Nếu bật upload, file JSON nguồn tại
+`upload.metadata_template` phải tồn tại đúng đường dẫn và
+`dataset_ref_template` phải có owner Kaggle hợp lệ. Tên file nguồn trong config
+mẫu là `kaggle-dataset-metadata.json`; pipeline luôn tạo bản dành cho Kaggle
+trong staging với tên cố định `dataset-metadata.json`. Không cần tạo dataset thủ
+công; `mode=auto` tự chọn create/version.
 
 #### 4. Xác thực Kaggle
 
@@ -1047,8 +1104,12 @@ Mỗi lot còn có `state.json.stages` với các stage `running` hoặc `comple
 Stage `process_validate` có thêm
 `state.json.stages.process_validate.videos.<video_id>`; mỗi video được đánh dấu
 `running` trước khi xử lý và `completed` sau khi render + validate thành công,
-kèm fingerprint, artifact result và thời lượng. Checkpoint được ghi trước và
-sau từng stage cũng như từng video; nếu SSH bị mất hoặc nhấn `Ctrl-C`, lần chạy
+kèm fingerprint, artifact result và thời lượng. Stage `embedding` cũng có
+`state.json.stages.embedding.videos.<video_id>`; do đó ngắt sau video nào thì
+vector video đó được validate/restore thay vì infer lại. PE-Core provenance mới
+được gom tại `dataset/PECore-features/<video_id>/provenance.json`; sidecar legacy
+vẫn đọc được. Checkpoint được ghi trước và sau từng stage cũng như từng video;
+nếu SSH bị mất hoặc nhấn `Ctrl-C`, lần chạy
 `run` tiếp theo sẽ:
 
 ```text
@@ -1076,14 +1137,20 @@ lại. Khi stage hoặc video hoàn tất, `state.json` ghi `started_at`,
 chạy hai pipeline xử lý cùng lot, và không chỉnh sửa thủ công các file state khi
 process đang hoạt động. Các thao tác upload có lock riêng theo lot tại
 `upload.lock`; vì vậy không chạy hai lệnh upload cùng lot song song, cũng không
-chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Pipeline chính
-thực hiện upload tuần tự sau processing/embedding của từng lot.
+chạy `upload --lot-id <lot>` song song với `run` cho cùng lot. Mặc định pipeline
+chính upload tuần tự sau processing/embedding của từng lot. Nếu
+`scheduling.overlap_upload=true`, upload/cleanup lot N chạy trong một worker
+nền trong khi lot N+1 được xử lý; chỉ một upload pending được phép, và dataset
+cumulative vẫn serialize bằng dataset lock. Chế độ này giữ tối đa artifact của
+lot đang xử lý cộng một lot đang upload, nên phải để đủ disk reserve. Progress
+nền không vẽ đè terminal; `state.json`/`upload-state.json` vẫn tách biệt.
 
 `run.lock` bảo vệ pipeline chính; upload/cleanup dùng thêm `upload.lock`. Với
 legacy cumulative staging, `kaggle-dataset-upload.lock` bảo vệ dataset chung và
 `kaggle-dataset-transaction.json` cho phép khôi phục directory swap nếu SSH bị
-ngắt giữa lúc merge. Không dùng mtime làm fingerprint chính khi artifact có
-SHA-256; mtime chỉ còn là fallback cho checkpoint legacy cũ.
+ngắt giữa lúc merge. Resume dùng size + mtime làm fast path trên cùng filesystem;
+khi timestamp đổi hoặc full audit được yêu cầu, SHA-256 là nguồn xác nhận nội
+dung. SHA file lớn được cache theo inode/size/mtime/ctime trong một process.
 
 Trạng thái hai stage `stage_upload` và `cleanup` nằm trong
 `data/<lot_id>/upload-state.json`; `data/<lot_id>/state.json` giữ pipeline
@@ -1137,8 +1204,9 @@ Script/module: `preprocess/pecore/`. Đây là image encoder đầy đủ của
 Input và output giữ cùng quy ước với `AIC2026_sample`:
 
 ```text
-data/L29_a/dataset/keyframes/L21_V030/000022.jpg
+data/L29_a/dataset/keyframes/L21_V030/000022.png
   → data/L29_a/dataset/PECore-features/L21_V030/000022.npy
+  + data/L29_a/dataset/PECore-features/L21_V030/provenance.json
 ```
 
 Vector output là `float32`, shape `(1280,)`, đã L2-normalize. Model chỉ được
@@ -1162,6 +1230,8 @@ Embed tất cả thư mục video dưới `--input-root` thì bỏ các cờ `--
 Dùng `--overwrite` khi muốn tính lại các feature đã tồn tại. `--pin-memory`
 và `--persistent-workers` tương ứng với các cờ trong `embedding.dataloader`;
 `--persistent-workers` yêu cầu `--num-workers` lớn hơn 0.
+Worker hiện tồn tại trong iterator của một video; checkpoint theo video được
+ưu tiên hơn việc giữ worker xuyên ranh giới video.
 `--tf32` bật cả CUDA matmul TF32 và cuDNN TF32 trong standalone command.
 
 Để chạy tự động sau bước validate trong batch pipeline, bật:
@@ -1171,7 +1241,7 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
   "embedding": {
     "enabled": true,
     "model_id": "hf-hub:timm/PE-Core-bigG-14-448",
-    "model_revision": "<immutable-hugging-face-commit>",
+    "model_revision": "<40-character-hugging-face-commit-sha>",
     "device": "auto",
     "precision": "fp32",
     "autocast": {
@@ -1199,12 +1269,13 @@ và `--persistent-workers` tương ứng với các cờ trong `embedding.datalo
 ```
 
 `model_revision` là tùy chọn ở `best_effort`; ở `strict` với model
-`hf-hub:` nó là bắt buộc. Mỗi vector có file `.npy.meta.json` chứa SHA-256 của
-ảnh nguồn và fingerprint encoder, vì vậy đổi model/precision, autocast, TF32
-hoặc sửa ảnh sẽ không bị nhầm là cache hợp lệ. Với
+`hf-hub:` nó phải là commit SHA 40 ký tự. Mỗi thư mục video có một
+`provenance.json` ánh xạ frame sang SHA-256 ảnh nguồn và fingerprint encoder;
+sidecar `.npy.meta.json` cũ vẫn được đọc để migration. Vì vậy đổi
+model/precision, autocast, TF32 hoặc sửa ảnh sẽ không bị nhầm là cache hợp lệ. Với
 `embedding.dataloader.num_workers > 0`,
-`pin_memory=true` chỉ là tối ưu truyền host → CUDA, không thay đổi số lượng
-vector hay thứ tự frame.
+`pin_memory=true` chỉ được dùng khi device resolve thành CUDA, không thay đổi
+số lượng vector hay thứ tự frame.
 
 TransNetV2 hiện giữ FP32 và `torch.no_grad()`. Package
 `transnetv2-pytorch` không expose precision/autocast trong API mà pipeline đang
