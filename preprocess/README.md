@@ -5,11 +5,17 @@ dataset. Chúng là pipeline offline, không cần chạy FastAPI, và dùng vir
 environment riêng tại `preprocess/.venv`. Toàn bộ workflow SSH chỉ chạm vào
 `preprocess/` và `data/`; không phụ thuộc vào `app/`.
 
+Nếu cần chuyển công việc sang một coding/SSH session khác, bắt đầu tại
+[`SESSION_HANDOFF.md`](SESSION_HANDOFF.md). Tài liệu đó tổng hợp trạng thái hiện
+tại của kiến trúc, contract stage, checkpoint/resume, config và runbook; README
+này giữ phần tham chiếu chi tiết cho từng pipeline.
+
 ## Cấu trúc source
 
 ```text
 preprocess/
 ├── README.md
+├── SESSION_HANDOFF.md          # context đầy đủ để tiếp tục ở session khác
 ├── pecore/                     # PE-Core image encoder → normalized .npy
 ├── batch/                      # download → validate → process → embed → Kaggle
 └── transcript/
