@@ -285,6 +285,35 @@ async def zip_video(video_id: str, request: Request):
     return StreamingResponse(body(), status_code=206, headers=headers)
 
 
+_zip_frame_semaphore = asyncio.Semaphore(6)
+
+
+@app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
+async def zip_frame(video_id: str, timestamp_ms: int):
+    """Decode one JPEG frame straight from the organizer's remote ZIP — for
+    videos ingested without local keyframe JPGs (see
+    remote-server/scripts/ingest_zip_pipeline_results.py). Builds a per-video
+    sample-table index once (cached in memory), then computes the exact
+    compressed byte range for this frame and fetches it with a single Range
+    request — see app/services/zip_frame_source.py for why (pointing ffmpeg
+    at a URL and letting it probe the container costs several round trips
+    per frame and doesn't hold up under concurrent grid loading).
+
+    A result grid can render up to 100 cards at once, each requesting its own
+    thumbnail. The semaphore caps how many decode at once; the rest just
+    queue for a slot instead of piling on and dragging the whole batch down
+    together."""
+    from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_jpeg
+
+    try:
+        async with _zip_frame_semaphore:
+            jpeg_bytes = await get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms)
+    except ZipFrameUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+    return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
 @app.get("/api/strategies")
 async def list_strategies():
     """Return all discovered strategies for the frontend dropdown."""
