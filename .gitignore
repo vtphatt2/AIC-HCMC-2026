@@ -249,17 +249,6 @@ static/frames/
 # data files
 challenge_resources/data/*
 
-# challenge_resources/ groups data, onnx-models, generated_queries, queries_1,
-# queries_2, runtime-logs. These root entries are local directory junctions
-# into challenge_resources/ (not committed — junctions aren't portable via git),
-# kept so existing hardcoded paths across the repo keep resolving.
-/data/
-/onnx-models/
-/generated_queries/
-/queries_1/
-/queries_2/
-/runtime-logs/
-
 # youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
 /cache/
 

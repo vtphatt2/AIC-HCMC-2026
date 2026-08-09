@@ -14,7 +14,7 @@ class LocalFrameUnavailable(RuntimeError):
 
 def _repo_root() -> Path:
     for parent in Path(__file__).resolve().parents:
-        if (parent / "onnx-models").is_dir():
+        if (parent / "challenge_resources").is_dir():
             return parent
     raise LocalFrameUnavailable("Repository root could not be located")
 
@@ -22,7 +22,7 @@ def _repo_root() -> Path:
 def local_video_path(video_id: str) -> Path:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", video_id):
         raise ValueError("Invalid video_id")
-    data_root = Path(os.getenv("AIC_SAMPLE_ROOT", _repo_root() / "data"))
+    data_root = Path(os.getenv("AIC_SAMPLE_ROOT", _repo_root() / "challenge_resources" / "data"))
     path = data_root / "videos" / f"{video_id}.mp4"
     if not path.is_file():
         raise LocalFrameUnavailable(f"Local video not found: {path}")

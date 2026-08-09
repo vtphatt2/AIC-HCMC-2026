@@ -11,7 +11,7 @@ from app.services.strategy_config import StrategyConfigStore
 
 class StrategyConfigHttpTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(__file__).resolve().parents[3] / "data" / ".test-strategy-config-http"
+        self.root = Path(__file__).resolve().parents[3] / "challenge_resources" / "data" / ".test-strategy-config-http"
         shutil.rmtree(self.root, ignore_errors=True)
         self.store = StrategyConfigStore(self.root)
         self.strategy = Mock()

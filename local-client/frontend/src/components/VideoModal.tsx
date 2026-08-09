@@ -20,9 +20,21 @@ const PLAYER_DOM_ID = "yt-player-container";
 
 export default function VideoModal({ result, onClose, showTranscript, onToggleTranscript }: Props) {
   const playerRef = useRef<any>(null);
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
   const youtubeId = result.youtube_id || "";
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
+
+  // Primary playback source: stream straight from the organizer's remote
+  // ZIP via local-backend's Range proxy (see app/services/remote_zip_proxy.py)
+  // — no full-video download. YouTube stays the primary player whenever a
+  // video has a known youtube_id; this is only reached for videos with none
+  // (e.g. ingested straight from the organizer zips, which carry no YouTube
+  // mapping), or if the YouTube-less <video> element itself 404s.
+  const zipVideoUrl = result.video_id ? apiUrl(`/api/zip-video/${encodeURIComponent(result.video_id)}`) : "";
+  const [zipVideoFailed, setZipVideoFailed] = useState(false);
+  const useYoutube = Boolean(youtubeId);
+  const useZipVideo = !useYoutube && Boolean(zipVideoUrl) && !zipVideoFailed;
   // Show the SHARP frame (same one the results grid shows), with the fast
   // low-res preview as a blurred stand-in underneath until it loads — a
   // blur-up, same as ResultCard. The grid already loaded the sharp image
@@ -43,6 +55,25 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   const wantsPlayRef = useRef(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
 
+  // New result (possibly a different video) — give the zip source a fresh
+  // try and reset to the paused-on-frame-image state.
+  useEffect(() => {
+    setZipVideoFailed(false);
+    setHasStartedPlaying(false);
+    wantsPlayRef.current = false;
+  }, [result.video_id]);
+
+  const toggleNativeVideoPlayback = useCallback(() => {
+    const el = videoElRef.current;
+    if (!el) return;
+    if (el.paused) {
+      if (!hasStartedPlaying) el.currentTime = startSeconds;
+      el.play();
+    } else {
+      el.pause();
+    }
+  }, [hasStartedPlaying, startSeconds]);
+
   const togglePlayback = useCallback(() => {
     const player = playerRef.current;
     if (!player || typeof player.playVideo !== "function") {
@@ -61,6 +92,14 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
       player.playVideo();
     }
   }, [startSeconds]);
+
+  const handleTogglePlayback = useCallback(() => {
+    if (useZipVideo) {
+      toggleNativeVideoPlayback();
+    } else {
+      togglePlayback();
+    }
+  }, [useZipVideo, toggleNativeVideoPlayback, togglePlayback]);
 
   // Transcript panel state — fetched once per video, no search involved
   // (see app/services/transcript_index.py): just "what's being said now."
@@ -92,23 +131,30 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
 
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        togglePlayback();
+        handleTogglePlayback();
         return;
       }
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
+        const delta = e.key === "ArrowLeft" ? -SEEK_STEP_SECONDS : SEEK_STEP_SECONDS;
+
+        if (useZipVideo) {
+          const el = videoElRef.current;
+          if (el) el.currentTime = Math.max(0, el.currentTime + delta);
+          return;
+        }
+
         const player = playerRef.current;
         const ready = player && typeof player.playVideo === "function";
         if (!ready || typeof player.seekTo !== "function") return;
         const now = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : startSeconds;
-        const delta = e.key === "ArrowLeft" ? -SEEK_STEP_SECONDS : SEEK_STEP_SECONDS;
         player.seekTo(Math.max(0, now + delta), true);
       }
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose, startSeconds, togglePlayback]);
+  }, [onClose, startSeconds, useZipVideo, handleTogglePlayback]);
 
   // Fetch the full transcript once per video (not per frame) — only when
   // the panel is actually shown, and only once (result.video_id is stable
@@ -142,8 +188,11 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
     }
   }, [activeSegmentIndex]);
 
-  // Mount the YouTube player (only when youtubeId changes to prevent redundant iframe rebuilds)
+  // Mount the YouTube player — only once the zip source isn't in play (either
+  // never available for this video, or it just failed) so the common case
+  // never touches the YouTube iframe API at all.
   useEffect(() => {
+    if (!useYoutube) return;
     let player: any = null;
     let cancelled = false;
     setHasStartedPlaying(false);
@@ -209,29 +258,33 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
       }
       playerRef.current = null;
     };
-  }, [youtubeId]);
+  }, [youtubeId, useYoutube]);
 
-  // Seek without rebuilding the iframe when only the target timestamp
+  // Seek without rebuilding the player when only the target timestamp
   // changes — stays paused (a newly-shown frame should also start paused).
   useEffect(() => {
-    if (playerRef.current && typeof playerRef.current.seekTo === "function") {
+    if (useZipVideo) {
+      if (videoElRef.current) videoElRef.current.currentTime = startSeconds;
+    } else if (playerRef.current && typeof playerRef.current.seekTo === "function") {
       playerRef.current.seekTo(startSeconds, true);
       playerRef.current.pauseVideo();
     }
     setCurrentTimeSec(startSeconds);
     setHasStartedPlaying(false);
-  }, [startSeconds]);
+  }, [startSeconds, useZipVideo]);
 
   // Poll the player every 100ms to get the live playback position.
   // This updates frame number and timestamp whenever the video plays or the user scrubs.
   useEffect(() => {
     const interval = setInterval(() => {
-      if (playerRef.current && typeof playerRef.current.getCurrentTime === "function") {
+      if (useZipVideo) {
+        if (videoElRef.current) setCurrentTimeSec(videoElRef.current.currentTime);
+      } else if (playerRef.current && typeof playerRef.current.getCurrentTime === "function") {
         setCurrentTimeSec(playerRef.current.getCurrentTime());
       }
     }, 100);
     return () => clearInterval(interval);
-  }, []);
+  }, [useZipVideo]);
 
   return (
     <div
@@ -286,10 +339,10 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
                     }`}
                   />
                 )}
-                {youtubeId && (
+                {(useZipVideo || useYoutube) && (
                   <button
                     type="button"
-                    onClick={togglePlayback}
+                    onClick={handleTogglePlayback}
                     aria-label="Play video from selected frame"
                     title="Play video"
                     className="absolute inset-0 z-20 m-auto h-16 w-16 rounded-full border-2 border-white/80 bg-black/65 text-3xl text-white transition hover:scale-105 hover:bg-orange-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-orange-400"
@@ -297,14 +350,31 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
                     <span aria-hidden="true" className="ml-1">▶</span>
                   </button>
                 )}
-                {youtubeId && (
+                {(useZipVideo || useYoutube) && (
                   <div className="font-retro absolute bottom-2 right-2 bg-stone-900/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">
                     ▸ Click/Enter play · ←/→ seek · Esc close
                   </div>
                 )}
               </div>
             )}
-            {youtubeId && (
+            {useZipVideo && (
+              <div className="absolute inset-0 z-0">
+                <video
+                  ref={videoElRef}
+                  src={zipVideoUrl}
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="w-full h-full"
+                  onLoadedMetadata={() => {
+                    if (videoElRef.current) videoElRef.current.currentTime = startSeconds;
+                  }}
+                  onPlay={() => setHasStartedPlaying(true)}
+                  onError={() => setZipVideoFailed(true)}
+                />
+              </div>
+            )}
+            {useYoutube && (
               <div className="absolute inset-0 z-0">
                 <div id={PLAYER_DOM_ID} className="w-full h-full" />
               </div>
