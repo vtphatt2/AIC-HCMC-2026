@@ -34,7 +34,7 @@ _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
 _transcript_search_service: TranscriptSearchService | None = None
-_strategy_configs = StrategyConfigStore(REMOTE_ROOT.parent / "data" / "strategy-configs")
+_strategy_configs = StrategyConfigStore(REMOTE_ROOT.parent / "challenge_resources" / "data" / "strategy-configs")
 logger = logging.getLogger(__name__)
 
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")

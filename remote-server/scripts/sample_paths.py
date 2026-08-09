@@ -3,7 +3,7 @@ from pathlib import Path
 
 def default_sample_root(repo_root: Path) -> Path:
     candidates = (
-        repo_root / "data",
+        repo_root / "challenge_resources" / "data",
         repo_root / "AIC2026_sample",
         repo_root.parent / "AIC2026_sample",
     )

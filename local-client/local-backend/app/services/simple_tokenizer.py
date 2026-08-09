@@ -157,7 +157,7 @@ def _find_bpe_vocab() -> Path | None:
 
     here = Path(__file__).resolve()
     for parent in here.parents:
-        candidate = parent / "onnx-models" / "bpe_simple_vocab_16e6.txt.gz"
+        candidate = parent / "challenge_resources" / "onnx-models" / "bpe_simple_vocab_16e6.txt.gz"
         if candidate.is_file():
             return candidate
     return None

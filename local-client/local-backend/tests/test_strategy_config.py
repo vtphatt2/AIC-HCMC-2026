@@ -13,7 +13,7 @@ SCHEMA = {
 
 class StrategyConfigStoreTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path(__file__).resolve().parents[3] / "data" / ".test-strategy-configs"
+        self.root = Path(__file__).resolve().parents[3] / "challenge_resources" / "data" / ".test-strategy-configs"
         shutil.rmtree(self.root, ignore_errors=True)
         self.store = StrategyConfigStore(self.root)
 

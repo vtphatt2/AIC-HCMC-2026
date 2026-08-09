@@ -11,9 +11,9 @@ from pathlib import Path
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -25,6 +25,7 @@ from app.services.translation import TranslationService
 from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
+from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
@@ -32,8 +33,13 @@ _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
 _strategy_configs = StrategyConfigStore(
-    Path(__file__).resolve().parents[2] / "data" / "strategy-configs"
+    Path(__file__).resolve().parents[2] / "challenge_resources" / "data" / "strategy-configs"
 )
+# Streams video playback straight from the organizer's remote ZIPs (see
+# scripts/build_zip_video_index.py). Empty index -> every lookup 404s and
+# VideoModal falls back to YouTube, so this is safe to leave always-on.
+_zip_video_proxy = RemoteZipVideoProxy()
+_zip_upstream_client = httpx.AsyncClient(timeout=30.0)
 
 
 def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
@@ -251,6 +257,32 @@ async def get_transcript(video_id: str):
         "video_id": transcript.video_id,
         "segments": [s.to_dict() for s in transcript.segments],
     }
+
+
+@app.get("/api/zip-video/{video_id}")
+async def zip_video(video_id: str, request: Request):
+    """Proxy video playback straight from the organizer's remote ZIP archive:
+    translate the browser's Range request into the matching byte range
+    inside the upstream ZIP and stream it through unmodified. No download,
+    no decode — the <video> element does its own seeking against this URL
+    exactly like it would against a plain MP4. 404 (unknown video_id, or
+    upstream refusing Range) is the expected signal for VideoModal to fall
+    back to YouTube."""
+    try:
+        headers, upstream = await _zip_video_proxy.open_range(
+            _zip_upstream_client, video_id, request.headers.get("range")
+        )
+    except ZipVideoUnavailable as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    async def body():
+        try:
+            async for chunk in upstream.aiter_bytes():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(body(), status_code=206, headers=headers)
 
 
 @app.get("/api/strategies")

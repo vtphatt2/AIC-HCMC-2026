@@ -20,7 +20,7 @@ DEFAULT_SAMPLE_ROOT = next(
     (
         path
         for path in (
-            REPO_ROOT / "data",
+            REPO_ROOT / "challenge_resources" / "data",
             REPO_ROOT / "AIC2026_sample",
             REPO_ROOT.parent / "AIC2026_sample",
         )

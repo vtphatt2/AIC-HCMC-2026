@@ -28,12 +28,13 @@ class StoryboardUnavailable(RuntimeError):
 
 
 def _find_repo_root() -> Path:
-    """Walk up from this file looking for the onnx-models/ marker directory
-    (same trick used in text_encoder.py — remote-server and local-backend
-    nest this file at different depths, so we don't hardcode a parents[] index)."""
+    """Walk up from this file looking for the challenge_resources/ marker
+    directory (same trick used in text_encoder.py — remote-server and
+    local-backend nest this file at different depths, so we don't hardcode a
+    parents[] index)."""
     here = Path(__file__).resolve()
     for parent in here.parents:
-        if (parent / "onnx-models").is_dir():
+        if (parent / "challenge_resources").is_dir():
             return parent
     return here.parents[-1]
 

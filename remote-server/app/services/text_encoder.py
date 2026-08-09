@@ -27,7 +27,7 @@ def _find_onnx_model() -> Path | None:
 
     here = Path(__file__).resolve()
     for parent in here.parents:
-        candidate = parent / "onnx-models" / "text_model_int8.onnx"
+        candidate = parent / "challenge_resources" / "onnx-models" / "text_model_int8.onnx"
         if candidate.is_file():
             return candidate
     return None
@@ -249,7 +249,7 @@ class PECoreTextEncoder:
         if model_path is None:
             raise TextEncoderUnavailable(
                 "Could not find onnx-models/text_model_int8.onnx. Set PECORE_ONNX_MODEL_PATH "
-                "to its location, or place the file under <repo-root>/onnx-models/."
+                "to its location, or place the file under <repo-root>/challenge_resources/onnx-models/."
             )
 
         vocab_path = _find_bpe_vocab()
@@ -257,7 +257,7 @@ class PECoreTextEncoder:
             raise TextEncoderUnavailable(
                 "Could not find onnx-models/bpe_simple_vocab_16e6.txt.gz. Set "
                 "PECORE_BPE_VOCAB_PATH to its location, or place the file under "
-                "<repo-root>/onnx-models/."
+                "<repo-root>/challenge_resources/onnx-models/."
             )
 
         try:

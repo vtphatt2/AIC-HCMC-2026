@@ -8,10 +8,10 @@ load_dotenv(ROOT / ".env")
 
 SAMPLE_ROOT = ROOT / "AIC2026_sample"
 
-QUERIES_DIR = ROOT / "queries_2"
-QUERIES_DIR_1 = ROOT / "queries_1"
+QUERIES_DIR = ROOT / "challenge_resources" / "queries_2"
+QUERIES_DIR_1 = ROOT / "challenge_resources" / "queries_1"
 
-OUTPUT_DIR = ROOT / "generated_queries"
+OUTPUT_DIR = ROOT / "challenge_resources" / "generated_queries"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 FPS = 25
