@@ -15,6 +15,7 @@ ffmpeg) is implemented here.
 from __future__ import annotations
 
 import asyncio
+import struct
 import subprocess
 from bisect import bisect_right
 from dataclasses import dataclass, field
@@ -22,7 +23,8 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.services import mp4_box_parser as box
-from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
+from app.services.range_http_client import RangeFetchError, RangeHTTPClient
+from app.services.remote_zip_proxy import RemoteZipVideoProxy
 
 
 class ZipFrameUnavailable(RuntimeError):
@@ -52,24 +54,16 @@ _index_locks: dict[str, asyncio.Lock] = {}
 _proxy = RemoteZipVideoProxy()
 
 
-async def _fetch_range(client: httpx.AsyncClient, url: str, start: int, size: int) -> bytes:
-    if size <= 0:
-        return b""
-    resp = await client.get(url, headers={"Range": f"bytes={start}-{start + size - 1}"})
-    resp.raise_for_status()
-    return resp.content
-
-
-async def _find_moov(client: httpx.AsyncClient, url: str, mp4_offset: int, mp4_size: int) -> bytes:
+async def _find_moov(client: RangeHTTPClient, url: str, mp4_offset: int, mp4_size: int) -> bytes:
     head_probe = min(1024 * 1024, mp4_size)
-    head = await _fetch_range(client, url, mp4_offset, head_probe)
+    head = await client.fetch(url, mp4_offset, head_probe)
     for b in box.iter_boxes(head):
         if b["type"] == b"moov" and b["end"] <= len(head):
             return head[b["start"]:b["end"]]
 
     tail_size = min(4 * 1024 * 1024, mp4_size)
     tail_start_rel = mp4_size - tail_size
-    tail = await _fetch_range(client, url, mp4_offset + tail_start_rel, tail_size)
+    tail = await client.fetch(url, mp4_offset + tail_start_rel, tail_size)
     p = 4
     while True:
         i = tail.find(b"moov", p)
@@ -88,7 +82,7 @@ async def _find_moov(client: httpx.AsyncClient, url: str, mp4_offset: int, mp4_s
     raise ZipFrameUnavailable("Could not locate a complete moov box (head/tail probe)")
 
 
-async def _build_index(client: httpx.AsyncClient, video_id: str) -> VideoFrameIndex:
+async def _build_index(client: RangeHTTPClient, video_id: str) -> VideoFrameIndex:
     entry = _proxy.lookup(video_id)
     if entry is None:
         raise ZipFrameUnavailable(f"No zip index entry for video_id={video_id}")
@@ -148,7 +142,7 @@ async def _build_index(client: httpx.AsyncClient, video_id: str) -> VideoFrameIn
     )
 
 
-async def _get_index(client: httpx.AsyncClient, video_id: str) -> VideoFrameIndex:
+async def _get_index(client: RangeHTTPClient, video_id: str) -> VideoFrameIndex:
     cached = _index_cache.get(video_id)
     if cached is not None:
         return cached
@@ -229,34 +223,47 @@ def _decode_jpeg(annexb_stream: bytes, target_index: int, timeout_sec: float) ->
 
 
 async def get_frame_jpeg(
-    client: httpx.AsyncClient,
+    http_client: httpx.AsyncClient,
     video_id: str,
     timestamp_ms: int,
     timeout_sec: float = 20.0,
 ) -> bytes:
+    """Guaranteed to either return JPEG bytes or raise ZipFrameUnavailable —
+    every failure in this pipeline (index build, range fetch, decode) is our
+    own proxy's to own and funnels through one typed exception, never a raw
+    network/subprocess error left for the caller to guess at."""
+    client = RangeHTTPClient(http_client)
     try:
         index = await _get_index(client, video_id)
-    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
-        raise ZipFrameUnavailable(f"Could not fetch/parse moov for {video_id}: {exc}") from exc
 
-    frame_id = round(max(0, int(timestamp_ms)) / 1000 * index.fps) if index.fps else 0
-    start_sample, target_sample, end_sample = _range_plan(index, frame_id)
-    region = index.samples[start_sample:end_sample + 1]
-    region_start = min(s["o"] for s in region)
-    region_end = max(s["o"] + s["s"] for s in region)
+        frame_id = round(max(0, int(timestamp_ms)) / 1000 * index.fps) if index.fps else 0
+        start_sample, target_sample, end_sample = _range_plan(index, frame_id)
+        region = index.samples[start_sample:end_sample + 1]
+        region_start = min(s["o"] for s in region)
+        region_end = max(s["o"] + s["s"] for s in region)
 
-    fetched = await _fetch_range(
-        client, index.zip_url, index.data_offset + region_start, region_end - region_start
-    )
+        fetched = await client.fetch(
+            index.zip_url, index.data_offset + region_start, region_end - region_start
+        )
 
-    stream = bytearray()
-    for nal in index.sps:
-        stream += b"\x00\x00\x00\x01" + nal
-    for nal in index.pps:
-        stream += b"\x00\x00\x00\x01" + nal
-    for s in region:
-        rel = s["o"] - region_start
-        stream += _avcc_to_annexb(fetched[rel:rel + s["s"]], index.nal_length_size)
+        stream = bytearray()
+        for nal in index.sps:
+            stream += b"\x00\x00\x00\x01" + nal
+        for nal in index.pps:
+            stream += b"\x00\x00\x00\x01" + nal
+        for s in region:
+            rel = s["o"] - region_start
+            stream += _avcc_to_annexb(fetched[rel:rel + s["s"]], index.nal_length_size)
 
-    target_index = target_sample - start_sample
-    return await asyncio.to_thread(_decode_jpeg, bytes(stream), target_index, timeout_sec)
+        target_index = target_sample - start_sample
+        return await asyncio.to_thread(_decode_jpeg, bytes(stream), target_index, timeout_sec)
+    except ZipFrameUnavailable:
+        raise
+    except RangeFetchError as exc:
+        raise ZipFrameUnavailable(f"Could not fetch frame bytes for {video_id}: {exc}") from exc
+    except (RuntimeError, IndexError, ValueError, KeyError, struct.error) as exc:
+        # Malformed/unexpected MP4 structure for this particular video (e.g.
+        # mp4_box_parser raising a plain RuntimeError, or a bad byte offset)
+        # — treat as unavailable rather than a 500, same as any other
+        # "this source doesn't work" case the caller already handles.
+        raise ZipFrameUnavailable(f"Could not parse MP4 structure for {video_id}: {exc}") from exc
