@@ -1,0 +1,7 @@
+# Optional: lets SAMPLE mode query a lightweight, embedded, no-Docker Milvus
+# instead of doing linear numpy search over locally loaded .npy files. Set
+# MILVUS_LITE_PATH in .env to enable (see app/db/milvus_client.py). This is
+# the local-backend workaround for remote-server's real Milvus — same
+# app/db/milvus_client.py, same schema, lighter runtime.
+pymilvus>=2.4
+milvus_lite>=2.4

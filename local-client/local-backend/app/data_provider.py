@@ -67,6 +67,7 @@ class DataProvider:
         self._videos_by_id = {}
         self._text_encoder = None
         self._transcript_chunks = None
+        self._milvus_collection = None
 
         if self.mode == "LOCAL":
             if not REMOTE_SERVER_URL:
@@ -92,9 +93,21 @@ class DataProvider:
             self._ocr = []
             self._transcripts = []
             print(
-                f"DataProvider: SAMPLE mode — "
-                f"{len(self._videos)} videos, {len(self._frames)} keyframes loaded"
+                f"DataProvider: SAMPLE mode — local metadata: {len(self._videos)} videos, "
+                f"{len(self._frames)} keyframes (thumbnails/frame lookup only, not search coverage)"
             )
+            self._milvus_collection = self._connect_milvus_lite()
+            if self._milvus_collection is not None:
+                print(
+                    f"DataProvider: raw.semantic search -> Milvus Lite, "
+                    f"{self._milvus_collection.num_entities} vectors indexed"
+                )
+            else:
+                print(
+                    f"DataProvider: raw.semantic search -> linear search over local .npy files "
+                    f"only (MILVUS_LITE_PATH not set or collection missing) -- limited to the "
+                    f"{len(self._videos)} local video(s) above"
+                )
 
         else:
             raise RuntimeError(
@@ -156,6 +169,20 @@ class DataProvider:
         if channel in VISUAL_FEATURE_DIRS:
             if self.mode == "MOCK":
                 hits = [dict(frame) for frame in self._frames[:top_k]]
+            elif self._milvus_collection is not None and channel == "raw.semantic":
+                from app.db import milvus_client
+
+                query_vector = self._encode_sample_text(query)
+                hits = milvus_client.vector_search(
+                    self._milvus_collection, query_vector.tolist(), top_k=top_k, algorithm="hnsw"
+                )
+                # Derive the thumbnail URL from video_id/timestamp_ms rather than
+                # trusting whatever image_url an ingest script happened to store —
+                # local-backend is the one that knows how *it* serves zip-sourced
+                # frames (/api/zip-frame), so it's the source of truth here, not
+                # a value baked in at ingest time.
+                for hit in hits:
+                    hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
             else:
                 hits = self.linear_search_by_vector(
                     self._encode_sample_text(query),
@@ -336,6 +363,32 @@ class DataProvider:
 
         frames.sort(key=lambda f: (f["video_id"], f["frame_number"]))
         return videos, frames
+
+    def _connect_milvus_lite(self):
+        """Optional: query a lightweight, embedded Milvus Lite instead of
+        linear numpy search over the locally loaded .npy files — the
+        local-backend-weight workaround for remote-server's real Milvus (same
+        app/db/milvus_client.py, same schema). Enabled by setting
+        MILVUS_LITE_PATH; falls back to linear_search_by_vector() untouched
+        when unset or unavailable."""
+        if not os.getenv("MILVUS_LITE_PATH", "").strip():
+            return None
+        try:
+            from app.db import milvus_client
+
+            milvus_client.connect()
+            if not milvus_client.has_collection_for_algorithm("hnsw", "raw.semantic"):
+                print(
+                    "DataProvider: MILVUS_LITE_PATH is set, but no raw.semantic collection "
+                    "exists yet at that path (run an ingest script first)"
+                )
+                return None
+            return milvus_client.get_collection_for_name(
+                milvus_client.collection_name_for_algorithm("hnsw", "raw.semantic")
+            )
+        except Exception as exc:
+            print(f"DataProvider: MILVUS_LITE_PATH is set but connection failed: {exc}")
+            return None
 
     # ── SAMPLE linear vector search ──────────────────────────────────────────
 

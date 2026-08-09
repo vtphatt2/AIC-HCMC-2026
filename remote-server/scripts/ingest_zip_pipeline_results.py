@@ -13,9 +13,13 @@ Videos_L26_c.zip) and contains, per video:
                                                          L2-normalized PE-Core-bigG vectors
 
 No keyframe JPGs ship in these archives (metadata + embeddings only, kept
-lightweight for transfer). image_url is left pointing at the zip-video
-streaming proxy (/api/zip-video/<video_id>) as a placeholder until a frame
-thumbnail route exists for this source.
+lightweight for transfer), so image_url is left blank here — every hit
+already carries video_id + frame_number/timestamp_ms, which is enough for a
+consumer to derive its own thumbnail URL (e.g. local-backend rewrites it to
+its own on-demand /api/zip-frame/<video_id>/<timestamp_ms> route, which
+decodes that one frame straight from the organizer ZIP). Baking a URL in at
+ingest time just risks it going stale the moment a consumer's serving
+mechanism changes.
 
 youtube_id/title come from the organizers' media-info archive (one
 media-info/<video_id>.json per video, with a "watch_url"), e.g.
@@ -118,12 +122,6 @@ def parse_args() -> argparse.Namespace:
         help="Only ingest Milvus vectors; do not upsert video metadata to PostgreSQL.",
     )
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument(
-        "--image-url-template",
-        default="/api/zip-video/{video_id}",
-        help="image_url stored per frame (placeholder until a zip-source thumbnail "
-             "route exists). {video_id} is substituted.",
-    )
     return parser.parse_args()
 
 
@@ -136,7 +134,6 @@ def iter_result_archives(zip_dir: Path) -> list[Path]:
 
 def iter_video_records(
     zip_path: Path,
-    image_url_template: str,
     media_info: dict[str, dict[str, str]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
     import numpy as np
@@ -179,13 +176,14 @@ def iter_video_records(
                 norm = float(np.linalg.norm(vector))
                 if norm == 0.0:
                     raise ValueError(f"{video_id} frame {frame_number}: zero-norm vector")
+                timestamp_ms = int(frame_number / fps * 1000)
                 records.append({
                     "frame_id": f"{video_id}_{frame_number:06d}",
                     "video_id": video_id,
                     "video_genre": "",
                     "frame_number": frame_number,
-                    "timestamp_ms": int(frame_number / fps * 1000),
-                    "image_url": image_url_template.format(video_id=video_id),
+                    "timestamp_ms": timestamp_ms,
+                    "image_url": "",
                     "vector": (vector / norm).tolist(),
                 })
 
@@ -216,7 +214,7 @@ async def main() -> None:
 
     for archive in archives:
         for video, video_records in tqdm(
-            iter_video_records(archive, args.image_url_template, media_info),
+            iter_video_records(archive, media_info),
             desc=archive.name,
             unit="video",
         ):

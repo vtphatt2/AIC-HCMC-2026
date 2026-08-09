@@ -48,7 +48,7 @@ fi
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 backend_dir="$root/local-client/local-backend"
 frontend_dir="$root/local-client/frontend"
-log_dir="$root/runtime-logs"
+log_dir="$root/challenge_resources/runtime-logs"
 
 [[ -x "$backend_dir/.venv/bin/python" ]] || {
     echo "Missing backend venv. Run: cd local-client/local-backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
