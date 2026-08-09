@@ -96,6 +96,7 @@ export async function runSearch(
   vectorSearchAlgorithm?: string,
   configId: string = "default",
   configOverrides: Record<string, StrategyConfigValue> = {},
+  duplicateThreshold: number = 0.98,
 ): Promise<SearchResponse> {
   const payload: Record<string, unknown> = {
     strategy_id: strategyId,
@@ -109,6 +110,7 @@ export async function runSearch(
       temporal_offset_ms: g.temporalOffsetMs
     })),
     top_k: topK,
+    duplicate_threshold: duplicateThreshold,
     ...(vectorSearchAlgorithm ? { vector_search_algorithm: vectorSearchAlgorithm } : {})
   };
   if (videoGenre && videoGenre !== "All") {

@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -186,6 +186,7 @@ class SearchRequest(BaseModel):
     top_k: int = 100
     video_genre: str = "All"
     vector_search_algorithm: str | None = None
+    duplicate_threshold: float = Field(default=0.98, ge=0.0, le=1.0)
 
 
 class TranscriptChunkSearchRequest(BaseModel):
@@ -291,6 +292,7 @@ async def zip_video(video_id: str, request: Request):
 
 
 _zip_frame_semaphore = asyncio.Semaphore(6)
+ZIP_FRAME_TIMEOUT_SEC = 45.0
 
 
 @app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
@@ -317,16 +319,16 @@ async def zip_frame(video_id: str, timestamp_ms: int):
     nothing coming back."""
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_jpeg
 
-    try:
+    async def decode():
         async with _zip_frame_semaphore:
-            jpeg_bytes = await asyncio.wait_for(
-                get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms),
-                timeout=45.0,
-            )
+            return await get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms)
+
+    try:
+        jpeg_bytes = await asyncio.wait_for(decode(), timeout=ZIP_FRAME_TIMEOUT_SEC)
     except ZipFrameUnavailable as exc:
         raise HTTPException(502, str(exc)) from exc
     except asyncio.TimeoutError as exc:
-        raise HTTPException(504, f"Frame decode timed out for {video_id}") from exc
+        raise HTTPException(504, f"Frame request timed out for {video_id}") from exc
     except Exception as exc:
         logger.exception("Unexpected error decoding zip-frame %s/%s", video_id, timestamp_ms)
         raise HTTPException(500, f"Unexpected error decoding frame: {exc}") from exc
@@ -465,6 +467,7 @@ async def search(req: SearchRequest):
             options=effective_config,
             config_id=config["id"],
             config_revision=config["revision"],
+            duplicate_threshold=req.duplicate_threshold,
         )
     except TimeoutError as exc:
         raise HTTPException(408, str(exc))
@@ -481,6 +484,7 @@ async def search(req: SearchRequest):
         "config_id":         config["id"],
         "config_revision":   config["revision"],
         "effective_config":  effective_config,
+        "duplicate_threshold": req.duplicate_threshold,
         "total":             len(results),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
     }

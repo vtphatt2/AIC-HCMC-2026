@@ -78,7 +78,11 @@ class DataProviderV2Tests(unittest.IsolatedAsyncioTestCase):
 
         with patch("app.data_provider.httpx.AsyncClient", return_value=client):
             hits = await provider.retrieve(
-                "subtitled.semantic", "hello", top_k=7, video_genre="News"
+                "subtitled.semantic",
+                "hello",
+                top_k=7,
+                video_genre="News",
+                exclude_frame_ids=["f0"],
             )
 
         self.assertEqual(hits[0]["frame_id"], "f1")
@@ -89,7 +93,26 @@ class DataProviderV2Tests(unittest.IsolatedAsyncioTestCase):
                 "query": "hello",
                 "top_k": 7,
                 "video_genre": "News",
+                "exclude_frame_ids": ["f0"],
             },
+        )
+
+    async def test_local_mode_fetches_frame_embeddings_through_batch_contract(self):
+        provider = DataProvider.__new__(DataProvider)
+        provider.mode = "LOCAL"
+        response = Mock()
+        response.json.return_value = {"embeddings": {"f1": [1.0, 0.0]}}
+        response.raise_for_status = lambda: None
+        client = AsyncMock()
+        client.__aenter__.return_value.post.return_value = response
+
+        with patch("app.data_provider.httpx.AsyncClient", return_value=client):
+            embeddings = await provider.frame_embeddings(["f1"])
+
+        self.assertEqual(embeddings, {"f1": [1.0, 0.0]})
+        client.__aenter__.return_value.post.assert_awaited_once_with(
+            "/api/frame-embeddings",
+            json={"frame_ids": ["f1"]},
         )
 
 
