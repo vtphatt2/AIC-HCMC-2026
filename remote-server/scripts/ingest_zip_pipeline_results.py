@@ -169,6 +169,9 @@ def iter_video_records(
                     f"selected keyframes (row order must match 1:1)"
                 )
 
+            known = media_info.get(video_id, {})
+            youtube_id = known.get("youtube_id", "")
+
             records: list[dict[str, Any]] = []
             for row, item in enumerate(selected):
                 frame_number = int(item["frame_number"])
@@ -184,10 +187,9 @@ def iter_video_records(
                     "frame_number": frame_number,
                     "timestamp_ms": timestamp_ms,
                     "image_url": "",
+                    "youtube_id": youtube_id,
                     "vector": (vector / norm).tolist(),
                 })
-
-            known = media_info.get(video_id, {})
             video = {
                 "video_id": video_id,
                 "title": known.get("title") or video_id,
