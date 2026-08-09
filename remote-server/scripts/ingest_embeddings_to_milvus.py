@@ -233,6 +233,10 @@ async def upsert_videos(videos: list[dict[str, Any]]) -> None:
 
 
 def upsert_vectors(collection: Any, records: list[dict[str, Any]], batch_size: int, vector_dim: int) -> int:
+    """Records may either carry a "feature_path" to lazily load a .npy from
+    (the AIC2026_sample per-frame layout) or an already-computed "vector"
+    (e.g. read from a batched embeddings.npy elsewhere) — the latter is used
+    as-is."""
     from app.db import milvus_client
 
     indexed = 0
@@ -241,7 +245,10 @@ def upsert_vectors(collection: Any, records: list[dict[str, Any]], batch_size: i
         for start in starts:
             batch = []
             for record in records[start : start + batch_size]:
-                batch.append({**record, "vector": load_vector(Path(record["feature_path"]), vector_dim)})
+                if "vector" in record:
+                    batch.append(record)
+                else:
+                    batch.append({**record, "vector": load_vector(Path(record["feature_path"]), vector_dim)})
             milvus_client.upsert_frame_vectors(collection, batch)
             indexed += len(batch)
             progress.update(len(batch))

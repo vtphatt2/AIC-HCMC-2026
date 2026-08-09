@@ -43,6 +43,11 @@ DEEP_SEARCH_EF = 512
 
 
 def connect() -> None:
+    lite_path = os.getenv("MILVUS_LITE_PATH", "").strip()
+    if lite_path:
+        connections.connect(uri=lite_path)
+        logger.info("Connected to Milvus Lite at %s (dim=%s)", lite_path, VECTOR_DIM)
+        return
     connections.connect(
         host=os.getenv("MILVUS_HOST", "localhost"),
         port=int(os.getenv("MILVUS_PORT", "19530")),
