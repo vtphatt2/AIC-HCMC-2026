@@ -10,16 +10,22 @@ schema and the `/api/search` request/response contract, see
 
 ## 1. Dataset layout
 
-The scripts auto-detect the repo's `data/` directory (and still accept the old
+There are two supported sources — pick whichever matches what you have. Both
+write to the same Milvus + PostgreSQL, so they can coexist.
+
+**A. `AIC2026_sample`-shaped dataset** (keyframe JPGs + PE-Core `.npy`
+features) — `ingest_embeddings_to_milvus.py`. The scripts auto-detect the
+repo's `challenge_resources/data/` directory (and still accept the old
 `AIC2026_sample/` layout):
 
 ```text
 AIC-HCMC-2026/
-  data/
-    keyframes/L01_V001/...                         # frame images
-    metadata/L01_V001.json                         # fps, youtube_id
-    PECore-features/raw_keyframe_embeddings/L01_V001/...
-    PECore-features/subtitled_keyframe_embeddings/L01_V001/...
+  challenge_resources/
+    data/
+      keyframes/L01_V001/...                         # frame images
+      metadata/L01_V001.json                         # fps, youtube_id
+      PECore-features/raw_keyframe_embeddings/L01_V001/...
+      PECore-features/subtitled_keyframe_embeddings/L01_V001/...
 ```
 
 Flat layout (`keyframes/`, `metadata/`, `PECore-features/` containing video
@@ -29,13 +35,29 @@ folders/files directly) also works. For any other location, pass
 Minimum required for Search by Text: `PECore-features` (or `--features-subdir
 embeddings` for a different embedding source), `keyframes`, `metadata`.
 
+**B. `keyframe_pipeline_global_v9_3` output** (`*_results.zip` archives,
+embeddings + scene metadata, no JPGs) — `ingest_zip_pipeline_results.py`, see
+[§4b](#4b-ingest-keyframe_pipeline_global_v9_3-zip-results) below.
+
 ## 2. Start databases
 
+Docker (real Milvus + PostgreSQL):
 ```bash
 cd remote-server
 docker compose up -d
 docker compose ps   # wait for all services Up
 ```
+
+No Docker (embedded Milvus Lite + portable PostgreSQL) — set
+`MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in `.env`, then:
+```bash
+cd remote-server
+bash scripts/start-local-postgres.sh start
+```
+`local-backend` can point at the same `milvus_lite.db` file for its own
+lightweight search — see [../docs/running.md](../docs/running.md). Only one
+process can hold the Milvus Lite file open at a time, so stop the backend
+before running an ingestion script against it.
 
 ## 3. Install dependencies
 
@@ -81,6 +103,48 @@ Safe to rerun after correcting metadata — it upserts rather than duplicating.
 Frame images are served from `AIC2026_sample/keyframes` by default; set
 `FRAME_STATIC_DIR` to override, or use `--copy-keyframes` to stage a copy
 under `remote-server/static/frames`.
+
+## 4b. Ingest `keyframe_pipeline_global_v9_3` zip results
+
+Each `challenge_resources/data/zip_file/*_results.zip` archive is one
+organizer "lot" (e.g. `L26_c_results.zip`, produced from `Videos_L26_c.zip`)
+and contains, per video, `phase1_transnet/video__<id>/{scenes.json,keyframes.json}`
+(fps, selected frame numbers) and `phase2_embeddings/video__<id>/embeddings.npy`
+((num_keyframes, 1280) float32, L2-normalized PE-Core-bigG vectors) — no JPGs.
+
+```bash
+cd remote-server
+python scripts/ingest_zip_pipeline_results.py --dry-run   # scan only, prints counts
+python scripts/ingest_zip_pipeline_results.py
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--zip-dir` | `challenge_resources/data/zip_file` | Directory containing `*_results.zip` archives |
+| `--batch-size` | 256 | Vectors per Milvus insert batch |
+| `--vector-index` | `hnsw` | `hnsw`, `flat`, `scann`, or `all` |
+| `--recreate-milvus` | false | Drop collection(s) before inserting |
+| `--skip-postgres` | false | Only ingest Milvus vectors |
+| `--dry-run` | false | Scan only, no writes |
+
+`youtube_id`/`title` are resolved from the organizers' media-info archive
+(`media-info/<video_id>.json` entries with a `watch_url`, e.g.
+`media-info-aic25-b1.zip`, dropped in the same `--zip-dir`) and denormalized
+straight into the Milvus record for that frame — this is what lets both
+backends prioritize YouTube playback without a PostgreSQL round trip. A
+video missing from the media-info archive just gets no `youtube_id`, and
+playback for it falls back to the `/api/zip-video`/`/api/zip-frame` proxy
+like any other video would.
+
+`image_url` is intentionally left blank at ingest time — every hit already
+carries `video_id` + `frame_number`/`timestamp_ms`, which is enough for a
+consumer to derive its own thumbnail URL at read time (`local-backend`
+rewrites it to `/api/zip-frame/{video_id}/{timestamp_ms}`). Baking a URL in
+at ingest time risks it going stale the moment a consumer's serving
+mechanism changes.
+
+Safe to rerun — it upserts by `frame_id`/`video_id`, same as
+`ingest_embeddings_to_milvus.py`.
 
 ## 5. Run the backend
 
@@ -153,3 +217,7 @@ python scripts/evaluate_query_set.py queries.json --top-k 10
 - Local-client proxy mode (`ENV_MODE=LOCAL` pointed at this server) and
   `ENV_MODE=SAMPLE` (searches `AIC2026_sample` directly, no Milvus/Postgres)
   are documented in [../docs/setup.md](../docs/setup.md).
+- `/api/frame-embeddings` (`query_frame_vectors()` in `milvus_client.py`)
+  batch-fetches raw vectors by `frame_id`, used by the near-duplicate result
+  filter (`duplicate_threshold` in `/api/search` — see
+  [../docs/architecture.md](../docs/architecture.md#duplicate-result-filtering)).

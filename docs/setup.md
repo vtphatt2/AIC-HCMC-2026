@@ -21,9 +21,9 @@ Next.js frontend :3000
         |
         v
 remote-server :8000
-  +-- Local CTranslate2 INT8 VI→EN
+  +-- Google Translate (free) VI→EN
   +-- PE-Core + CAGRA
-  +-- PostgreSQL + Milvus
+  +-- PostgreSQL + Milvus (or embedded Milvus Lite)
 ```
 
 Complete Option C once for environment configuration, dataset ingestion, and
@@ -31,6 +31,9 @@ CAGRA index creation. For normal demo startup after that:
 
 ### 1. Start databases
 
+Two options — pick one:
+
+**Docker (real Milvus server):**
 ```bash
 cd remote-server
 docker compose up -d
@@ -38,6 +41,22 @@ docker compose ps
 ```
 
 Wait until MinIO is healthy and the other services are `Up`.
+
+**No Docker (embedded Milvus Lite + portable PostgreSQL):** set
+`MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in
+`remote-server/.env` (skips `MILVUS_HOST`/`MILVUS_PORT` entirely — no server
+process, just a file), and start PostgreSQL via the bundled helper script
+instead of Docker:
+
+```bash
+cd remote-server
+bash scripts/start-local-postgres.sh start   # scoop-installed portable postgres, port 15432
+bash scripts/start-local-postgres.sh status
+```
+
+`local-client/local-backend` can point `MILVUS_LITE_PATH` at the **same**
+file to get its own lightweight vector search in `SAMPLE` mode — see
+[running.md](running.md).
 
 ### 2. Start the remote backend
 
@@ -55,7 +74,8 @@ curl http://localhost:8000/api/health
 
 For CAGRA, the response should report `"vector_search_backend":"cagra"` and
 `"pecore_device":"cuda"` with `"pecore_precision":"fp16"`. The VI→EN button
-runs CTranslate2 INT8 on CPU and replaces the query input.
+calls Google Translate's free web endpoint (no local model, no API key) and
+replaces the query input.
 
 ### 3. Start the frontend
 
@@ -246,7 +266,10 @@ The frontend setup is identical to Option A.
 
 ## Option C — GPU Server (Production)
 
-Run this on the GPU workstation. Requires Docker and the full dataset.
+Run this on the GPU workstation, with the full dataset. Docker is the default
+path; a no-Docker path (embedded Milvus Lite + portable PostgreSQL) also
+works for lighter/offline dev — see [running.md](running.md#everything-else)
+and the "No Docker" callout under **Recommended Full Demo** above.
 
 ### 1. Start the databases
 
@@ -314,12 +337,11 @@ PECORE_DEVICE=mps
 PECORE_PRECISION=fp32
 ```
 
-For local Vietnamese-to-English translation (the ~78 MB INT8 model downloads once, then uses the local cache):
+Vietnamese-to-English translation uses Google Translate's free web endpoint
+(`deep-translator`, no API key, no model download) — nothing to configure
+beyond the optional warmup flag:
 
 ```env
-TRANSLATION_MODEL_ID=dekthedev/opus-mt-vi-en-ct2-int8
-TRANSLATION_MODEL_REVISION=14a921f3c4b7238b2b49d247e53810f0f7c78236
-TRANSLATION_CPU_THREADS=4
 WARMUP_TRANSLATION=true
 ```
 
@@ -364,6 +386,13 @@ python scripts/ingest_embeddings_to_milvus.py \
 
 The script upserts video metadata into PostgreSQL and frame embeddings into
 Milvus, so it is safe to rerun after correcting metadata.
+
+To ingest `keyframe_pipeline_global_v9_3` output (`*_results.zip` archives
+under `challenge_resources/data/zip_file/`) instead of/in addition to
+`AIC2026_sample`, use `scripts/ingest_zip_pipeline_results.py` — see
+[../remote-server/README_INDEXING_SEARCH.md](../remote-server/README_INDEXING_SEARCH.md#4b-ingest-keyframe_pipeline_global_v9_3-zip-results)
+for the full walkthrough (including how `youtube_id`/title get resolved from
+the organizers' media-info archive).
 
 After ingestion, verify:
 ```bash
@@ -426,6 +455,12 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) — see [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
 | `FRAME_IMAGE_SOURCE` | `local` | `local` (JPG), `local_video` (ffmpeg over `data/videos`), or `youtube_storyboard` fallback |
+| `MILVUS_LITE_PATH` | _(unset)_ | Optional: path to an embedded Milvus Lite file (e.g. `challenge_resources/data/milvus_lite.db`) for `raw.semantic` vector search in `SAMPLE` mode. Falls back to linear numpy search when unset or the collection doesn't exist. |
+
+The local backend also exposes `/api/zip-video/{video_id}` and
+`/api/zip-frame/{video_id}/{timestamp_ms}` (organizer-ZIP video/frame proxy) —
+no extra env vars needed, just a `challenge_resources/data/zip_video_index.json`
+manifest, built once via `python local-client/local-backend/scripts/build_zip_video_index.py`.
 
 See [running.md](running.md) for the full scenario matrix and exact commands.
 
@@ -434,8 +469,9 @@ See [running.md](running.md) for the full scenario matrix and exact commands.
 | Variable | Default | Description |
 |---|---|---|
 | `ENV_MODE` | `SERVER` | Should always be `SERVER` on the GPU machine |
-| `MILVUS_HOST` | `localhost` | Milvus hostname |
-| `MILVUS_PORT` | `19530` | Milvus port |
+| `MILVUS_LITE_PATH` | _(unset)_ | Optional: path to an embedded Milvus Lite file. When set, skips `MILVUS_HOST`/`MILVUS_PORT`/Docker entirely and uses that file instead. |
+| `MILVUS_HOST` | `localhost` | Milvus hostname (ignored when `MILVUS_LITE_PATH` is set) |
+| `MILVUS_PORT` | `19530` | Milvus port (ignored when `MILVUS_LITE_PATH` is set) |
 | `MILVUS_COLLECTION` | `video_frames` | Default Milvus HNSW collection name |
 | `MILVUS_COLLECTION_HNSW` | `video_frames` | HNSW collection used for runtime selection |
 | `MILVUS_COLLECTION_FLAT` | `video_frames_flat` | FLAT collection used for runtime selection |
@@ -448,11 +484,7 @@ See [running.md](running.md) for the full scenario matrix and exact commands.
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
 | `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
 | `WARMUP_TEXT_ENCODER` | `false` | Load and warm PE-Core during startup |
-| `TRANSLATION_MODEL_ID` | `dekthedev/opus-mt-vi-en-ct2-int8` | Local CTranslate2 INT8 translation model |
-| `TRANSLATION_MODEL_REVISION` | pinned commit | Reproducible model revision |
-| `TRANSLATION_CPU_THREADS` | `4` | CPU threads used by CTranslate2 |
-| `TRANSLATION_MODEL_PATH` | _(empty)_ | Optional pre-downloaded local model directory |
-| `WARMUP_TRANSLATION` | `false` | Initialize translation during startup |
+| `WARMUP_TRANSLATION` | `false` | Initialize the Google Translate client during startup (no model to download) |
 
 ### `local-client/frontend/.env.local`
 

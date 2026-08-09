@@ -33,21 +33,31 @@ For a fast handoff, read `README.md` → `docs/architecture.md` →
 
 ```
 AIC-HCMC-2026/
+├── challenge_resources/         # All dataset/model/log assets, gitignored except manifests
+│   ├── data/                    # AIC2026 sample + zip_file/ pipeline output + milvus_lite.db + postgres_data/
+│   ├── onnx-models/             # PE-Core ONNX text encoder + tokenizer
+│   ├── generated_queries/, queries_1/, queries_2/, runtime-logs/
+│
 ├── remote-server/               # Runs on the GPU workstation (ENV_MODE=SERVER)
-│   ├── docker-compose.yml       # Milvus + PostgreSQL
+│   ├── docker-compose.yml       # Milvus + PostgreSQL (optional — MILVUS_LITE_PATH skips Docker)
 │   ├── requirements.txt
 │   ├── main.py                  # FastAPI entry point
+│   ├── scripts/
+│   │   ├── ingest_embeddings_to_milvus.py  # AIC2026_sample → Milvus + PostgreSQL
+│   │   ├── ingest_zip_pipeline_results.py  # keyframe_pipeline_global_v9_3 zip output → Milvus + PostgreSQL
+│   │   └── start-local-postgres.sh         # portable Postgres (scoop, no Docker) start/stop/status
 │   └── app/
 │       ├── db/
-│       │   ├── milvus_client.py      # Milvus HNSW search
+│       │   ├── milvus_client.py      # Milvus HNSW search (server or embedded Milvus Lite)
 │       │   ├── cagra_client.py       # Optional cuVS CAGRA GPU search
 │       │   └── postgres_client.py    # DDL, OCR full-text, transcript interval queries
 │       ├── services/
 │       │   ├── text_encoder.py       # PE-Core text encoder + cache
-│       │   └── translation.py        # Optional VI/mixed → English translation
+│       │   └── translation.py        # VI/mixed → English via free Google Translate (deep-translator)
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/
-│           ├── base_strategy.py      # SearchContext + BaseStrategy V2
+│           ├── base_strategy.py      # SearchContext + BaseStrategy V2 (+ duplicate-result filtering)
+│           ├── _similarity_filter.py # Greedy sequence-aware near-duplicate result filter
 │           ├── raw_visual.py         # Single-channel baseline
 │           ├── temporal_visual.py    # Multi-step temporal baseline
 │           └── multi_source.py       # Four-channel RRF example
@@ -55,18 +65,22 @@ AIC-HCMC-2026/
 └── local-client/
     ├── frontend/                # Next.js UI (Pages Router, Tailwind, TS strict=false)
     │   └── src/
-    │       ├── pages/index.tsx       # Main search page
+    │       ├── pages/index.tsx       # Main search page (+ duplicate-threshold slider)
     │       └── components/
     │           ├── QueryGroup.tsx    # Semantic + Text search box pair
     │           ├── ResultCard.tsx    # Frame thumbnail card
     │           ├── ResultGrid.tsx    # Confidence-sorted grid
-    │           └── VideoModal.tsx    # YouTube player modal with live frame counter
+    │           └── VideoModal.tsx    # YouTube-first player, zip-video proxy fallback, live frame counter
     │
     └── local-backend/           # Dev playground (ENV_MODE=MOCK, SAMPLE, or LOCAL)
-        ├── main.py
+        ├── main.py                   # + /api/zip-video, /api/zip-frame proxy routes
         └── app/
-            ├── data_provider.py      # MOCK JSON | SAMPLE vectors | LOCAL proxy
+            ├── data_provider.py      # MOCK JSON | SAMPLE vectors (optionally Milvus Lite) | LOCAL proxy
             ├── mock/                 # 105 sample frames across 3 videos
+            ├── services/
+            │   ├── remote_zip_proxy.py   # Range-translating proxy for organizer video ZIPs
+            │   ├── zip_frame_source.py   # Precise single-frame extraction via MP4 sample-table index
+            │   └── range_http_client.py  # Retry/backoff wrapper for upstream Range requests
             └── strategies/           # Same V2 strategy contract as server
 ```
 
@@ -126,6 +140,7 @@ the dropdown automatically.
 | Text DB | PostgreSQL 15 — full-text OCR + interval transcripts |
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
-| Video player | YouTube IFrame API |
-| Translation | Local CTranslate2 INT8 VI→EN; button replaces the editable query |
+| Video player | YouTube IFrame API, falling back to a Range-proxied organizer-ZIP `<video>` stream on embed failure |
+| Translation | Google Translate (free web endpoint via `deep-translator`); button replaces the editable query |
 | Local transport | HTTP via `httpx` (LOCAL mode) |
+| Local vector search | Milvus Lite (embedded, file-based, no Docker) — optional in `SAMPLE`/local-backend, falls back to linear numpy search |

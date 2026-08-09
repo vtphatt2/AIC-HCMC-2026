@@ -11,7 +11,7 @@ decision table + commands.
 | Nothing, just want the UI working | MOCK | `ENV_MODE=MOCK` → [setup.md Option A](setup.md#option-a--local-development-mock-data) |
 | `AIC2026_sample` (or a partial copy: `metadata/` + `PECore-features/`, no `keyframes/`) | SAMPLE | see below |
 | Access to a teammate's running GPU server (ngrok/LAN URL) | LOCAL | [setup.md Option B](setup.md#option-b--local-backend-connected-to-gpu-server-local-mode) |
-| The GPU workstation itself, full dataset, Docker | SERVER | `bash scripts/start-remote.sh` from repo root |
+| The GPU workstation itself, full dataset | SERVER | `bash scripts/start-remote.sh` from repo root (Docker Milvus+Postgres by default; set `MILVUS_LITE_PATH` + `scripts/start-local-postgres.sh` to skip Docker) |
 
 All local-backend scenarios: `cd local-client/frontend && npm install && cp .env.local.example .env.local && npm run dev` for the UI (port 3000).
 
@@ -44,6 +44,8 @@ Decision points inside SAMPLE mode:
 | Have `videos/<video_id>.mp4` but no keyframe JPGs | Set `FRAME_IMAGE_SOURCE=local_video`; the backend decodes the requested timestamp locally with ffmpeg. |
 | No local videos or keyframe JPGs | `FRAME_IMAGE_SOURCE=youtube_storyboard` is an approximate dev-only fallback. See [youtube-storyboard-thumbnails-workaround.md](youtube-storyboard-thumbnails-workaround.md). |
 | Have real `keyframes/` images | Leave `FRAME_IMAGE_SOURCE=local` (default). |
+| Have `challenge_resources/data/zip_video_index.json` (organizer video ZIPs) | Video playback and frame thumbnails can come straight from `/api/zip-video`, `/api/zip-frame` — no local `keyframes/`/`videos/` needed. Build the index once: `python scripts/build_zip_video_index.py`. |
+| Ingested via `ingest_zip_pipeline_results.py` and want faster repeated search | `pip install -r requirements-milvus-lite.txt`, set `MILVUS_LITE_PATH=<repo>/challenge_resources/data/milvus_lite.db`. Falls back to linear search automatically if unset. |
 
 ## Full env var reference
 

@@ -13,19 +13,33 @@ flowchart LR
     RB[Remote server]
     MOCK[Mock JSON]
     SAMPLE[AIC sample vectors]
-    SEARCH[PE-Core + HNSW, CAGRA, or ScaNN]
+    SEARCH[PE-Core + HNSW/Milvus Lite, CAGRA, or ScaNN]
     TEXT[PostgreSQL]
-    TRANS[Local CTranslate2 INT8 VI to English]
+    TRANS[Google Translate, free web endpoint]
+    ZIP[Organizer video ZIPs, HTTP Range]
 
     UI -->|Local development| LB
     LB -->|MOCK| MOCK
-    LB -->|SAMPLE| SAMPLE
+    LB -->|SAMPLE, optional Milvus Lite| SAMPLE
     LB -->|LOCAL raw-data proxy| RB
+    LB -->|/api/zip-video, /api/zip-frame| ZIP
     UI -->|Full demo| RB
     RB --> TRANS
     RB --> SEARCH
     RB --> TEXT
 ```
+
+Both backends can also read/write an embedded **Milvus Lite** file
+(`challenge_resources/data/milvus_lite.db`, no Docker/server process) — set
+`MILVUS_LITE_PATH` in either `.env` to point at it. `remote-server` uses it as
+a drop-in replacement for a full Milvus server; `local-backend` uses it as an
+optional, faster alternative to linear numpy search in `SAMPLE`/`MOCK`-adjacent
+local dev, falling back to linear search automatically when unset or the
+collection doesn't exist. This is the local/remote weight split: remote
+carries the heavier, GPU/full-dataset workload (full Milvus, CAGRA, full
+video, direct frame/video search); local-backend's mechanisms (Milvus Lite,
+the ZIP-Range proxy) are lighter work-arounds that only aim to make local dev
+cheap and fast, not to replace the server.
 
 The local and remote backends expose the same strategy lifecycle and local
 translation endpoint. CAGRA remains a remote-server feature.
@@ -45,9 +59,9 @@ The `ENV_MODE` environment variable controls where data comes from. Set it in th
 | Value | Where it runs | What DataProvider does |
 |---|---|---|
 | `MOCK` | Contestant laptop | Reads `app/mock/*.json` — no server needed |
-| `SAMPLE` | Contestant laptop | Searches local `AIC2026_sample` PE-Core vectors |
-| `LOCAL` | Contestant laptop | Proxies raw-data requests to `REMOTE_SERVER_URL` |
-| `SERVER` | GPU workstation | Connects directly to local Milvus + PostgreSQL |
+| `SAMPLE` | Contestant laptop | Searches local `AIC2026_sample`/`challenge_resources/data` PE-Core vectors — linear numpy by default, or embedded Milvus Lite when `MILVUS_LITE_PATH` is set |
+| `LOCAL` | Contestant laptop | Proxies raw-data requests to `REMOTE_SERVER_URL`; also runs the `/api/zip-video`, `/api/zip-frame` proxy for organizer-ZIP playback |
+| `SERVER` | GPU workstation | Connects to Milvus (real server or embedded Milvus Lite via `MILVUS_LITE_PATH`) + PostgreSQL |
 
 ### Switching from MOCK to LOCAL
 
@@ -95,10 +109,11 @@ sequenceDiagram
     API-->>UI: Results and search timing
 ```
 
-The VI→EN button runs an INT8 CTranslate2 conversion of
-`Helsinki-NLP/opus-mt-vi-en` locally and replaces the semantic input with the
-English result. Search never triggers translation. Translations and PE-Core
-text embeddings use bounded in-process caches.
+The VI→EN button calls Google Translate's free, unofficial web endpoint (via
+the `deep-translator` library — no API key, no local model download) and
+replaces the semantic input with the English result. Search never triggers
+translation. Translations and PE-Core text embeddings use bounded in-process
+caches (`lru_cache`, 256 entries for translation).
 
 ## Production Search Backends
 
@@ -169,6 +184,83 @@ Every strategy receives the same `raw_data` dict regardless of mode:
     }
 }
 ```
+
+---
+
+## Video Playback: YouTube-first, ZIP-proxy fallback
+
+`VideoModal.tsx` always prefers the YouTube IFrame player when a hit has a
+`youtube_id` (denormalized into Milvus at ingest time so both backends can
+read it without a PostgreSQL round trip). Only when YouTube has no ID, or the
+player itself reports an error (`onError` — private/removed/embed-disabled),
+does it fall back to a native `<video>` element streamed from the organizers'
+ZIP archives:
+
+```text
+youtube_id present and embed not yet failed → YouTube IFrame
+otherwise                                    → GET /api/zip-video/{video_id}      (local-backend only)
+```
+
+`local-client/local-backend/app/services/remote_zip_proxy.py` translates an
+incoming byte-range request into an HTTP Range request against the correct
+offset inside the organizer's `Videos_L*.zip` (via a pre-built
+`zip_video_index.json` manifest, `scripts/build_zip_video_index.py`) — no
+download of the whole archive or whole video.
+
+Frame thumbnails (`GET /api/zip-frame/{video_id}/{timestamp_ms}`) go through
+`app/services/zip_frame_source.py`, which ports the organizers'
+`remote_zip_video_toolkit` MP4-box/sample-table parser
+(`app/services/mp4_box_parser.py`) to compute the exact byte range and sample
+index for one frame, fetches only that range, converts AVCC → Annex-B, and
+decodes it with ffmpeg (`select=eq(n,target_index)`) — one Range request per
+frame instead of pointing ffmpeg at a URL (which reprobes the container on
+every call and falls over under concurrency).
+
+Both routes fetch through `app/services/range_http_client.py`
+(`RangeHTTPClient`): retries transient upstream failures (timeouts, resets,
+HTTP 429/5xx) with exponential backoff, and raises a typed
+`RangeFetchError`/`ZipFrameUnavailable` instead of letting a raw exception
+propagate. `main.py` wraps both routes in `asyncio.wait_for` plus a catch-all
+handler, so a broken upstream always returns a clean `502`/`504`/`500`
+instead of hanging with no response. This proxy is scoped to `local-backend`
+only — `remote-server` never needs it since it can decode directly from a
+full local dataset.
+
+`image_url` for Milvus-backed hits is never stored at ingest time — it's
+derived at read time from `video_id` + `timestamp_ms`
+(`data_provider.py` rewrites it to `/api/zip-frame/{video_id}/{timestamp_ms}`)
+so it can't go stale when the serving mechanism changes.
+
+---
+
+## Duplicate-Result Filtering
+
+Visually near-identical frames (the same shot held for several seconds)
+routinely fill a result page with near-duplicates. `SearchRequest.duplicate_threshold`
+(0.0–1.0, default `0.98`, exposed as a slider in the frontend's results
+header) controls how aggressively they're collapsed.
+
+`BaseStrategy.search()` wraps every strategy's `run(context)` in
+`_run_with_filter()`:
+
+1. Run the strategy once to get ranked results.
+2. Collect the `frame_id`s from every result (including each step of a
+   multi-step/temporal result via `result_frame_ids()`), fetch their raw
+   embeddings with `context.frame_embeddings(frame_ids)` (`/api/frame-embeddings`,
+   batched, cached per-request), and run
+   `app/strategies/_similarity_filter.py::filter_similar_results()` — a
+   greedy, sequence-aware pass that drops a result only when *every*
+   corresponding step's cosine similarity to an already-kept result exceeds
+   the threshold (optionally weighted per step via `event_weights`).
+3. If filtering leaves fewer than `top_k` results, call
+   `context.request_more_results()` to pull another page — `SearchContext.retrieve()`
+   caches per-channel results and pages forward using `exclude_frame_ids` so
+   the next `run(context)` call doesn't re-fetch what was already seen — and
+   repeat, until the page is full or the channel is exhausted (`FETCH_CAP = 1000`).
+
+This machinery lives entirely in `SearchContext`/`BaseStrategy`; individual
+strategies don't need to know about it beyond accepting the
+`duplicate_threshold` param passed through from the request.
 
 ---
 
