@@ -25,15 +25,18 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   const startSeconds = result.timestamp_ms / 1000;
   const fps = result.fps;
 
-  // Primary playback source: stream straight from the organizer's remote
-  // ZIP via local-backend's Range proxy (see app/services/remote_zip_proxy.py)
-  // — no full-video download. YouTube stays the primary player whenever a
-  // video has a known youtube_id; this is only reached for videos with none
-  // (e.g. ingested straight from the organizer zips, which carry no YouTube
-  // mapping), or if the YouTube-less <video> element itself 404s.
+  // YouTube is tried first whenever a video has a known youtube_id — but
+  // "known youtube_id" doesn't guarantee a *working* embed: the uploader may
+  // have disabled embedding, or the video may have gone private/been taken
+  // down since ingestion. onError below catches that and falls back to
+  // streaming straight from the organizer's remote ZIP via local-backend's
+  // Range proxy (see app/services/remote_zip_proxy.py) — the same fallback
+  // used outright for videos with no youtube_id at all (e.g. ones ingested
+  // straight from the organizer zips, which carry no YouTube mapping).
   const zipVideoUrl = result.video_id ? apiUrl(`/api/zip-video/${encodeURIComponent(result.video_id)}`) : "";
   const [zipVideoFailed, setZipVideoFailed] = useState(false);
-  const useYoutube = Boolean(youtubeId);
+  const [youtubeFailed, setYoutubeFailed] = useState(false);
+  const useYoutube = Boolean(youtubeId) && !youtubeFailed;
   const useZipVideo = !useYoutube && Boolean(zipVideoUrl) && !zipVideoFailed;
   // Show the SHARP frame (same one the results grid shows), with the fast
   // low-res preview as a blurred stand-in underneath until it loads — a
@@ -59,6 +62,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   // try and reset to the paused-on-frame-image state.
   useEffect(() => {
     setZipVideoFailed(false);
+    setYoutubeFailed(false);
     setHasStartedPlaying(false);
     wantsPlayRef.current = false;
   }, [result.video_id]);
@@ -234,6 +238,12 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
             if (!cancelled && event.data === window.YT.PlayerState.PLAYING) {
               setHasStartedPlaying(true);
             }
+          },
+          // error codes: 2 invalid param, 5 HTML5 player error, 100 video
+          // removed/private, 101/150 embedding disabled by the uploader —
+          // all mean this embed can never play, not a transient hiccup.
+          onError: () => {
+            if (!cancelled) setYoutubeFailed(true);
           },
         },
       });
