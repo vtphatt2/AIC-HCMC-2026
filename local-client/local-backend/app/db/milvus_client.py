@@ -132,6 +132,10 @@ def create_collection_if_missing(
         FieldSchema(name="frame_number", dtype=DataType.INT64),
         FieldSchema(name="timestamp_ms", dtype=DataType.INT64),
         FieldSchema(name="image_url",    dtype=DataType.VARCHAR, max_length=256),
+        # Denormalized from Postgres on purpose: local-backend's SAMPLE mode
+        # queries Milvus only (no Postgres), so YouTube-primary playback
+        # needs youtube_id available straight from a search hit.
+        FieldSchema(name="youtube_id",   dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="vector",       dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
     ]
     schema = CollectionSchema(fields, description="Frame-level visual embeddings (PE-Core-bigG-14-448)")
@@ -186,6 +190,7 @@ def upsert_frame_vectors(collection: Collection, records: list[dict[str, Any]]) 
             [int(r["frame_number"]) for r in records],
             [int(r["timestamp_ms"]) for r in records],
             [str(r.get("image_url", "")) for r in records],
+            [str(r.get("youtube_id", "")) for r in records],
             [r["vector"] for r in records],
         ]
     )
@@ -213,7 +218,7 @@ def vector_search(
         param={"metric_type": METRIC_TYPE, "params": search_params},
         limit=top_k,
         expr=expr,
-        output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url"],
+        output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url", "youtube_id"],
     )
     hits = []
     for hit in results[0]:
@@ -223,6 +228,7 @@ def vector_search(
             "frame_number": hit.entity.get("frame_number"),
             "timestamp_ms": hit.entity.get("timestamp_ms"),
             "image_url":    hit.entity.get("image_url"),
+            "youtube_id":   hit.entity.get("youtube_id"),
             "score":        hit.score,
         })
     return hits
@@ -242,7 +248,7 @@ def query_frames_in_time_range(
     )
     rows = collection.query(
         expr=expr,
-        output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url"],
+        output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url", "youtube_id"],
         limit=max(1, int(limit)),
     )
     rows.sort(key=lambda row: row["timestamp_ms"])
