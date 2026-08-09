@@ -6,16 +6,16 @@ pydantic==2.10.6
 numpy==2.2.6
 tqdm==4.68.4
 
+# Vietnamese -> English translation via Google Translate's free web endpoint
+# (see app/services/translation.py). No API key, low volume (~1-2 req/s).
+deep-translator==1.11.4
+
 # PECore text encoder — "onnx" backend (PECORE_BACKEND=onnx, default here).
 # CPU-only, no multi-GB model download. See app/services/simple_tokenizer.py
 # and docs/PE-Core-bigG-14-448-Text-Encoder.README.md.
 onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10
-tokenizers==0.22.1
-sentencepiece==0.2.2
-huggingface-hub==0.36.0
-ctranslate2==4.8.1
 
 # For the full "torch" backend (PECORE_BACKEND=torch, GPU-capable, downloads
 # the full PE-Core weights), install requirements-torch.txt as well:
