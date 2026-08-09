@@ -6,7 +6,10 @@ The system uses two databases in production:
 
 In `ENV_MODE=MOCK`, both are replaced by JSON files in
 `local-client/local-backend/app/mock/`. In `ENV_MODE=SAMPLE`, the local backend
-reads metadata/keyframes and performs linear search over local PE-Core vectors.
+reads metadata/keyframes and performs linear search over local PE-Core
+vectors, or vector search against an embedded Milvus Lite file
+(`MILVUS_LITE_PATH`) when one is available — same schema as production
+Milvus, just file-based instead of a server process.
 
 ---
 
@@ -105,12 +108,25 @@ seek_seconds = timestamp_ms / 1000
 fields = [
     FieldSchema(name="frame_id",     dtype=VARCHAR,       max_length=128, is_primary=True),
     FieldSchema(name="video_id",     dtype=VARCHAR,       max_length=64),
+    FieldSchema(name="video_genre",  dtype=VARCHAR,       max_length=64),
     FieldSchema(name="frame_number", dtype=INT64),
     FieldSchema(name="timestamp_ms", dtype=INT64),
     FieldSchema(name="image_url",    dtype=VARCHAR,       max_length=256),
+    FieldSchema(name="youtube_id",   dtype=VARCHAR,       max_length=32),
     FieldSchema(name="vector",       dtype=FLOAT_VECTOR,  dim=1280),
 ]
 ```
+
+`youtube_id` is denormalized here (not just in PostgreSQL `videos`) so both
+`remote-server` and `local-backend` can pick the YouTube-first playback path
+straight off a vector-search hit, without a PostgreSQL round trip. Frames
+ingested via `ingest_zip_pipeline_results.py` leave `image_url` blank —
+consumers derive it at read time from `video_id`/`timestamp_ms` instead
+(`/api/zip-frame/{video_id}/{timestamp_ms}` in local-backend). Raw vectors
+for any `frame_id` can be re-fetched in bulk via
+`milvus_client.query_frame_vectors()` (`POST /api/frame-embeddings`), used by
+the near-duplicate result filter — see
+[architecture.md#duplicate-result-filtering](architecture.md#duplicate-result-filtering).
 
 **Embedding model:** `timm/PE-Core-bigG-14-448` → 1280-dimensional float vectors.
 

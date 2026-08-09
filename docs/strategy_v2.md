@@ -61,21 +61,37 @@ Backend tạo một context mới cho mỗi request. Strategy không tự kết 
 
 ```python
 class SearchContext:
-    def __init__(self, query_groups, top_k, video_genre, data_provider, parser=None, options=None):
+    def __init__(self, query_groups, top_k, video_genre, data_provider, parser=None, options=None,
+                 config_id="default", config_revision=0, duplicate_threshold=None):
         self.query_groups = query_groups
         self.top_k = top_k
         self.video_genre = video_genre
         self._data_provider = data_provider
         self._parser = parser
         self.options = options or {}
+        self.duplicate_threshold = duplicate_threshold
 
     async def retrieve(self, channel, query, *, top_k=None):
+        # Paginated internally: each call for the same (channel, query, top_k)
+        # fetches a fresh page on top of what was already returned, skipping
+        # frame_ids already seen via exclude_frame_ids. Driven by
+        # request_more_results() below — a strategy just calls retrieve()
+        # again with the same args and gets the next page.
         return await self._data_provider.retrieve(
             channel,
             query,
             top_k=self.top_k if top_k is None else top_k,
             video_genre=self.video_genre,
         )
+
+    def request_more_results(self) -> bool:
+        """Advance to the next retrieval page for any channel/query that
+        isn't exhausted yet. Returns False if nothing more is available."""
+        ...
+
+    async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, list[float]]:
+        """Batch-fetch raw vectors for frame_ids (request-scoped cache)."""
+        ...
 
     async def parse_json(self, *, system_prompt, user_input, response_model):
         if self._parser is None:
@@ -109,11 +125,35 @@ chỉ gọi `keyframes()` nếu muốn chuyển chunk thành frame candidates.
 Kết quả cuối giữ format frontend hiện tại và thêm `evidence`; `results()` chịu trách nhiệm
 hydrate metadata, dedupe, validate và sort.
 
+## Lọc kết quả gần trùng (`duplicate_threshold`)
+
+`BaseStrategy.search()` không gọi thẳng `run(context)` — nó gọi
+`_run_with_filter(context)`, wrap quanh `run()`:
+
+1. Chạy `run(context)` như bình thường, lấy `results`.
+2. Nếu request có `duplicate_threshold` (frontend gửi qua `/api/search`,
+   default 0.98), lấy embedding từng `frame_id` trong `results` qua
+   `context.frame_embeddings(...)`, rồi lọc bằng
+   `app/strategies/_similarity_filter.py::filter_similar_results()` — thuật
+   toán greedy, giữ thứ tự rank, chỉ loại một result khi **toàn bộ** step
+   tương ứng đã similar (cosine, có thể weight theo `event_weights`) với một
+   result đã giữ.
+3. Nếu số kết quả còn lại chưa đủ `top_k`, gọi `context.request_more_results()`
+   (advance sang page tiếp theo của mọi `retrieve()` call chưa exhausted) rồi
+   lặp lại `run(context)` — `retrieve()` tự dùng `exclude_frame_ids` nên
+   không fetch lại frame đã thấy.
+
+Strategy **không cần biết** cơ chế này tồn tại — không tự gọi
+`frame_embeddings()`/`request_more_results()`, không tự filter duplicate.
+Toàn bộ nằm trong `SearchContext`/`BaseStrategy`, strategy chỉ cần trả
+`results` như thường; vòng lặp filter+refetch là trong suốt với `run()`.
+
 ## Code đặt ở đâu?
 
 | Thành phần | File |
 |---|---|
 | `SearchContext`, `BaseStrategy` | `app/strategies/base_strategy.py` |
+| Duplicate-result filter | `app/strategies/_similarity_filter.py` |
 | Channel dispatch và keyframes-in-interval | `app/data_provider.py` |
 | Raw/subtitled dùng chung `_search_visual()` | `app/data_provider.py` |
 | Visual collections | `remote-server/app/db/milvus_client.py` |
