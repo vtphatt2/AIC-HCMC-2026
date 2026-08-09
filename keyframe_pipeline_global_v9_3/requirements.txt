@@ -1,0 +1,8 @@
+numpy
+Pillow
+timm
+huggingface_hub
+safetensors
+transnetv2-pytorch
+requests
+kagglehub
