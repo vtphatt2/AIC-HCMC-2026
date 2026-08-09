@@ -10,12 +10,17 @@ seeking/buffering exactly like it would against a plain MP4 URL.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import random
 import re
 from pathlib import Path
 
 import httpx
+
+_CONNECT_MAX_RETRIES = 3
+_CONNECT_BACKOFF_BASE = 0.5
 
 
 class ZipVideoUnavailable(RuntimeError):
@@ -95,18 +100,7 @@ class RemoteZipVideoProxy:
         data_offset = int(entry["data_offset"])
         start, end = _parse_range(range_header, size)
 
-        req = client.build_request(
-            "GET",
-            entry["zip_url"],
-            headers={"Range": f"bytes={data_offset + start}-{data_offset + end}"},
-        )
-        resp = await client.send(req, stream=True)
-        if resp.status_code != 206:
-            await resp.aclose()
-            raise ZipVideoUnavailable(
-                f"Upstream zip did not honor Range request for {video_id} "
-                f"(status={resp.status_code})"
-            )
+        resp = await self._open_upstream(client, entry["zip_url"], data_offset + start, data_offset + end, video_id)
 
         headers = {
             "Content-Range": f"bytes {start}-{end}/{size}",
@@ -115,3 +109,39 @@ class RemoteZipVideoProxy:
             "Content-Type": "video/mp4",
         }
         return headers, resp
+
+    @staticmethod
+    async def _open_upstream(
+        client: httpx.AsyncClient, zip_url: str, abs_start: int, abs_end: int, video_id: str,
+    ) -> httpx.Response:
+        """Retries only the connection-open step (retrying mid-stream isn't
+        meaningful once bytes are already flowing to the browser — a
+        mid-stream failure just ends the response early, and the <video>
+        element's own onError already falls back to YouTube for that)."""
+        last_error: str = "unknown error"
+        for attempt in range(_CONNECT_MAX_RETRIES):
+            if attempt > 0:
+                delay = _CONNECT_BACKOFF_BASE * (2 ** (attempt - 1)) + random.uniform(0, 0.25)
+                await asyncio.sleep(delay)
+            try:
+                req = client.build_request(
+                    "GET", zip_url, headers={"Range": f"bytes={abs_start}-{abs_end}"}
+                )
+                resp = await client.send(req, stream=True)
+            except httpx.HTTPError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            if resp.status_code == 206:
+                return resp
+            await resp.aclose()
+            if resp.status_code not in {429, 500, 502, 503, 504}:
+                raise ZipVideoUnavailable(
+                    f"Upstream zip did not honor Range request for {video_id} "
+                    f"(status={resp.status_code})"
+                )
+            last_error = f"HTTP {resp.status_code}"
+
+        raise ZipVideoUnavailable(
+            f"Could not open upstream stream for {video_id} after "
+            f"{_CONNECT_MAX_RETRIES} attempts: {last_error}"
+        )

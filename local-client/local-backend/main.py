@@ -3,6 +3,7 @@ AIC 2026 — Local Backend (Development Playground)
 Run with: uvicorn main:app --reload --port 8000
 """
 import asyncio
+import logging
 import os
 import time
 import importlib
@@ -27,6 +28,7 @@ from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
 from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
 
+logger = logging.getLogger(__name__)
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
 _strategies: dict[str, BaseStrategy] = {}
@@ -274,6 +276,9 @@ async def zip_video(video_id: str, request: Request):
         )
     except ZipVideoUnavailable as exc:
         raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error opening zip-video stream for %s", video_id)
+        raise HTTPException(500, f"Unexpected error opening video stream: {exc}") from exc
 
     async def body():
         try:
@@ -302,14 +307,29 @@ async def zip_frame(video_id: str, timestamp_ms: int):
     A result grid can render up to 100 cards at once, each requesting its own
     thumbnail. The semaphore caps how many decode at once; the rest just
     queue for a slot instead of piling on and dragging the whole batch down
-    together."""
+    together.
+
+    This route is the boundary where every failure must become an actual
+    HTTP response — get_frame_jpeg itself guarantees bytes-or-
+    ZipFrameUnavailable (see app/services/range_http_client.py for the
+    retry/backoff behind that), but this still bounds total wall time and
+    catches anything unexpected so a client is never left waiting with
+    nothing coming back."""
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_jpeg
 
     try:
         async with _zip_frame_semaphore:
-            jpeg_bytes = await get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms)
+            jpeg_bytes = await asyncio.wait_for(
+                get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms),
+                timeout=45.0,
+            )
     except ZipFrameUnavailable as exc:
         raise HTTPException(502, str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(504, f"Frame decode timed out for {video_id}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error decoding zip-frame %s/%s", video_id, timestamp_ms)
+        raise HTTPException(500, f"Unexpected error decoding frame: {exc}") from exc
 
     return Response(content=jpeg_bytes, media_type="image/jpeg")
 
