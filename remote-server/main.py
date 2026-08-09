@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlparse
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -207,6 +207,7 @@ class SearchRequest(BaseModel):
     top_k: int = 100
     video_genre: str = "All"
     vector_search_algorithm: str | None = None
+    duplicate_threshold: float = Field(default=0.98, ge=0.0, le=1.0)
 
 
 class RetrieveRequest(BaseModel):
@@ -215,6 +216,11 @@ class RetrieveRequest(BaseModel):
     top_k: int = 100
     video_genre: str = "All"
     vector_search_algorithm: str | None = None
+    exclude_frame_ids: list[str] | None = None
+
+
+class FrameEmbeddingsRequest(BaseModel):
+    frame_ids: list[str]
 
 
 class KeyframesRequest(BaseModel):
@@ -413,10 +419,20 @@ async def retrieve(req: RetrieveRequest):
             top_k=req.top_k,
             video_genre=req.video_genre,
             vector_search_algorithm=req.vector_search_algorithm,
+            exclude_frame_ids=req.exclude_frame_ids,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"hits": hits}
+
+
+@app.post("/api/frame-embeddings")
+async def frame_embeddings(req: FrameEmbeddingsRequest):
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready")
+    if len(req.frame_ids) > 20_000:
+        raise HTTPException(400, "frame_ids is limited to 20000 items")
+    return {"embeddings": await _data_provider.frame_embeddings(req.frame_ids)}
 
 
 @app.post("/api/keyframes")
@@ -483,6 +499,7 @@ async def search(req: SearchRequest):
             options=effective_config,
             config_id=config["id"],
             config_revision=config["revision"],
+            duplicate_threshold=req.duplicate_threshold,
         )
     except TimeoutError as exc:
         logger.info(
@@ -513,6 +530,7 @@ async def search(req: SearchRequest):
         "config_id":         config["id"],
         "config_revision":   config["revision"],
         "effective_config":  effective_config,
+        "duplicate_threshold": req.duplicate_threshold,
         "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
     }

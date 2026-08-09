@@ -48,6 +48,7 @@ const THEME_STORAGE_KEY = "aic2026-theme";
 const SHOW_TRANSCRIPT_KEY = "aic2026-show-transcript";
 const CONFIG_STORAGE_PREFIX = "aic2026-strategy-config:";
 const SIDEBAR_WIDTH_KEY = "aic2026-sidebar-width";
+const DUPLICATE_THRESHOLD_KEY = "aic2026-duplicate-threshold";
 const SIDEBAR_DEFAULT_WIDTH = 520;
 const SIDEBAR_MIN_WIDTH = 300;
 const SIDEBAR_MAX_WIDTH = 900;
@@ -97,6 +98,7 @@ export default function Home() {
   const [videoGenre, setVideoGenre] = useState("All");
   const [vectorAlgorithms, setVectorAlgorithms] = useState<VectorSearchAlgorithm[]>([]);
   const [selectedVectorAlgorithm, setSelectedVectorAlgorithm] = useState("");
+  const [duplicateThreshold, setDuplicateThreshold] = useState(0.98);
   const [algorithmMenuOpen, setAlgorithmMenuOpen] = useState(false);
 
   // ── Transcript search state ────────────────────────────────────────────────
@@ -112,6 +114,7 @@ export default function Home() {
   const mainRef = useRef<HTMLDivElement>(null);
   const commandPanelRef = useRef<CommandPanelHandle>(null);
   const resultGridRef = useRef<ResultGridHandle>(null);
+  const thresholdSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function openResult(r: SearchResult) {
     setActiveResult(r);
@@ -126,6 +129,14 @@ export default function Home() {
     }
     const prefersLight = window.matchMedia?.("(prefers-color-scheme: light)").matches;
     setTheme(prefersLight ? "light" : "dark");
+  }, []);
+
+  useEffect(() => {
+    const saved = Number.parseFloat(window.localStorage.getItem(DUPLICATE_THRESHOLD_KEY) || "");
+    if (Number.isFinite(saved)) setDuplicateThreshold(clamp(saved, 0.7, 1));
+    return () => {
+      if (thresholdSearchTimerRef.current) clearTimeout(thresholdSearchTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -295,7 +306,14 @@ export default function Home() {
   }
 
   // ── Frame search ───────────────────────────────────────────────────────────
-  async function handleSearch(configOverrides?: Record<string, StrategyConfigValue>) {
+  async function handleSearch(
+    configOverrides?: Record<string, StrategyConfigValue>,
+    threshold: number = duplicateThreshold,
+  ) {
+    if (thresholdSearchTimerRef.current) {
+      clearTimeout(thresholdSearchTimerRef.current);
+      thresholdSearchTimerRef.current = null;
+    }
     const hasInput = queryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
       setError("Enter at least one search query.");
@@ -319,6 +337,7 @@ export default function Home() {
         selectedVectorAlgorithm || undefined,
         selectedConfig,
         configOverrides ?? strategyConfigDraft?.overrides ?? {},
+        threshold,
       );
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
@@ -359,7 +378,7 @@ export default function Home() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, strategyConfigDraft?.revision, topKInput, videoGenre]);
+  }, [duplicateThreshold, queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, strategyConfigDraft?.revision, topKInput, videoGenre]);
 
   // ── Transcript search ──────────────────────────────────────────────────────
   async function handleTranscriptSearch() {
@@ -987,6 +1006,45 @@ export default function Home() {
 
         {/* ── Right pane: results ── */}
         <main ref={mainRef} className="flex-1 min-w-0 overflow-y-auto">
+          {searchMode === "frames" && (
+            <div className="sticky top-0 z-30 border-b-2 border-stone-800 dark:border-stone-600 bg-cream/95 dark:bg-stone-900/95 px-4 py-3 backdrop-blur">
+              <label
+                className="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2"
+                title="A result is removed only when every corresponding frame is above this similarity; 100% disables filtering."
+              >
+                <span className="font-retro shrink-0 text-[11px] font-bold uppercase tracking-wide text-stone-600 dark:text-stone-300">
+                  Duplicate threshold
+                </span>
+                <input
+                  type="range"
+                  min={0.7}
+                  max={1}
+                  step={0.001}
+                  value={duplicateThreshold}
+                  disabled={loading}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    setDuplicateThreshold(value);
+                    window.localStorage.setItem(DUPLICATE_THRESHOLD_KEY, String(value));
+                    if (thresholdSearchTimerRef.current) {
+                      clearTimeout(thresholdSearchTimerRef.current);
+                    }
+                    if (response) {
+                      thresholdSearchTimerRef.current = setTimeout(
+                        () => void handleSearch(undefined, value),
+                        350,
+                      );
+                    }
+                  }}
+                  className="min-w-32 flex-[1_1_12rem] accent-orange-700 disabled:opacity-50"
+                  aria-label="Duplicate similarity threshold"
+                />
+                <output className="w-16 shrink-0 text-right font-mono text-sm font-semibold text-orange-700 dark:text-orange-400">
+                  {(duplicateThreshold * 100).toFixed(1)}%
+                </output>
+              </label>
+            </div>
+          )}
           <div className="px-4 py-6 space-y-6">
             {error && (
               <div className="bg-rose-100 dark:bg-rose-900/40 border-2 border-rose-700 dark:border-rose-700 text-rose-800 dark:text-rose-300 rounded px-4 py-3 text-sm">

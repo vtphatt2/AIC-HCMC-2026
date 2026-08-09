@@ -62,6 +62,7 @@ class DataProvider:
     def __init__(self):
         self.mode = ENV_MODE
         self._feature_indexes = {}
+        self._feature_positions_by_channel = {}
         self._feature_paths_by_channel = {}
         self._frames_by_id = {}
         self._videos_by_id = {}
@@ -141,6 +142,7 @@ class DataProvider:
         top_k: int = 100,
         video_genre: str = "All",
         vector_search_algorithm: str | None = None,
+        exclude_frame_ids: list[str] | None = None,
     ) -> list[dict]:
         if channel not in CHANNELS:
             raise ValueError(f"Unknown channel '{channel}'. Available: {sorted(CHANNELS)}")
@@ -148,6 +150,7 @@ class DataProvider:
         if not query:
             return []
         top_k = min(max(int(top_k), 1), 1000)
+        excluded = list(dict.fromkeys(str(value) for value in (exclude_frame_ids or []) if value))
 
         if self.mode == "LOCAL":
             payload = {
@@ -158,6 +161,8 @@ class DataProvider:
             }
             if vector_search_algorithm:
                 payload["vector_search_algorithm"] = vector_search_algorithm
+            if excluded:
+                payload["exclude_frame_ids"] = excluded
             async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=15.0) as client:
                 response = await client.post(
                     "/api/retrieve",
@@ -168,13 +173,20 @@ class DataProvider:
 
         if channel in VISUAL_FEATURE_DIRS:
             if self.mode == "MOCK":
-                hits = [dict(frame) for frame in self._frames[:top_k]]
+                hits = [
+                    dict(frame) for frame in self._frames
+                    if frame.get("frame_id") not in set(excluded)
+                ][:top_k]
             elif self._milvus_collection is not None and channel == "raw.semantic":
                 from app.db import milvus_client
 
                 query_vector = self._encode_sample_text(query)
                 hits = milvus_client.vector_search(
-                    self._milvus_collection, query_vector.tolist(), top_k=top_k, algorithm="hnsw"
+                    self._milvus_collection,
+                    query_vector.tolist(),
+                    top_k=top_k,
+                    algorithm="hnsw",
+                    expr=_exclude_frames_expr(excluded),
                 )
                 # Derive the thumbnail URL from video_id/timestamp_ms rather than
                 # trusting whatever image_url an ingest script happened to store —
@@ -188,6 +200,7 @@ class DataProvider:
                     self._encode_sample_text(query),
                     top_k=top_k,
                     channel=channel,
+                    exclude_frame_ids=excluded,
                 )
             return self._rank_hits(channel, hits)
         if channel == "transcript.lexical":
@@ -196,6 +209,38 @@ class DataProvider:
             "transcript.semantic is available through the remote SERVER; "
             f"it is not indexed in {self.mode} mode"
         )
+
+    async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, list[float]]:
+        frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
+        if not frame_ids:
+            return {}
+        if self.mode == "LOCAL":
+            async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=30.0) as client:
+                response = await client.post(
+                    "/api/frame-embeddings",
+                    json={"frame_ids": frame_ids},
+                )
+                response.raise_for_status()
+                return response.json().get("embeddings", {})
+        if self.mode == "MOCK":
+            return {
+                frame_id: list(self._frames_by_id[frame_id]["_embedding"])
+                for frame_id in frame_ids
+                if frame_id in self._frames_by_id and self._frames_by_id[frame_id].get("_embedding")
+            }
+
+        if self._milvus_collection is not None:
+            from app.db import milvus_client
+
+            return milvus_client.query_frame_vectors(self._milvus_collection, frame_ids)
+        self._ensure_feature_index("raw.semantic")
+        matrix, _ = self._feature_indexes["raw.semantic"]
+        positions = self._feature_positions_by_channel["raw.semantic"]
+        return {
+            frame_id: matrix[positions[frame_id]].tolist()
+            for frame_id in frame_ids
+            if frame_id in positions
+        }
 
     async def keyframes(
         self,
@@ -416,6 +461,7 @@ class DataProvider:
         query_vector,
         top_k: int = 100,
         channel: str = "raw.semantic",
+        exclude_frame_ids: list[str] | None = None,
     ) -> list[dict]:
         if self.mode != "SAMPLE":
             raise RuntimeError("linear_search_by_vector is only available in ENV_MODE=SAMPLE")
@@ -436,7 +482,16 @@ class DataProvider:
 
         query_vector = query_vector / norm
         scores = matrix @ query_vector
-        top_k = max(1, min(int(top_k), len(scores)))
+        excluded_count = 0
+        for frame_id in exclude_frame_ids or []:
+            index = self._feature_positions_by_channel[channel].get(str(frame_id))
+            if index is not None and scores[index] != -float("inf"):
+                scores[index] = -float("inf")
+                excluded_count += 1
+        available = len(scores) - excluded_count
+        if available <= 0:
+            return []
+        top_k = max(1, min(int(top_k), available))
         partition_k = min(top_k - 1, len(scores) - 1)
         top_indices = np.argpartition(-scores, partition_k)[:top_k]
         top_indices = top_indices[np.argsort(-scores[top_indices])]
@@ -477,6 +532,9 @@ class DataProvider:
 
         matrix = np.vstack(vectors)
         self._feature_indexes[channel] = (matrix, frame_ids)
+        self._feature_positions_by_channel[channel] = {
+            frame_id: index for index, frame_id in enumerate(frame_ids)
+        }
         print(
             f"DataProvider: built {channel} index — "
             f"{matrix.shape[0]} vectors x {matrix.shape[1]} dims"
@@ -538,6 +596,13 @@ class DataProvider:
         if parsed.netloc.endswith("youtu.be"):
             return parsed.path.strip("/") or fallback
         return parse_qs(parsed.query).get("v", [fallback])[0] or fallback
+
+
+def _exclude_frames_expr(frame_ids: list[str]) -> str | None:
+    if not frame_ids:
+        return None
+    quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
+    return f"frame_id not in [{quoted}]"
 
 def _strip_private(value):
     if isinstance(value, dict):

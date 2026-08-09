@@ -51,6 +51,7 @@ class StrategyConfigHttpTests(unittest.TestCase):
                     "config_id": "transcript-heavy",
                     "config_overrides": {"transcript.semantic": 0.4},
                     "query_groups": [{"query": "hello"}],
+                    "duplicate_threshold": 0.975,
                 },
             )
 
@@ -58,8 +59,10 @@ class StrategyConfigHttpTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in listed.json()["configs"]], ["default", "transcript-heavy"])
         self.assertEqual(searched.json()["config_id"], "transcript-heavy")
         self.assertEqual(searched.json()["effective_config"], {"transcript.semantic": 0.4})
+        self.assertEqual(searched.json()["duplicate_threshold"], 0.975)
         self.strategy.search.assert_awaited_once()
         self.assertEqual(self.strategy.search.await_args.kwargs["options"], {"transcript.semantic": 0.4})
+        self.assertEqual(self.strategy.search.await_args.kwargs["duplicate_threshold"], 0.975)
         self.assertEqual(
             self.store.get("tunable", "2.0", self.strategy.config_schema, "transcript-heavy")["weights"],
             {"transcript.semantic": 1.7},

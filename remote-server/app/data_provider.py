@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -26,6 +27,18 @@ CHANNELS = {
     "transcript.lexical",
     "transcript.semantic",
 }
+
+
+def _exclude_frames_expr(frame_ids: list[str]) -> str | None:
+    if not frame_ids:
+        return None
+    quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
+    return f"frame_id not in [{quoted}]"
+
+
+def _combine_expr(*parts: str | None) -> str | None:
+    values = [f"({part})" for part in parts if part]
+    return " and ".join(values) or None
 
 
 class DataProvider:
@@ -128,6 +141,7 @@ class DataProvider:
         top_k: int = 100,
         video_genre: str = "All",
         vector_search_algorithm: str | None = None,
+        exclude_frame_ids: list[str] | None = None,
     ) -> list[dict]:
         if channel not in CHANNELS:
             raise ValueError(f"Unknown channel '{channel}'. Available: {sorted(CHANNELS)}")
@@ -135,6 +149,7 @@ class DataProvider:
         if not query:
             return []
         top_k = min(max(int(top_k), 1), 1000)
+        excluded = list(dict.fromkeys(str(value) for value in (exclude_frame_ids or []) if value))
 
         if channel in {"raw.semantic", "subtitled.semantic"}:
             vector = await self._encode_text(query)
@@ -145,18 +160,25 @@ class DataProvider:
             )
             if algorithm != "cagra":
                 algorithm = milvus_client.normalize_algorithm(algorithm)
-            genre_expr = await self._genre_expr(video_genre)
+            search_expr = _combine_expr(
+                await self._genre_expr(video_genre),
+                _exclude_frames_expr(excluded),
+            )
             if algorithm == "cagra":
                 if channel != "raw.semantic":
                     raise ValueError("CAGRA is only indexed for raw.semantic")
-                hits = self._get_cagra().search(vector, top_k=top_k)
+                hits = self._get_cagra().search(
+                    vector, top_k=min(1000, top_k + len(excluded))
+                )
+                excluded_set = set(excluded)
+                hits = [hit for hit in hits if hit.get("frame_id") not in excluded_set][:top_k]
             else:
                 hits = milvus_client.vector_search(
                     self._get_collection(algorithm, channel),
                     vector.tolist(),
                     top_k=top_k,
                     algorithm=algorithm,
-                    expr=genre_expr,
+                    expr=search_expr,
                 )
             await self._hydrate_frames(hits)
             return [
@@ -178,6 +200,16 @@ class DataProvider:
             allowed = set(await postgres_client.fetch_video_ids_by_genre(video_genre))
             hits = [hit for hit in hits if hit["video_id"] in allowed]
         return hits
+
+    async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, list[float]]:
+        frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
+        collection = self._metadata_collection()
+        embeddings = {}
+        for start in range(0, len(frame_ids), 1000):
+            embeddings.update(milvus_client.query_frame_vectors(
+                collection, frame_ids[start:start + 1000]
+            ))
+        return embeddings
 
     async def keyframes(
         self,

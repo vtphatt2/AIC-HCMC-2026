@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -253,6 +254,23 @@ def query_frames_in_time_range(
     )
     rows.sort(key=lambda row: row["timestamp_ms"])
     return [dict(row) for row in rows]
+
+
+def query_frame_vectors(collection: Collection, frame_ids: list[str]) -> dict[str, list[float]]:
+    frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
+    if not frame_ids:
+        return {}
+    quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
+    rows = collection.query(
+        expr=f"frame_id in [{quoted}]",
+        output_fields=["frame_id", "vector"],
+        limit=len(frame_ids),
+    )
+    return {
+        str(row["frame_id"]): row["vector"].tolist()
+        if hasattr(row["vector"], "tolist") else list(row["vector"])
+        for row in rows
+    }
 
 
 # ── Transcript Chunks collection ──────────────────────────────────────────────

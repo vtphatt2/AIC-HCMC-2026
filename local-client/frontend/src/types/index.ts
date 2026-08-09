@@ -87,6 +87,7 @@ export interface SearchResponse {
   config_id?: string;
   config_revision?: number;
   effective_config?: Record<string, StrategyConfigValue>;
+  duplicate_threshold?: number;
 }
 
 export interface TranscriptChunkResult {
