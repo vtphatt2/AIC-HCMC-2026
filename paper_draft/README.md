@@ -31,7 +31,10 @@ objective có cơ sở, baseline mạnh, human qrels và evaluation thật.
 3. [03_experiment_protocol.md](03_experiment_protocol.md) — dữ liệu, baseline, metric,
    ablation và go/no-go criteria.
 4. [04_alternative_directions.md](04_alternative_directions.md) — hai hướng dự phòng.
-5. [references.bib](references.bib) — bibliography khởi đầu.
+5. [05_second_opinion.md](05_second_opinion.md) — review độc lập: đã kiểm chứng
+   citations/claim, 1 lỗi công thức cần sửa, Gate 0 + Gate A0 cần thêm, và đề
+   xuất tách thành 2 paper theo thứ tự thời gian.
+6. [references.bib](references.bib) — bibliography khởi đầu.
 
 ## Trạng thái bằng chứng
 
