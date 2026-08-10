@@ -48,8 +48,17 @@ docker compose up -d
 docker compose ps   # wait for all services Up
 ```
 
-No Docker (embedded Milvus Lite + portable PostgreSQL) — set
-`MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in `.env`, then:
+**No Docker, dev-only** (embedded Milvus Lite + portable PostgreSQL) — this
+server is meant to carry the heavier production workload (real Milvus, full
+dataset); Milvus Lite here is only for developing/testing `remote-server`
+code on a laptop without Docker or a real Milvus server, same as
+`local-backend`'s own Milvus Lite path. Needs `pymilvus>=2.4` (the base
+`requirements.txt` pins `2.3.7` for the production path), so install the
+extra requirements file too:
+```bash
+pip install -r requirements-milvus-lite.txt
+```
+Set `MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in `.env`, then:
 ```bash
 cd remote-server
 bash scripts/start-local-postgres.sh start
@@ -64,10 +73,11 @@ before running an ingestion script against it.
 ```bash
 cd remote-server
 python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on Windows
-pip install -r requirements.txt                      # base: PECore ONNX, Milvus, PostgreSQL
+pip install -r requirements.txt                      # base: PECore ONNX, real Milvus server, PostgreSQL
 pip install -r requirements-torch.txt                 # optional: full OpenCLIP torch backend
 pip install --extra-index-url https://pypi.nvidia.com -r requirements-cagra.txt  # optional: CUDA 13 CAGRA
 pip install -r requirements-youtube-thumbnail.txt      # optional: YouTube thumbnail workaround
+pip install -r requirements-milvus-lite.txt            # optional: dev-only, see "No Docker" above
 ```
 
 ## 4. Create the Milvus index and ingest embeddings

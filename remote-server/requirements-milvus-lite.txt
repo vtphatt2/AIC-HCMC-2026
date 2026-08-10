@@ -1,0 +1,13 @@
+# Optional: only needed for the "no Docker / no real Milvus server" local
+# dev path (MILVUS_LITE_PATH in .env — see app/db/milvus_client.py). The
+# base requirements.txt pins pymilvus==2.3.7 for the production real-Milvus
+# path this server is meant to run in (remote-server carries the heavier
+# workload — full Milvus, full dataset — local-backend's Milvus Lite is the
+# lighter dev-only counterpart). Milvus Lite's local file/uri connection
+# mode needs pymilvus>=2.4, which is why it's a separate opt-in install
+# instead of bumping the base pin.
+#
+# Install alongside the base requirements.txt:
+#   pip install -r requirements.txt -r requirements-milvus-lite.txt
+pymilvus>=2.4
+milvus_lite>=2.4

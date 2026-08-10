@@ -31,15 +31,19 @@ flowchart LR
 
 Both backends can also read/write an embedded **Milvus Lite** file
 (`challenge_resources/data/milvus_lite.db`, no Docker/server process) — set
-`MILVUS_LITE_PATH` in either `.env` to point at it. `remote-server` uses it as
-a drop-in replacement for a full Milvus server; `local-backend` uses it as an
-optional, faster alternative to linear numpy search in `SAMPLE`/`MOCK`-adjacent
-local dev, falling back to linear search automatically when unset or the
-collection doesn't exist. This is the local/remote weight split: remote
-carries the heavier, GPU/full-dataset workload (full Milvus, CAGRA, full
-video, direct frame/video search); local-backend's mechanisms (Milvus Lite,
-the ZIP-Range proxy) are lighter work-arounds that only aim to make local dev
-cheap and fast, not to replace the server.
+`MILVUS_LITE_PATH` in either `.env` to point at it (needs `pymilvus>=2.4`,
+a separate opt-in install — see `requirements-milvus-lite.txt` in each
+backend). On `remote-server` this is **dev/test-only**: a way to run and test
+`remote-server` code on a laptop without Docker or a real Milvus server — the
+production path is still a real Milvus server (`docker compose up`, base
+`requirements.txt` pins `pymilvus==2.3.7` for it). `local-backend` uses the
+same Milvus Lite file as an optional, faster alternative to linear numpy
+search in `SAMPLE` mode, falling back to linear search automatically when
+unset or the collection doesn't exist. This is the local/remote weight
+split: remote carries the heavier, GPU/full-dataset workload (full Milvus,
+CAGRA, full video, direct frame/video search); local-backend's mechanisms
+(Milvus Lite, the ZIP-Range proxy) are lighter work-arounds that only aim to
+make local dev cheap and fast, not to replace the server.
 
 The local and remote backends expose the same strategy lifecycle and local
 translation endpoint. CAGRA remains a remote-server feature.
@@ -61,7 +65,7 @@ The `ENV_MODE` environment variable controls where data comes from. Set it in th
 | `MOCK` | Contestant laptop | Reads `app/mock/*.json` — no server needed |
 | `SAMPLE` | Contestant laptop | Searches local `AIC2026_sample`/`challenge_resources/data` PE-Core vectors — linear numpy by default, or embedded Milvus Lite when `MILVUS_LITE_PATH` is set |
 | `LOCAL` | Contestant laptop | Proxies raw-data requests to `REMOTE_SERVER_URL`; also runs the `/api/zip-video`, `/api/zip-frame` proxy for organizer-ZIP playback |
-| `SERVER` | GPU workstation | Connects to Milvus (real server or embedded Milvus Lite via `MILVUS_LITE_PATH`) + PostgreSQL |
+| `SERVER` | GPU workstation | Connects to a real Milvus server + PostgreSQL (or, dev/test-only, embedded Milvus Lite via `MILVUS_LITE_PATH` — see above) |
 
 ### Switching from MOCK to LOCAL
 
@@ -220,11 +224,34 @@ Both routes fetch through `app/services/range_http_client.py`
 (`RangeHTTPClient`): retries transient upstream failures (timeouts, resets,
 HTTP 429/5xx) with exponential backoff, and raises a typed
 `RangeFetchError`/`ZipFrameUnavailable` instead of letting a raw exception
-propagate. `main.py` wraps both routes in `asyncio.wait_for` plus a catch-all
+propagate. Only `/api/zip-frame` wraps its work in `asyncio.wait_for`
+(`ZIP_FRAME_TIMEOUT_SEC`, 45s — covers the whole `async with
+_zip_frame_semaphore: ...` block, including queue wait, since the wrapped
+coroutine hasn't started running until `wait_for` drives it) plus a catch-all
 handler, so a broken upstream always returns a clean `502`/`504`/`500`
-instead of hanging with no response. This proxy is scoped to `local-backend`
-only — `remote-server` never needs it since it can decode directly from a
-full local dataset.
+instead of hanging with no response. `/api/zip-video` streams the response
+body directly (`StreamingResponse`) and isn't a good fit for a fixed overall
+timeout — its resilience is the `RangeHTTPClient` retry on the initial
+connection open; a slow/stalled *stream* isn't currently bounded.
+
+**This proxy is currently `local-backend`-only.** `remote-server` has no
+`/api/zip-video`/`/api/zip-frame` route and its `data_provider.py` doesn't
+rewrite `image_url` for frames ingested without JPGs — so for videos ingested
+via `ingest_zip_pipeline_results.py` (no local JPGs), a frontend pointed
+directly at `remote-server` gets a blank thumbnail/no video today. This
+matches the original assumption that `remote-server` always has the full
+dataset locally (real keyframe JPGs/videos, like `challenge_resources/data/videos/*.mp4`
+for the older `AIC2026_sample` lots) — an assumption that no longer holds now
+that lot-based zip-pipeline data (embeddings only, no media) is ingested into
+the same shared Milvus. If/when this gets built for `remote-server`, the
+intended design reads bytes directly from a **local** copy of the
+organizers' full `Videos_L*.zip` archives (`challenge_resources/data/raw_zip/`,
+e.g. `Videos_L30_a.zip`) rather than proxying HTTP Range requests out to the
+organizers' host — `remote-server` is meant to carry the heavier workload on
+its own disk/compute, not add a network dependency on the same external
+server local-backend already depends on. As of this writing only one lot's
+full video zip (`L30_a`) has been downloaded there; the rest would need
+downloading before this could cover the whole dataset.
 
 `image_url` for Milvus-backed hits is never stored at ingest time — it's
 derived at read time from `video_id` + `timestamp_ms`

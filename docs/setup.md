@@ -42,8 +42,12 @@ docker compose ps
 
 Wait until MinIO is healthy and the other services are `Up`.
 
-**No Docker (embedded Milvus Lite + portable PostgreSQL):** set
-`MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in
+**No Docker, dev/test-only** (embedded Milvus Lite + portable PostgreSQL):
+`remote-server` is meant to run against a real Milvus server in production —
+this path is only for developing/testing `remote-server` code on a laptop.
+Needs `pymilvus>=2.4` (the base `requirements.txt` pins `2.3.7` for the real
+server), so also install `pip install -r requirements-milvus-lite.txt`. Then
+set `MILVUS_LITE_PATH=../challenge_resources/data/milvus_lite.db` in
 `remote-server/.env` (skips `MILVUS_HOST`/`MILVUS_PORT` entirely — no server
 process, just a file), and start PostgreSQL via the bundled helper script
 instead of Docker:
