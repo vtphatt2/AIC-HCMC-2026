@@ -1,10 +1,9 @@
-# Optional: FRAME_IMAGE_SOURCE=youtube_storyboard or local_video.
+# Optional: FRAME_IMAGE_SOURCE=youtube_storyboard.
 # See docs/youtube-storyboard-thumbnails-workaround.md
 # Install alongside the base requirements.txt:
 #   pip install -r requirements.txt -r requirements-youtube-thumbnail.txt
+#
+# imageio-ffmpeg (used by FRAME_IMAGE_SOURCE=local_video and /api/zip-frame)
+# is in the base requirements.txt, not here — it's core, not this workaround.
 yt-dlp>=2024.1.0
 pillow==12.3.0
-
-# local_video: seeks directly into data/videos/<video_id>.mp4.
-# Bundles ffmpeg so no system-wide install is needed.
-imageio-ffmpeg>=0.4.9
