@@ -21,6 +21,11 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+
 from app.data_provider import DataProvider, sample_subdir
 from app.services.translation import TranslationService
 from app.services.strategy_config import StrategyConfigStore
@@ -73,6 +78,11 @@ async def lifespan(app: FastAPI):
     global _strategies, _data_provider
     print("Starting local backend…")
     _data_provider = DataProvider()
+    if os.getenv("WARMUP_TEXT_ENCODER", "false").lower() in {"1", "true", "yes"}:
+        print("Warming up text encoder...")
+        t0 = time.monotonic()
+        await _data_provider.warmup_text_encoder()
+        print(f"Text encoder warm ({(time.monotonic() - t0) * 1000:.0f} ms)")
     print("Discovering strategies…")
     parser = QueryParser() if os.getenv("GEMINI_API_KEY", "").strip() else None
     _strategies = discover_strategies(_data_provider, parser)
@@ -458,6 +468,10 @@ async def search(req: SearchRequest):
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
     query_groups = [g.model_dump() for g in req.query_groups]
+    logger.info(
+        "[TIMER] request_received strategy=%s top_k=%s duplicate_threshold=%s query_groups=%s",
+        req.strategy_id, top_k, req.duplicate_threshold, len(query_groups),
+    )
     try:
         results = await strategy.search(
             query_groups,
@@ -470,6 +484,7 @@ async def search(req: SearchRequest):
             duplicate_threshold=req.duplicate_threshold,
         )
     except TimeoutError as exc:
+        logger.info("[TIMER] total_request %.3f ms status=timeout", (time.monotonic() - t0) * 1000)
         raise HTTPException(408, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
@@ -477,6 +492,10 @@ async def search(req: SearchRequest):
         raise HTTPException(500, f"Strategy error: {exc}")
 
     results = results[:top_k]
+    logger.info(
+        "[TIMER] total_request %.3f ms strategy=%s status=ok results=%s",
+        (time.monotonic() - t0) * 1000, req.strategy_id, len(results),
+    )
 
     return {
         "results":           results,

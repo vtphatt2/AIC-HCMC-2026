@@ -6,6 +6,12 @@ from ._similarity_filter import filter_similar_results, result_frame_ids
 
 FETCH_CAP = 1000
 EXECUTION_TIMEOUT_SEC = 30.0
+# When duplicate filtering is on, fetch this many times top_k on the first
+# page so filtering usually clears top_k in one round instead of needing a
+# second retrieve+frame_embeddings+filter round trip. Keep modest — measured
+# against a real Milvus collection, response payload size and filter cost
+# both scale with candidate count, so oversampling isn't free.
+OVERSAMPLE_FACTOR = 1.5
 
 
 class SearchContext:
@@ -60,12 +66,25 @@ class SearchContext:
                 state["exhausted"] = True
                 break
             page_size = min(requested, remaining)
+            if self.duplicate_threshold is not None and not state["pages"]:
+                page_size = min(int(requested * OVERSAMPLE_FACTOR), remaining)
             excluded = [str(hit["frame_id"]) for hit in state["hits"] if hit.get("frame_id")]
             if excluded:
                 kwargs["exclude_frame_ids"] = excluded
             page = await self._data_provider.retrieve(
                 channel, query, **{**kwargs, "top_k": page_size}
             )
+            # Vector search may piggyback each hit's embedding (private "_vector"
+            # key) so the duplicate filter doesn't need a separate
+            # frame_embeddings round trip later — capture it here, before the
+            # hit goes anywhere else.
+            for hit in page:
+                vector = hit.pop("_vector", None)
+                frame_id = hit.get("frame_id")
+                if vector is not None and frame_id:
+                    frame_id = str(frame_id)
+                    self._embedding_cache[frame_id] = vector
+                    self._embedding_requested.add(frame_id)
             seen = {
                 hit.get("frame_id") or hit.get("item_id") or hit.get("chunk_id")
                 for hit in state["hits"]

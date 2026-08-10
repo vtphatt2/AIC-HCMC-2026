@@ -3,6 +3,7 @@ import os
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -180,13 +181,24 @@ class DataProvider:
             elif self._milvus_collection is not None and channel == "raw.semantic":
                 from app.db import milvus_client
 
+                t_encode = time.monotonic()
                 query_vector = self._encode_sample_text(query)
+                logger.info(
+                    "[TIMER] text_encode %.3f ms text_len=%s",
+                    (time.monotonic() - t_encode) * 1000, len(query),
+                )
+                t_search = time.monotonic()
                 hits = milvus_client.vector_search(
                     self._milvus_collection,
                     query_vector.tolist(),
                     top_k=top_k,
                     algorithm="hnsw",
                     expr=_exclude_frames_expr(excluded),
+                    include_vector=True,
+                )
+                logger.info(
+                    "[TIMER] vector_search %.3f ms channel=%s top_k=%s excluded=%s hits=%s",
+                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
                 )
                 # Derive the thumbnail URL from video_id/timestamp_ms rather than
                 # trusting whatever image_url an ingest script happened to store —
@@ -196,11 +208,22 @@ class DataProvider:
                 for hit in hits:
                     hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
             else:
+                t_encode = time.monotonic()
+                query_vector = self._encode_sample_text(query)
+                logger.info(
+                    "[TIMER] text_encode %.3f ms text_len=%s",
+                    (time.monotonic() - t_encode) * 1000, len(query),
+                )
+                t_search = time.monotonic()
                 hits = self.linear_search_by_vector(
-                    self._encode_sample_text(query),
+                    query_vector,
                     top_k=top_k,
                     channel=channel,
                     exclude_frame_ids=excluded,
+                )
+                logger.info(
+                    "[TIMER] linear_search %.3f ms channel=%s top_k=%s excluded=%s hits=%s",
+                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
                 )
             return self._rank_hits(channel, hits)
         if channel == "transcript.lexical":

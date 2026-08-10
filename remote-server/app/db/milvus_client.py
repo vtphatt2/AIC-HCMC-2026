@@ -203,6 +203,7 @@ def vector_search(
     top_k: int = 100,
     algorithm: str | None = None,
     expr: str | None = None,
+    include_vector: bool = False,
 ) -> list[dict]:
     top_k = max(1, int(top_k))
     config = index_config(algorithm)
@@ -213,16 +214,20 @@ def vector_search(
         search_params = {"nprobe": 32, "reorder_k": max(top_k, top_k * 5)}
     else:
         search_params = {}
+    output_fields = ["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url", "youtube_id"]
+    if include_vector:
+        output_fields = output_fields + ["vector"]
     results = collection.search(
         data=[query_vector],
         anns_field="vector",
         param={"metric_type": METRIC_TYPE, "params": search_params},
         limit=top_k,
         expr=expr,
-        output_fields=["frame_id", "video_id", "frame_number", "timestamp_ms", "image_url", "youtube_id"],
+        output_fields=output_fields,
     )
     hits = []
     for hit in results[0]:
+        vector = hit.entity.get("vector") if include_vector else None
         hits.append({
             "frame_id":     hit.entity.get("frame_id"),
             "video_id":     hit.entity.get("video_id"),
@@ -231,6 +236,7 @@ def vector_search(
             "image_url":    hit.entity.get("image_url"),
             "youtube_id":   hit.entity.get("youtube_id"),
             "score":        hit.score,
+            **({"_vector": list(vector)} if vector is not None else {}),
         })
     return hits
 

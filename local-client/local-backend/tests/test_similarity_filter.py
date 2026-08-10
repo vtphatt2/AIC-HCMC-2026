@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import AsyncMock, Mock
 
 from app.strategies._similarity_filter import filter_similar_results
-from app.strategies.base_strategy import BaseStrategy
+from app.strategies.base_strategy import BaseStrategy, OVERSAMPLE_FACTOR
 
 
 def vector(cosine):
@@ -67,19 +67,23 @@ class FilteredStrategy(BaseStrategy):
 
 class SimilarityBackfillTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_backfills_with_database_exclusion_after_filtering(self):
-        first_page = [
-            {"frame_id": "a", "score": 1.0},
-            {"frame_id": "b", "score": 0.9},
+        # Duplicate filtering is on, so the first page is oversampled
+        # (OVERSAMPLE_FACTOR x top_k) to try to clear top_k in one round trip.
+        # Everything but "a" here is a near-duplicate of it, so filtering
+        # alone can't reach top_k=2 and a second, non-oversampled page
+        # (excluding every frame_id already seen) has to supply "c".
+        oversampled_top_k = int(2 * OVERSAMPLE_FACTOR)
+        dup_ids = [f"dup{i}" for i in range(oversampled_top_k - 1)]
+        first_page = [{"frame_id": "a", "score": 1.0}] + [
+            {"frame_id": frame_id, "score": 0.9} for frame_id in dup_ids
         ]
         second_page = [{"frame_id": "c", "score": 0.8}]
         provider = Mock()
         provider.retrieve = AsyncMock(side_effect=[first_page, second_page])
         provider.results.side_effect = lambda hits: [dict(hit) for hit in hits]
-        provider.frame_embeddings = AsyncMock(return_value={
-            "a": [1.0, 0.0],
-            "b": vector(0.99),
-            "c": [0.0, 1.0],
-        })
+        embeddings = {"a": [1.0, 0.0], "c": [0.0, 1.0]}
+        embeddings.update({frame_id: vector(0.99) for frame_id in dup_ids})
+        provider.frame_embeddings = AsyncMock(return_value=embeddings)
 
         results = await FilteredStrategy(provider).search(
             [{"query": "query"}],
@@ -89,10 +93,11 @@ class SimilarityBackfillTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([item["frame_id"] for item in results], ["a", "c"])
         self.assertEqual(provider.retrieve.await_count, 2)
+        self.assertEqual(provider.retrieve.await_args_list[0].kwargs["top_k"], oversampled_top_k)
         self.assertEqual(provider.frame_embeddings.await_args_list[1].args[0], ["c"])
         self.assertEqual(
             provider.retrieve.await_args_list[1].kwargs["exclude_frame_ids"],
-            ["a", "b"],
+            ["a"] + dup_ids,
         )
 
 

@@ -179,6 +179,7 @@ class DataProvider:
                     top_k=top_k,
                     algorithm=algorithm,
                     expr=search_expr,
+                    include_vector=True,
                 )
             await self._hydrate_frames(hits)
             return [
