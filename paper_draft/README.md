@@ -34,7 +34,9 @@ objective có cơ sở, baseline mạnh, human qrels và evaluation thật.
 5. [05_second_opinion.md](05_second_opinion.md) — review độc lập: đã kiểm chứng
    citations/claim, 1 lỗi công thức cần sửa, Gate 0 + Gate A0 cần thêm, và đề
    xuất tách thành 2 paper theo thứ tự thời gian.
-6. [references.bib](references.bib) — bibliography khởi đầu.
+6. [06_work_split.md](06_work_split.md) — phân chia công việc 4 người theo
+   chuyên môn đo từ git history, kèm thứ tự thực hiện và điểm thoát.
+7. [references.bib](references.bib) — bibliography khởi đầu.
 
 ## Trạng thái bằng chứng
 
