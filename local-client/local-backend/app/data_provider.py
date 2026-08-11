@@ -192,7 +192,7 @@ class DataProvider:
                     self._milvus_collection,
                     query_vector.tolist(),
                     top_k=top_k,
-                    algorithm="hnsw",
+                    algorithm=milvus_client.DEFAULT_ALGORITHM,
                     expr=_exclude_frames_expr(excluded),
                     include_vector=True,
                 )
@@ -445,14 +445,21 @@ class DataProvider:
             from app.db import milvus_client
 
             milvus_client.connect()
-            if not milvus_client.has_collection_for_algorithm("hnsw", "raw.semantic"):
+            # Was hard-wired to "hnsw", which silently ignored
+            # VECTOR_SEARCH_BACKEND and pinned local search to the HNSW
+            # collection — the one whose search path in milvus_lite 3.2.0
+            # returns wrong neighbours (docs/milvus-lite-hnsw-recall-bug.md).
+            algorithm = milvus_client.DEFAULT_ALGORITHM
+            if not milvus_client.has_collection_for_algorithm(algorithm, "raw.semantic"):
                 print(
-                    "DataProvider: MILVUS_LITE_PATH is set, but no raw.semantic collection "
-                    "exists yet at that path (run an ingest script first)"
+                    f"DataProvider: MILVUS_LITE_PATH is set, but no raw.semantic "
+                    f"'{algorithm}' collection exists yet at that path "
+                    f"(run an ingest script with --vector-index {algorithm})"
                 )
                 return None
+            print(f"DataProvider: Milvus Lite vector search using '{algorithm}'")
             return milvus_client.get_collection_for_name(
-                milvus_client.collection_name_for_algorithm("hnsw", "raw.semantic")
+                milvus_client.collection_name_for_algorithm(algorithm, "raw.semantic")
             )
         except Exception as exc:
             print(f"DataProvider: MILVUS_LITE_PATH is set but connection failed: {exc}")
