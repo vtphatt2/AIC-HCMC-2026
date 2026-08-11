@@ -80,6 +80,7 @@ class PECoreTextEncoder:
     def __init__(self, config: TextEncoderConfig | None = None):
         self.config = config or TextEncoderConfig()
         self._lock = threading.Lock()
+        self._encode_lock = threading.Lock()
         self._loaded = False
         self._model = None
         self._session = None
@@ -108,9 +109,20 @@ class PECoreTextEncoder:
 
     def _encode_uncached(self, text: str):
         self._ensure_loaded()
-        if self.config.backend == "onnx":
-            return self._encode_onnx(text)
-        return self._encode_torch(text)
+        # One inference at a time, always — callers queue here rather than run
+        # side by side. This is not a throughput sacrifice: the model is
+        # memory-bandwidth bound (one encode drags 541 MB of weights across the
+        # bus, and latency stops improving past 8 threads), so parallel encodes
+        # cannot go faster than the bus. Measured on 20 cores, four encodes:
+        # 412 ms one at a time, 373 ms across four thread-capped sessions (-9%),
+        # and 2597 ms across four sessions left at the default thread count —
+        # 6.3x WORSE, because ONNX Runtime hands every session every core and 80
+        # threads thrash. Serialising costs ~9% in the best case and removes the
+        # 6.3x cliff entirely.
+        with self._encode_lock:
+            if self.config.backend == "onnx":
+                return self._encode_onnx(text)
+            return self._encode_torch(text)
 
     def _encode_torch(self, text: str):
         torch = self._torch
@@ -259,8 +271,17 @@ class PECoreTextEncoder:
                 "<repo-root>/challenge_resources/onnx-models/."
             )
 
+        # Left at ONNX Runtime's default (every core), a single encode measured
+        # 115 ms on 20 cores but 105 ms on 14 — past the point where memory
+        # bandwidth saturates, extra threads only add contention. Pin it rather
+        # than let the default scale with whatever machine this lands on.
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = int(os.getenv("PECORE_ONNX_THREADS", "14"))
+
         try:
-            session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            session = ort.InferenceSession(
+                str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+            )
             tokenizer = SimpleTokenizer(vocab_path, context_length=self.config.context_length)
         except Exception as exc:
             raise TextEncoderUnavailable(

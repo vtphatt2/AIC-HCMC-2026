@@ -301,8 +301,40 @@ async def zip_video(video_id: str, request: Request):
     return StreamingResponse(body(), status_code=206, headers=headers)
 
 
-_zip_frame_semaphore = asyncio.Semaphore(6)
+# Backstop against unbounded fan-out, not the real throttle — ffmpeg decodes
+# are capped separately in zip_frame_source (_decode_semaphore). Most of the
+# time in this route is spent on Range requests, so keeping it near the decode
+# cap made a cold grid serialise its per-video moov downloads behind ffmpeg.
+_zip_frame_semaphore = asyncio.Semaphore(int(os.getenv("ZIP_FRAME_CONCURRENCY", "12")))
 ZIP_FRAME_TIMEOUT_SEC = 45.0
+
+# A page of results can name the same frame more than once (a video appears at
+# several ranks, temporal steps land on the same keyframe), and when the grid
+# renders they all fire at the same instant. Without this, each one starts its
+# own decode of the identical picture.
+#
+# Deliberately not a "wait 1-2s, then process the batch" queue: that would add
+# its full delay to every thumbnail, including the ones that had no duplicate
+# to merge with. Sharing in-flight work costs nothing and catches the same
+# duplicates; the locality between *different* frames of one video is handled a
+# layer down by the region cache in zip_frame_source.
+_zip_frame_inflight: dict[tuple[str, str, int], asyncio.Future] = {}
+
+
+async def _single_flight(key: tuple[str, str, int], factory):
+    """Run factory() once for concurrent callers sharing a key."""
+    existing = _zip_frame_inflight.get(key)
+    if existing is not None:
+        return await asyncio.shield(existing)
+
+    task = asyncio.ensure_future(factory())
+    _zip_frame_inflight[key] = task
+    # Cleared by the task itself, not by whoever happened to start it. The
+    # starter can be cancelled (browser aborts thumbnails constantly) while the
+    # decode runs on for the others still waiting on it — clearing in a finally
+    # here would drop a live entry and let the next caller start a duplicate.
+    task.add_done_callback(lambda _: _zip_frame_inflight.pop(key, None))
+    return await asyncio.shield(task)
 
 
 @app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
@@ -334,7 +366,10 @@ async def zip_frame(video_id: str, timestamp_ms: int):
             return await get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms)
 
     try:
-        jpeg_bytes = await asyncio.wait_for(decode(), timeout=ZIP_FRAME_TIMEOUT_SEC)
+        jpeg_bytes = await asyncio.wait_for(
+            _single_flight(("jpeg", video_id, timestamp_ms), decode),
+            timeout=ZIP_FRAME_TIMEOUT_SEC,
+        )
     except ZipFrameUnavailable as exc:
         raise HTTPException(502, str(exc)) from exc
     except asyncio.TimeoutError as exc:
@@ -344,6 +379,68 @@ async def zip_frame(video_id: str, timestamp_ms: int):
         raise HTTPException(500, f"Unexpected error decoding frame: {exc}") from exc
 
     return Response(content=jpeg_bytes, media_type="image/jpeg")
+
+
+@app.get("/api/zip-frame-plan/{video_id}/{timestamp_ms}")
+async def zip_frame_plan(video_id: str, timestamp_ms: int):
+    """Client-side decode mode: tell the browser which bytes hold this frame
+    instead of decoding it here.
+
+    The route above spawns an ffmpeg process per thumbnail, on this machine,
+    for every viewer. This one does the parsing (cached per video) and returns
+    a byte range plus the sample layout inside it; the browser fetches that
+    range from /api/zip-bytes and runs WebCodecs on its own CPU. Decode cost
+    then scales with the number of viewers instead of piling onto the host.
+
+    Cheap enough not to need the decode semaphore — after the first frame of a
+    video the moov index is cached, so this is pure arithmetic."""
+    from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_plan
+
+    try:
+        return await asyncio.wait_for(
+            _single_flight(
+                ("plan", video_id, timestamp_ms),
+                lambda: get_frame_plan(_zip_upstream_client, video_id, timestamp_ms),
+            ),
+            timeout=ZIP_FRAME_TIMEOUT_SEC,
+        )
+    except ZipFrameUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(504, f"Frame plan timed out for {video_id}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error planning zip-frame %s/%s", video_id, timestamp_ms)
+        raise HTTPException(500, f"Unexpected error planning frame: {exc}") from exc
+
+
+@app.get("/api/zip-bytes/{video_id}/{region_start}/{length}")
+async def zip_bytes(video_id: str, region_start: int, length: int):
+    """Byte passthrough for a range a plan already described. No decoding, no
+    parsing — the expensive half of the old path is simply gone.
+
+    Not a general proxy: fetch_region checks the range against this video's own
+    extent inside the archive, so it can't be aimed anywhere else."""
+    from app.services.zip_frame_source import ZipFrameUnavailable, fetch_region
+
+    try:
+        data = await asyncio.wait_for(
+            fetch_region(_zip_upstream_client, video_id, region_start, length),
+            timeout=ZIP_FRAME_TIMEOUT_SEC,
+        )
+    except ZipFrameUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(504, f"Byte range timed out for {video_id}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error fetching zip bytes %s", video_id)
+        raise HTTPException(500, f"Unexpected error fetching bytes: {exc}") from exc
+
+    # Immutable by construction — a byte range of an archive that never changes.
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/api/strategies")
