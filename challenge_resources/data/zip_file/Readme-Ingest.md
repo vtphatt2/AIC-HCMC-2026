@@ -23,12 +23,27 @@ itself. Run this every time you add archives:
 cd remote-server
 python scripts/ingest_zip_pipeline_results.py --dry-run --skip-postgres   # preview counts first
 python scripts/ingest_zip_pipeline_results.py --skip-postgres
+
+cd ../local-client/local-backend
+python scripts/export_vectors_npy.py                                      # required, ~11s
 ```
+
+**The export step is not optional.** `local-backend` searches a flat
+`vectors.f32.npy` rather than Milvus, because `milvus_lite`'s HNSW path returns
+wrong neighbours (see [milvus-lite-hnsw-recall-bug.md](../../../docs/milvus-lite-hnsw-recall-bug.md))
+and its brute-force path is ~45x slower than a memmapped BLAS scan (~1570 ms vs
+~35 ms at `top_k=1000`). Skipping the export leaves search on the *previous*
+ingest's vectors — the file is still valid, just older, so nothing would fail.
+The backend prints a warning at startup when it spots that, but re-running the
+export is the fix. It reads these archives directly and takes ~11 seconds.
 
 - **Stop any running backend first** (`local-backend` and/or `remote-server`) if they're
   pointed at the same `MILVUS_LITE_PATH` — the embedded Milvus Lite file only allows one
   process to hold it open at a time; the ingest script will fail to connect otherwise.
-  Restart the backend once ingestion finishes.
+  The same applies to the export step: a running backend keeps `vectors.f32.npy`
+  memory-mapped, and Windows refuses to overwrite a mapped file (writing to a temp name
+  and swapping does not help — the rename is refused too). Restart the backend once both
+  steps finish.
 - **`--skip-postgres`**: `local-backend` never reads PostgreSQL (Milvus only, per the
   local/remote weight split — see `docs/architecture.md`), and `youtube_id`/title are
   already denormalized straight into each Milvus frame record. Only drop this flag if

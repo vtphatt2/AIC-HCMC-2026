@@ -314,6 +314,39 @@ An earlier estimate here put exact search at ~200 ms per query based on a
 GEMV over the same 990 MB should reach 3–5 GB/s and is the obvious way to buy
 the latency back without giving up exactness — not attempted yet.
 
+## Where local search actually ended up
+
+`flat` proved the diagnosis but cost 3x the broken path (6416 ms for a 4-event
+query against 2339 ms). Since exact search was mandatory either way, the only
+question left was *which* exact search — and `BruteForceIndex` turned out to be
+the slow way to do it.
+
+`scripts/export_vectors_npy.py` writes the embeddings to a flat
+`vectors.f32.npy`, read straight from the ingest archives rather than paged back
+out of Milvus (11 seconds instead of minutes). `app/db/numpy_vector_store.py`
+memmaps it and runs a chunked BLAS GEMV.
+
+| | milvus HNSW | milvus flat | numpy memmap |
+|---|---:|---:|---:|
+| per search, `top_k=1000` | ~500 ms | ~1570 ms | **~50 ms** |
+| 4-event query (cached encodes) | 2339 ms | 6416 ms | **345 ms** |
+| 4-event query (fresh) | — | — | **1435–2497 ms** |
+| free RAM while running | 1.5–2.5 GB | 1.5–2.5 GB | **4.4–4.6 GB** |
+| correct | **no** | yes | yes |
+
+Results are identical to `flat` — same top video at rank 1 for all four
+variants of the query this investigation started from.
+
+The memory column matters as much as the latency one: Milvus Lite held ~2.8 GB
+resident on a 15.7 GB machine, and that pressure was what made every timing in
+this project swing by 10x (performance_pain_points.md item 1). A memmap is
+evictable, so the pages come back rather than pushing something else to disk.
+
+An earlier estimate here guessed the numpy path at "3–5 GB/s, maybe 4x". It is
+closer to 28 GB/s and ~45x. Chunk size barely matters (34/35/37 ms at
+16k/64k/193k rows), so the chunking is there for corpora larger than RAM, not
+for speed.
+
 ## What we are doing instead
 
 Switching the local path to exact search: `VECTOR_SEARCH_BACKEND=flat`, which

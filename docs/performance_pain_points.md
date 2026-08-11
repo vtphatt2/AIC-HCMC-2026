@@ -315,7 +315,18 @@ pass.
 Consistent with the per-event measurement: reaching 1000 hits costs 660 ms
 across three searches but 486 ms in one.
 
-## 3. OPEN — `top_k` is the real search cost, and the strategy asks for 450
+## 3. FIXED — `top_k` was the real search cost; local search no longer uses Milvus
+
+Superseded by the move to a memmapped exact search — per-search cost went from
+~500 ms (wrong) / ~1570 ms (Milvus flat) to **~50 ms**, and a 4-event query from
+2339 ms to **345 ms** with cached encodes, 1665–1936 ms fresh. Details and the
+numbers behind it: [milvus-lite-hnsw-recall-bug.md](milvus-lite-hnsw-recall-bug.md).
+
+The `top_k` analysis below is kept because it explains why `PER_QUERY_LIMIT` is
+1000 and why the refill rounds were worth removing — both still hold. The
+absolute latencies no longer do.
+
+### The original measurements (Milvus HNSW)
 
 `_duy_temporal_core.py:5` sets `PER_QUERY_LIMIT = 300`; `base_strategy.py`
 applies `OVERSAMPLE_FACTOR = 1.5`, so a `top_k=60` request issues a 450-hit

@@ -70,6 +70,7 @@ class DataProvider:
         self._text_encoder = None
         self._transcript_chunks = None
         self._milvus_collection = None
+        self._numpy_store = False
 
         if self.mode == "LOCAL":
             if not REMOTE_SERVER_URL:
@@ -98,12 +99,32 @@ class DataProvider:
                 f"DataProvider: SAMPLE mode — local metadata: {len(self._videos)} videos, "
                 f"{len(self._frames)} keyframes (thumbnails/frame lookup only, not search coverage)"
             )
-            self._milvus_collection = self._connect_milvus_lite()
+            # Preferred when the export exists: exact, and ~45x faster than
+            # Milvus Lite's own brute force over the same bytes (~35 ms vs
+            # ~1570 ms at top_k=1000). Milvus Lite stays as the fallback so a
+            # machine that has not run scripts/export_vectors_npy.py still
+            # works — but see docs/milvus-lite-hnsw-recall-bug.md for why that
+            # fallback must not be pointed at an HNSW collection.
+            from app.db import numpy_vector_store
+
+            self._numpy_store = numpy_vector_store.available()
+            if self._numpy_store:
+                store = numpy_vector_store.get_store()
+                print(
+                    f"DataProvider: raw.semantic search -> numpy memmap (exact), "
+                    f"{store.vectors.shape[0]} vectors"
+                )
+                stale = numpy_vector_store.staleness_warning()
+                if stale:
+                    print(f"DataProvider: WARNING — {stale}")
+            self._milvus_collection = None if self._numpy_store else self._connect_milvus_lite()
             if self._milvus_collection is not None:
                 print(
                     f"DataProvider: raw.semantic search -> Milvus Lite, "
                     f"{self._milvus_collection.num_entities} vectors indexed"
                 )
+            elif self._numpy_store:
+                pass
             else:
                 print(
                     f"DataProvider: raw.semantic search -> linear search over local .npy files "
@@ -178,6 +199,30 @@ class DataProvider:
                     dict(frame) for frame in self._frames
                     if frame.get("frame_id") not in set(excluded)
                 ][:top_k]
+            elif self._numpy_store and channel == "raw.semantic":
+                from app.db import numpy_vector_store
+
+                t_encode = time.monotonic()
+                query_vector = self._encode_sample_text(query)
+                logger.info(
+                    "[TIMER] text_encode %.3f ms text_len=%s",
+                    (time.monotonic() - t_encode) * 1000, len(query),
+                )
+                t_search = time.monotonic()
+                hits = numpy_vector_store.vector_search(
+                    query_vector.tolist(),
+                    top_k=top_k,
+                    exclude_frame_ids=excluded,
+                    video_genre=video_genre,
+                    include_vector=True,
+                )
+                logger.info(
+                    "[TIMER] vector_search %.3f ms backend=numpy channel=%s top_k=%s "
+                    "excluded=%s hits=%s",
+                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
+                )
+                for hit in hits:
+                    hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
             elif self._milvus_collection is not None and channel == "raw.semantic":
                 from app.db import milvus_client
 
@@ -197,7 +242,8 @@ class DataProvider:
                     include_vector=True,
                 )
                 logger.info(
-                    "[TIMER] vector_search %.3f ms channel=%s top_k=%s excluded=%s hits=%s",
+                    "[TIMER] vector_search %.3f ms backend=milvus channel=%s top_k=%s "
+                    "excluded=%s hits=%s",
                     (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
                 )
                 # Derive the thumbnail URL from video_id/timestamp_ms rather than
