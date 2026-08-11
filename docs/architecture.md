@@ -220,6 +220,22 @@ decodes it with ffmpeg (`select=eq(n,target_index)`) — one Range request per
 frame instead of pointing ffmpeg at a URL (which reprobes the container on
 every call and falls over under concurrency).
 
+Before any frame of a video can be decoded, its `moov` box has to be
+downloaded and parsed — roughly 1 MB per video. A result grid spanning 30
+distinct videos therefore pulls ~30 MB from the organizer's host before the
+first thumbnail appears, and measurement showed this, not concurrency, is the
+wall: a cold 60-thumbnail grid took ~45s at both 6 and 12 in-flight requests,
+and *worse* (60s) at 32, because the extra parallelism only spread the same
+bandwidth thinner. `moov` never changes, so it is cached on disk under
+`cache/zip_moov/` (`ZIP_MOOV_CACHE_DIR` to relocate) — the same grid after a
+backend restart takes 18s with no timeouts.
+
+The two costs are throttled separately, because they are different resources:
+`ZIP_FRAME_DECODE_CONCURRENCY` (default 6) caps ffmpeg processes, which are
+CPU-bound, while `ZIP_FRAME_CONCURRENCY` (default 12) caps requests in flight
+on the route. Capping both at one number made per-video `moov` downloads
+queue behind ffmpeg.
+
 Both routes fetch through `app/services/range_http_client.py`
 (`RangeHTTPClient`): retries transient upstream failures (timeouts, resets,
 HTTP 429/5xx) with exponential backoff, and raises a typed

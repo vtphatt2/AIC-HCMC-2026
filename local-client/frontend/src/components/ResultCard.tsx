@@ -1,6 +1,7 @@
 import { forwardRef, useState } from "react";
 import type { SearchResult } from "@/types";
 import { apiUrl } from "@/lib/api";
+import { useFrameImage } from "@/lib/useFrameImage";
 
 interface Props {
   result: SearchResult;
@@ -29,9 +30,12 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
   { result, rank, onClick, hideBadge, compact, badgeLabel, focused },
   ref,
 ) {
-  const imageUrl = result.frame_image_url.startsWith("http")
+  const serverImageUrl = result.frame_image_url.startsWith("http")
     ? result.frame_image_url
     : apiUrl(result.frame_image_url);
+  // Decodes here instead of on the backend when NEXT_PUBLIC_FRAME_DECODE=client
+  // and the browser has WebCodecs; otherwise this is serverImageUrl unchanged.
+  const imageUrl = useFrameImage(serverImageUrl, result.frame_image_url);
   const previewUrl = result.frame_preview_url
     ? (result.frame_preview_url.startsWith("http") ? result.frame_preview_url : apiUrl(result.frame_preview_url))
     : null;
