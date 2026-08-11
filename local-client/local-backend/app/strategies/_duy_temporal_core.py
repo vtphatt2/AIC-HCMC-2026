@@ -2,7 +2,13 @@
 import asyncio
 
 
-PER_QUERY_LIMIT = 300
+# Fetch the whole budget in one search rather than refilling into it. FETCH_CAP
+# bounds total hits per query at 1000 either way, and the rounds were just
+# spending that down: 450, then 300, then 250. Measured per event on the clean
+# collection, reaching 1000 hits costs 660 ms across three searches but 486 ms
+# in one — and each refill round also re-runs DP and duplicate filtering over
+# everything gathered so far.
+PER_QUERY_LIMIT = 1000
 TEMPORAL_CONFIG_SCHEMA = {
     "event_weights": {
         "type": "number_list",
@@ -18,9 +24,25 @@ TEMPORAL_CONFIG_SCHEMA = {
 }
 
 
+# A step must land strictly after the one before it. With a group's
+# temporal_offset_ms at 0 the comparison used to be `previous <= current`, which
+# admits `previous == current` — so one frame could satisfy every event in the
+# chain. Those degenerate chains then *won*: the best-scoring frame counted once
+# per event, and a span of zero satisfies every interval window. Measured on a
+# 4-event query, 51 of 51 results from the 0-5s strategy and 56 of 60 from the
+# unbounded one were a single frame repeated, which is why real chains never
+# reached the top and every row displayed the same picture.
+MIN_STEP_MS = 1
+
+
 def resolve_event_weights(values, count):
     values = values if isinstance(values, list) else []
     return [float(values[index]) if index < len(values) else 1.0 for index in range(count)]
+
+
+def _step_threshold(frame, offset):
+    """Latest timestamp a previous step may hold and still precede this frame."""
+    return int(frame["timestamp_ms"]) - max(int(offset), MIN_STEP_MS)
 
 
 async def run_temporal(context, interval_min_ms=None, interval_max_ms=None):
@@ -55,10 +77,16 @@ def temporal_results(context, hits):
     for hit in hits:
         row = context.results([hit])[0]
         if len(hit["_steps"]) > 1:
-            row["steps"] = context.results([
-                {**step, "confidence": hit["confidence"]}
+            # One call per step, not one call for the list: results() drops
+            # repeated frame_ids, which is right for a result list but wrong for
+            # a chain — a chain is an ordered sequence, and collapsing it makes
+            # a four-event match render as a single frame. The DP no longer
+            # reuses a frame across steps, but keep this honest regardless, so
+            # `steps` always mirrors `evidence`.
+            row["steps"] = [
+                context.results([{**step, "confidence": hit["confidence"]}])[0]
                 for step in hit["_steps"]
-            ])
+            ]
         results.append(row)
     return results
 
@@ -120,7 +148,7 @@ def _match_unbounded(levels, offsets, weights):
         pointer = 0
         current_dp = []
         for frame in levels[level]:
-            threshold = int(frame["timestamp_ms"]) - offsets[level]
+            threshold = _step_threshold(frame, offsets[level])
             while (
                 pointer < len(previous_frames)
                 and int(previous_frames[pointer]["timestamp_ms"]) <= threshold
@@ -163,7 +191,7 @@ def _match_interval(levels, offsets, interval_min_ms, interval_max_ms, weights):
             next_frames = []
             next_frontier = []
             for frame in levels[level]:
-                threshold = int(frame["timestamp_ms"]) - offsets[level]
+                threshold = _step_threshold(frame, offsets[level])
                 while (
                     pointer < len(frontier_frames)
                     and int(frontier_frames[pointer]["timestamp_ms"]) <= threshold
@@ -191,7 +219,7 @@ def _match_interval(levels, offsets, interval_min_ms, interval_max_ms, weights):
             span_ms = int(end["timestamp_ms"]) - start_time
             if span_ms > interval_max_ms:
                 break
-            threshold = int(end["timestamp_ms"]) - offsets[last_level]
+            threshold = _step_threshold(end, offsets[last_level])
             while (
                 pointer < len(frontier_frames)
                 and int(frontier_frames[pointer]["timestamp_ms"]) <= threshold
