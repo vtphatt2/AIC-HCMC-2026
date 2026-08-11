@@ -8,6 +8,7 @@ import {
   fetchStrategyConfigDraft,
   saveStrategyConfigDraft,
 } from "@/lib/api";
+import { onTuningDraftPing, pingTuningDraft } from "@/lib/tuningPing";
 import type {
   Strategy,
   StrategyConfigField,
@@ -111,6 +112,7 @@ export default function TuningPage() {
           setDraftRevision(draft.revision);
           setDirty(false);
           setStatus(`Saved local draft ${draft.revision}`);
+          pingTuningDraft(draft.revision);
         })
         .catch((error) => setStatus(error instanceof Error ? error.message : "Save failed"));
     }, 400);
@@ -139,10 +141,10 @@ export default function TuningPage() {
     }
 
     void refreshDraft();
-    const timer = window.setInterval(refreshDraft, 1000);
+    const stop = onTuningDraftPing(() => void refreshDraft());
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stop();
     };
   }, [configId, configs, dirty, draftRevision, strategyId]);
 

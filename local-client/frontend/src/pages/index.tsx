@@ -23,6 +23,7 @@ import {
   warmupTextEncoder,
   searchTranscriptChunks,
 } from "@/lib/api";
+import { onTuningDraftPing } from "@/lib/tuningPing";
 import QueryGroupComponent from "@/components/QueryGroup";
 import CommandPanel, { type CommandPanelHandle } from "@/components/CommandPanel";
 import ResultGrid, { type ResultGridHandle } from "@/components/ResultGrid";
@@ -174,6 +175,12 @@ export default function Home() {
     }
   }
 
+  // Last tuning-draft revision this tab already knows about, and the current
+  // draft-check closure. Refs, so the subscription effect further down can
+  // depend on the strategy/config alone — see the comment there.
+  const draftRevisionRef = useRef<number | null>(null);
+  const checkDraftRef = useRef<(fromPing: boolean) => Promise<void>>();
+
   useEffect(() => {
     const config = strategyConfigs.find((item) => item.id === selectedConfig);
     const eventWeights = strategyConfigDraft?.overrides.event_weights ?? config?.weights.event_weights;
@@ -184,7 +191,13 @@ export default function Home() {
     let cancelled = false;
 
     saveStrategyConfigDraft(selectedStrategy, selectedConfig, { event_weights: nextWeights })
-      .then((saved) => { if (!cancelled) setStrategyConfigDraft(saved); })
+      .then((saved) => {
+        if (cancelled) return;
+        setStrategyConfigDraft(saved);
+        // This bumped the revision itself — move the baseline with it so the
+        // next draft check doesn't re-apply our own write.
+        draftRevisionRef.current = saved.revision;
+      })
       .catch(() => {
         if (!cancelled) setError("Cannot sync event weights with temporal steps.");
       });
@@ -348,37 +361,37 @@ export default function Home() {
     }
   }
 
+  // Held in refs, not in the effect below, so that effect can depend on the
+  // strategy/config alone. It used to also list queryGroups, topKInput,
+  // duplicateThreshold and friends — everything handleSearch closes over —
+  // which meant translating a step, adding a step, or typing a character
+  // re-ran it and fired a tuning-draft fetch each time.
+  // Only a ping re-runs the search. A ping means the tuning page saved, which
+  // is the one case where you did ask for new results. Every other write to
+  // the draft is this page's own bookkeeping — adding a temporal step rewrites
+  // event_weights to match the new step count — and re-searching on those
+  // costs a full backend query for a change nobody made.
+  checkDraftRef.current = async (fromPing: boolean) => {
+    try {
+      const draft = await fetchStrategyConfigDraft(selectedStrategy, selectedConfig);
+      if (draft.revision === draftRevisionRef.current) return;
+      draftRevisionRef.current = draft.revision;
+      setStrategyConfigDraft(draft);
+      if (fromPing && response) void handleSearch(draft.overrides);
+    } catch {
+      // Keep the current search usable while the tuning device is unavailable.
+    }
+  };
+
   useEffect(() => {
     if (!selectedStrategy) return;
-    let revision = strategyConfigDraft?.revision ?? null;
-    let checking = false;
-    let cancelled = false;
-
-    async function checkDraftRevision() {
-      if (checking) return;
-      checking = true;
-      try {
-        const draft = await fetchStrategyConfigDraft(selectedStrategy, selectedConfig);
-        if (cancelled) return;
-        if (revision !== null && draft.revision !== revision && response) {
-          void handleSearch(draft.overrides);
-        }
-        revision = draft.revision;
-        setStrategyConfigDraft(draft);
-      } catch {
-        // Keep the current search usable while the tuning device is unavailable.
-      } finally {
-        checking = false;
-      }
-    }
-
-    void checkDraftRevision();
-    const timer = window.setInterval(checkDraftRevision, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [duplicateThreshold, queryGroups, response?.config_revision, selectedConfig, selectedStrategy, selectedVectorAlgorithm, strategyConfigDraft?.revision, topKInput, videoGenre]);
+    draftRevisionRef.current = null;
+    void checkDraftRef.current?.(false);
+    // Was a 1s poll. The tuning page now pings via localStorage when it
+    // actually saves, so this fetches on a real change instead of 60x/minute
+    // per open tab — and only for changes made on this machine.
+    return onTuningDraftPing(() => void checkDraftRef.current?.(true));
+  }, [selectedConfig, selectedStrategy]);
 
   // ── Transcript search ──────────────────────────────────────────────────────
   async function handleTranscriptSearch() {
