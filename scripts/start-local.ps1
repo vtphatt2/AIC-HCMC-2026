@@ -2,6 +2,12 @@ param(
     [int]$BackendPort = 8000,
     [int]$FrontendPort = 3000,
     [string]$LanAddress = "",
+    # Publish the frontend through ngrok so teammates can use it. Backend is
+    # reached through the same tunnel via the /api + /static rewrites in
+    # next.config.js, so only one tunnel is needed.
+    [switch]$Ngrok,
+    [string]$NgrokDomain = "",
+    [int]$SharePort = 3001,
     # onnx-cpu:  PECore ONNX text encoder, CPU only, no torch install needed (default; matches this machine).
     # torch-cpu: full OpenCLIP model on CPU.
     # torch-cuda: full OpenCLIP model on an NVIDIA GPU.
@@ -64,9 +70,22 @@ if (-not (Test-Port $BackendPort)) {
     $backendNote = "already running"
 }
 
+if ($Ngrok -and -not $NgrokDomain) {
+    $rootEnv = Join-Path $root ".env"
+    if (Test-Path -LiteralPath $rootEnv) {
+        $NgrokDomain = (Select-String -LiteralPath $rootEnv -Pattern '^\s*NGROK_DOMAIN\s*=\s*(.+?)\s*$' |
+            Select-Object -First 1).Matches.Groups[1].Value
+    }
+    if (-not $NgrokDomain) { throw "Set NGROK_DOMAIN in .env or pass -NgrokDomain" }
+}
+
 $apiUrl = "http://${publicHost}:$BackendPort"
 if (-not (Test-Port $FrontendPort)) {
-    $frontendCommand = "title Frontend && set NEXT_PUBLIC_API_URL=$apiUrl&& npm.cmd run dev -- -H $bindHost -p $FrontendPort"
+    # "/" collapses to "" in api.ts (it strips the trailing slash), so the
+    # browser calls /api/... on whatever origin served the page — the share
+    # proxy below, which routes those to the backend.
+    $publicApiUrl = if ($Ngrok) { "/" } else { $apiUrl }
+    $frontendCommand = "title Frontend && set NEXT_PUBLIC_API_URL=$publicApiUrl&& npm.cmd run dev -- -H $bindHost -p $FrontendPort"
     Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $frontendCommand -WorkingDirectory $frontendDir | Out-Null
     $frontendNote = "opened in its own terminal window"
 } else {
@@ -76,3 +95,25 @@ if (-not (Test-Port $FrontendPort)) {
 
 Write-Host "Backend:  $apiUrl (-Backend $Backend) - $backendNote"
 Write-Host "Frontend: http://${publicHost}:$FrontendPort - $frontendNote"
+
+if ($Ngrok) {
+    if (-not (Get-Command ngrok -ErrorAction SilentlyContinue)) { throw "ngrok not found on PATH." }
+
+    # The tunnel points at share-proxy, not at Next: it splits /api + /static
+    # off to the backend so the thumbnail load never touches the dev server.
+    if (-not (Test-Port $SharePort)) {
+        $proxyCommand = "title Share proxy && set SHARE_PORT=$SharePort&& set FRONTEND_PORT=$FrontendPort&& set BACKEND_PORT=$BackendPort&& node scripts\share-proxy.cjs"
+        Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $proxyCommand -WorkingDirectory $root | Out-Null
+        Write-Host "Proxy:    http://127.0.0.1:$SharePort - opened in its own terminal window"
+    } else {
+        Write-Host "Proxy:    already listening on $SharePort"
+    }
+
+    if (-not (Test-Port 4040)) {
+        $ngrokCommand = "title Ngrok && ngrok http $SharePort --domain $NgrokDomain --host-header rewrite"
+        Start-Process -FilePath $env:ComSpec -ArgumentList "/d", "/k", $ngrokCommand -WorkingDirectory $root | Out-Null
+        Write-Host "Ngrok:    https://$NgrokDomain - opened in its own terminal window"
+    } else {
+        Write-Host "Ngrok:    agent already running (port 4040 in use)"
+    }
+}

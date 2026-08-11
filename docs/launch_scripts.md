@@ -56,6 +56,39 @@ Requires the backend venv at `local-client/local-backend/.venv` (`python -m
 venv .venv && .venv/bin/pip install -r requirements.txt`, see
 [setup.md](setup.md)) and `npm install` already run in `local-client/frontend`.
 
+## Sharing with teammates over ngrok
+
+```powershell
+scripts\start-local.ps1 -Ngrok
+```
+
+Opens two extra windows: `scripts/share-proxy.cjs` on port 3001, and ngrok
+pointed at it. The domain comes from `NGROK_DOMAIN` in the repo-root `.env`
+(or `-NgrokDomain`); the authtoken lives in ngrok's own config, not here.
+
+`share-proxy.cjs` is ~50 lines of Node stdlib that splits one public port:
+
+| Path | Goes to |
+|---|---|
+| `/api/tuning-draft` | Next (it's a page route reading a local file) |
+| `/api/*`, `/static/*` | backend on 8000 |
+| everything else | Next dev server on 3000 |
+
+`-Ngrok` sets `NEXT_PUBLIC_API_URL=/` so the browser calls whatever origin
+served the page. One tunnel, no CORS, nothing bound to a public port.
+
+**Do not do this with `next.config.js` rewrites instead.** That was the first
+attempt and the Next dev server died under it: a result grid loads up to 100
+`/api/zip-frame` thumbnails, the browser aborts the in-flight ones on every
+new search, and the resulting ECONNRESET storm took the process down. Next is
+a compiler, not a proxy — keep the media traffic off it.
+
+On the free ngrok plan the first visit shows an interstitial warning page —
+teammates click "Visit Site" once and a cookie suppresses it afterwards.
+
+Everyone shares one CPU-bound backend, so concurrent searches queue rather
+than run in parallel.
+
 ## Remote server
 
 `start-remote` starts Milvus/PostgreSQL with Docker Compose, waits for their
