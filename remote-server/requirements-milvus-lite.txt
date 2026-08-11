@@ -10,4 +10,5 @@
 # Install alongside the base requirements.txt:
 #   pip install -r requirements.txt -r requirements-milvus-lite.txt
 pymilvus>=2.4
-milvus_lite>=2.4
+# Temporary pin until https://github.com/milvus-io/milvus-lite/pull/364 lands.
+milvus-lite @ git+https://github.com/Le-Anh-Duy/milvus-lite.git@77aca8f6a3b406d3d327ab62db51077f79b1fdfc
