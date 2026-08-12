@@ -4,7 +4,7 @@
 """
 # CELL 1 — Install
 # !pip install -q faster-whisper
-
+c
 import json, time, zipfile, requests, shutil
 from pathlib import Path
 from faster_whisper import WhisperModel
@@ -28,31 +28,10 @@ for d in ["/root/.cache/pip", "/kaggle/working/.cache"]:
 
 # === CELL 3: Streaming download → extract → transcribe → cleanup ===
 # CELL 3 — Pipeline: one ZIP at a time
-# Check available temp directories
-import os, shutil, subprocess
-
-TMP_BASE = None
-for d in ["/kaggle/tmp", "/tmp", "/kaggle/working"]:
-    try:
-        Path(d).mkdir(parents=True, exist_ok=True)
-        # Try writing a small file
-        test = Path(d) / ".write_test"
-        test.write_text("ok")
-        test.unlink()
-        st = shutil.disk_usage(d)
-        print(f"  {d}: {st.free/1024**3:.1f} GB free")
-        if TMP_BASE is None and st.free > 2 * 1024**3:  # >2GB
-            TMP_BASE = d
-    except Exception as e:
-        print(f"  {d}: SKIP — {e}")
-
-if TMP_BASE is None:
-    raise RuntimeError("No writable directory with >2GB free")
-
-OUT_DIR = Path(TMP_BASE) / "transcripts"
+OUT_DIR = Path("/kaggle/tmp/transcripts")
 OUT_DIR.mkdir(exist_ok=True)
-TMP_DIR = Path(TMP_BASE)
-print(f"\nUsing: {TMP_BASE} (transcripts → {OUT_DIR})")
+TMP_DIR = Path("/kaggle/tmp")
+TMP_DIR.mkdir(exist_ok=True)
 
 ZIP_URLS = [
     "https://aic-data.ledo.io.vn/Videos_L26_a.zip",
@@ -172,11 +151,8 @@ print(f"ALL DONE — {total_ok} OK, {total_fail} FAIL in {run_elapsed/60:.1f} mi
 print(f"Transcripts: {OUT_DIR} ({len(list(OUT_DIR.glob('*.jsonl')))} JSONL files)")
 
 # === CELL 4: Copy results to /kaggle/working for download ===
-# CELL 4 — Move transcripts to output dir
-# import shutil
-# for f in Path("/kaggle/working/transcripts").glob("*.jsonl"):
-#     f.unlink()
-# shutil.copytree(str(OUT_DIR), "/kaggle/working/transcripts", dirs_exist_ok=True)
+# CELL 4 — Move transcripts to working dir (JSONL files are tiny, ~500KB total)
+# !mkdir -p /kaggle/working/transcripts && cp /kaggle/tmp/transcripts/*.jsonl /kaggle/working/transcripts/
 # !cd /kaggle/working && zip -r transcripts_whisper_32videos.zip transcripts/
 # from IPython.display import FileLink
 # FileLink("transcripts_whisper_32videos.zip")
