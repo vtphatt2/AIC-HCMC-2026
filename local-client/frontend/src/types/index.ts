@@ -71,8 +71,9 @@ export interface SearchResult {
   confidence: number;
   frame_image_url: string;
   fps: number;
-  // Present only when FRAME_IMAGE_SOURCE=youtube_precise: a fast, blurry
-  // placeholder to show immediately while frame_image_url is still extracting.
+  // Optional low-res placeholder to show while frame_image_url is still
+  // extracting. No backend sets it today; the components degrade to showing
+  // nothing until the real frame arrives.
   frame_preview_url?: string;
   // Present only for multi-step temporal matches: every frame in the matched
   // chain, in step order (this result itself is the chain's closing frame).

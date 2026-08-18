@@ -15,7 +15,6 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -26,7 +25,7 @@ logging.basicConfig(
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
 
-from app.data_provider import DataProvider, sample_subdir
+from app.data_provider import DataProvider
 from app.services.translation import TranslationService
 from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
@@ -35,7 +34,6 @@ from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailab
 
 logger = logging.getLogger(__name__)
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
-SAMPLE_KEYFRAMES_DIR = sample_subdir("keyframes")
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
 _translation_service = TranslationService()
@@ -106,66 +104,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FRAME_IMAGE_SOURCE = os.getenv("FRAME_IMAGE_SOURCE", "local").strip().lower()
-
-if FRAME_IMAGE_SOURCE == "youtube_storyboard":
-    # WORKAROUND — see docs/youtube-storyboard-thumbnails-workaround.md.
-    # Approximates the frame at each timestamp using YouTube's own scrubber
-    # storyboard sprites, for when real dataset keyframes aren't present
-    # locally. Not pixel-accurate; do not rely on this in production.
-    from app.services.youtube_thumbnail import StoryboardUnavailable, get_thumbnail_jpeg
-
-    @app.get("/static/frames/{video_id}/{frame_file}")
-    async def storyboard_frame(video_id: str, frame_file: str):
-        if _data_provider is None:
-            raise HTTPException(503, "Backend not ready")
-
-        frame_stem = Path(frame_file).stem
-        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
-        if lookup is None:
-            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, video = lookup
-        youtube_id = video.get("youtube_id")
-        if not youtube_id:
-            raise HTTPException(404, f"No youtube_id for video {video_id}")
-
-        try:
-            jpeg_bytes = get_thumbnail_jpeg(youtube_id, int(frame["timestamp_ms"]))
-        except StoryboardUnavailable as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
-
-elif FRAME_IMAGE_SOURCE == "local_video":
-    # Read data/videos/<video_id>.mp4 only; this path never opens YouTube.
-    from app.services.local_video_frame import LocalFrameUnavailable, get_local_frame_jpeg
-
-    @app.get("/static/frames/{video_id}/{frame_file}")
-    async def local_video_frame(video_id: str, frame_file: str):
-        if _data_provider is None:
-            raise HTTPException(503, "Backend not ready")
-
-        frame_stem = Path(frame_file).stem
-        lookup = _data_provider.get_frame_and_video(f"{video_id}_{frame_stem}")
-        if lookup is None:
-            raise HTTPException(404, f"Unknown frame {video_id}/{frame_file}")
-        frame, _video = lookup
-        try:
-            jpeg_bytes = await asyncio.to_thread(
-                get_local_frame_jpeg, video_id, int(frame["timestamp_ms"])
-            )
-        except LocalFrameUnavailable as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
-
-elif SAMPLE_KEYFRAMES_DIR.is_dir():
-    app.mount(
-        "/static/frames",
-        StaticFiles(directory=str(SAMPLE_KEYFRAMES_DIR)),
-        name="sample-keyframes",
-    )
-elif os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
+# Frames come from the organizers' video ZIPs (/api/zip-frame below). In LOCAL
+# mode the remote server serves its own, so pass those through unchanged.
+if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL":
     _remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
     _http_client = httpx.AsyncClient(timeout=30)
 
@@ -219,23 +160,9 @@ class StrategyConfigUpdate(BaseModel):
 async def health():
     return {
         "status":     "ok",
-        "env_mode":   os.getenv("ENV_MODE", "MOCK"),
+        "env_mode":   os.getenv("ENV_MODE", "ZIP"),
         "strategies": len(_strategies),
-        "sample_keyframes_dir": str(SAMPLE_KEYFRAMES_DIR),
-        "sample_static_mounted": SAMPLE_KEYFRAMES_DIR.is_dir(),
-    }
-
-
-@app.get("/api/static-debug")
-async def static_debug(path: str = "L01_V001/000022.jpg"):
-    target = (SAMPLE_KEYFRAMES_DIR / path).resolve()
-    return {
-        "sample_keyframes_dir": str(SAMPLE_KEYFRAMES_DIR.resolve()),
-        "path": path,
-        "target": str(target),
-        "exists": target.exists(),
-        "is_file": target.is_file(),
-        "size": target.stat().st_size if target.exists() else None,
+        "zip_video_index": len(_zip_video_proxy),
     }
 
 
@@ -255,7 +182,7 @@ async def warmup_text_encoder(passes: int = 1):
 
 @app.get("/api/transcript/{video_id}")
 async def get_transcript(video_id: str):
-    """Full transcript for one video (SAMPLE mode only) — fetched once per
+    """Full transcript for one video — fetched once per
     video by VideoModal; the frontend looks up the active segment locally
     against the already-polled playback time instead of round-tripping on
     every tick. Search-driven transcript results are a separate, not-yet-
@@ -503,7 +430,7 @@ async def delete_strategy_config(strategy_id: str, config_id: str):
 
 @app.get("/api/vector-search-algorithms")
 async def list_vector_search_algorithms():
-    if os.getenv("ENV_MODE", "MOCK").upper() == "LOCAL":
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL":
         remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
         if remote_base:
             async with httpx.AsyncClient(base_url=remote_base, timeout=10.0) as client:
@@ -521,7 +448,7 @@ async def list_vector_search_algorithms():
             "id": "linear",
             "name": "Linear",
             "available": True,
-            "description": "Local SAMPLE exact search over .npy vectors.",
+            "description": "Exact search over the vectors exported from the lot archives.",
         }
     ]
     return {

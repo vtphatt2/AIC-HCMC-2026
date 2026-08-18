@@ -118,6 +118,43 @@ def get_store() -> _VectorStore:
     return _store
 
 
+def frame_vectors(frame_ids: list[str]) -> dict[str, list[float]]:
+    """Raw vectors by frame_id, for the near-duplicate result filter. Free
+    compared with the Milvus path — the rows are already mapped, so this is a
+    copy rather than 1280 floats per hit over gRPC."""
+    store = get_store()
+    rows = store.rows_for(frame_ids)
+    return {
+        str(store.frame_id[row]): np.asarray(store.vectors[row], dtype="float32").tolist()
+        for row in rows.tolist()
+    }
+
+
+def frames_in_range(
+    video_id: str, start_ms: int, end_ms: int, *, limit: int = 20
+) -> list[dict]:
+    """Indexed keyframes of one video inside a time window, in time order."""
+    store = get_store()
+    selected = (
+        (store.video_id == video_id)
+        & (store.timestamp_ms >= start_ms)
+        & (store.timestamp_ms <= end_ms)
+    )
+    rows = np.flatnonzero(selected)
+    rows = rows[np.argsort(store.timestamp_ms[rows], kind="stable")][: max(1, int(limit))]
+    return [
+        {
+            "frame_id": str(store.frame_id[row]),
+            "video_id": str(store.video_id[row]),
+            "frame_number": int(store.frame_number[row]),
+            "timestamp_ms": int(store.timestamp_ms[row]),
+            "image_url": "",
+            "youtube_id": str(store.youtube_id[row]),
+        }
+        for row in rows.tolist()
+    ]
+
+
 def vector_search(
     query_vector: list[float],
     top_k: int = 100,

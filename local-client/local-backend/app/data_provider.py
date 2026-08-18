@@ -1,35 +1,39 @@
+"""Where the local backend gets its data.
+
+One dataset: the organizers' lot archives under `challenge_resources/data/zip_file/`.
+Everything downstream of those archives is derived, never a second source of truth:
+
+    zip_file/*_results.zip
+      ├─ ingest_zip_pipeline_results.py  → Milvus (frame records)
+      ├─ export_vectors_npy.py           → vectors.f32.npy   (what search reads)
+      └─ export_video_fps.py             → video_fps.json    (frame ↔ timestamp)
+
+    raw_zip/Videos_L*.zip                → the pictures and the video itself
+
+The older `AIC2026_sample` layout (keyframes/, metadata/, PECore-features/ — nine
+L01–L03 videos, no overlap with the ~193k indexed vectors) is gone, along with
+the MOCK fixtures that shadowed it. It described videos nobody could search for,
+which made "my query returns nothing" ambiguous in a way that cost more than the
+fixtures were worth.
+"""
 import asyncio
-import os
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-ENV_MODE = os.getenv("ENV_MODE", "MOCK")
+ENV_MODE = os.getenv("ENV_MODE", "ZIP").upper()
 REMOTE_SERVER_URL = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
 
-MOCK_DIR = Path(__file__).parent / "mock"
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SAMPLE_ROOT = next(
-    (
-        path
-        for path in (
-            REPO_ROOT / "challenge_resources" / "data",
-            REPO_ROOT / "AIC2026_sample",
-            REPO_ROOT.parent / "AIC2026_sample",
-        )
-        if path.is_dir()
-    ),
-    REPO_ROOT / "AIC2026_sample",
-)
-SAMPLE_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", DEFAULT_SAMPLE_ROOT))
+DATA_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", REPO_ROOT / "challenge_resources" / "data"))
 logger = logging.getLogger(__name__)
 CHANNELS = {
     "raw.semantic",
@@ -37,36 +41,26 @@ CHANNELS = {
     "transcript.lexical",
     "transcript.semantic",
 }
-VISUAL_FEATURE_DIRS = {
-    "raw.semantic": "raw_keyframe_embeddings",
-    "subtitled.semantic": "subtitled_keyframe_embeddings",
-}
+# Channels the lot archives carry no data for. They exist on remote-server, so a
+# strategy written against all four still runs there — it just says so plainly
+# here instead of returning an empty list that looks like "no matches".
+REMOTE_ONLY_CHANNELS = {"subtitled.semantic", "transcript.semantic"}
 
 
-def sample_subdir(name: str) -> Path:
-    outer = SAMPLE_ROOT / name
+def data_subdir(name: str) -> Path:
+    outer = DATA_ROOT / name
     nested = outer / name
-    if nested.is_dir():
-        return nested
-    return outer
+    return nested if nested.is_dir() else outer
 
 
 class DataProvider:
     """
-    Switches data source based on ENV_MODE:
-
-      MOCK  — returns data from app/mock/*.json (no server needed)
-      SAMPLE — reads AIC2026_sample keyframes/metadata directly on this machine
-      LOCAL — proxies requests to the GPU server at REMOTE_SERVER_URL
+    ZIP   — searches the vectors exported from the lot archives, on this machine
+    LOCAL — proxies every raw-data request to the GPU server at REMOTE_SERVER_URL
     """
 
     def __init__(self):
         self.mode = ENV_MODE
-        self._feature_indexes = {}
-        self._feature_positions_by_channel = {}
-        self._feature_paths_by_channel = {}
-        self._frames_by_id = {}
-        self._videos_by_id = {}
         self._text_encoder = None
         self._transcript_chunks = None
         self._milvus_collection = None
@@ -78,63 +72,46 @@ class DataProvider:
                     "ENV_MODE=LOCAL requires REMOTE_SERVER_URL to be set in .env\n"
                     "Example: REMOTE_SERVER_URL=https://xxxx.ngrok.io"
                 )
-            print(f"DataProvider: LOCAL mode → {REMOTE_SERVER_URL}")
+            print(f"DataProvider: LOCAL mode -> {REMOTE_SERVER_URL}")
 
-        elif self.mode == "MOCK":
-            self._videos, self._frames, self._ocr, self._transcripts = self._load_mock()
-            self._frames_by_id = {frame["frame_id"]: frame for frame in self._frames}
-            self._videos_by_id = {video["video_id"]: video for video in self._videos}
-            print(
-                f"DataProvider: MOCK mode — "
-                f"{len(self._videos)} videos, {len(self._frames)} frames loaded"
-            )
-
-        elif self.mode == "SAMPLE":
-            self._videos, self._frames = self._load_sample()
-            self._frames_by_id = {frame["frame_id"]: frame for frame in self._frames}
-            self._videos_by_id = {video["video_id"]: video for video in self._videos}
-            self._ocr = []
-            self._transcripts = []
-            print(
-                f"DataProvider: SAMPLE mode — local metadata: {len(self._videos)} videos, "
-                f"{len(self._frames)} keyframes (thumbnails/frame lookup only, not search coverage)"
-            )
-            # Preferred when the export exists: exact, and ~45x faster than
-            # Milvus Lite's own brute force over the same bytes (~35 ms vs
-            # ~1570 ms at top_k=1000). Milvus Lite stays as the fallback so a
-            # machine that has not run scripts/export_vectors_npy.py still
-            # works — but see docs/milvus-lite-hnsw-recall-bug.md for why that
-            # fallback must not be pointed at an HNSW collection.
+        elif self.mode == "ZIP":
+            # Preferred: exact, and ~45x faster than Milvus Lite's own brute
+            # force over the same bytes (~35 ms vs ~1570 ms at top_k=1000).
+            # Milvus Lite stays as the fallback so a machine that has not run
+            # scripts/export_vectors_npy.py still works — but see
+            # docs/milvus-lite-hnsw-recall-bug.md for why that fallback must
+            # not be pointed at an HNSW collection.
             from app.db import numpy_vector_store
 
             self._numpy_store = numpy_vector_store.available()
             if self._numpy_store:
                 store = numpy_vector_store.get_store()
                 print(
-                    f"DataProvider: raw.semantic search -> numpy memmap (exact), "
+                    f"DataProvider: ZIP mode -> numpy memmap (exact), "
                     f"{store.vectors.shape[0]} vectors"
                 )
                 stale = numpy_vector_store.staleness_warning()
                 if stale:
-                    print(f"DataProvider: WARNING — {stale}")
-            self._milvus_collection = None if self._numpy_store else self._connect_milvus_lite()
-            if self._milvus_collection is not None:
-                print(
-                    f"DataProvider: raw.semantic search -> Milvus Lite, "
-                    f"{self._milvus_collection.num_entities} vectors indexed"
-                )
-            elif self._numpy_store:
-                pass
+                    print(f"DataProvider: WARNING - {stale}")
             else:
-                print(
-                    f"DataProvider: raw.semantic search -> linear search over local .npy files "
-                    f"only (MILVUS_LITE_PATH not set or collection missing) -- limited to the "
-                    f"{len(self._videos)} local video(s) above"
-                )
+                self._milvus_collection = self._connect_milvus_lite()
+                if self._milvus_collection is not None:
+                    print(
+                        f"DataProvider: ZIP mode -> Milvus Lite, "
+                        f"{self._milvus_collection.num_entities} vectors indexed"
+                    )
+                else:
+                    raise RuntimeError(
+                        "No searchable vectors found.\n"
+                        "Run the ingest, then the export:\n"
+                        "  cd remote-server && python scripts/ingest_zip_pipeline_results.py --skip-postgres\n"
+                        "  cd ../local-client/local-backend && python scripts/export_vectors_npy.py\n"
+                        "and set MILVUS_LITE_PATH in .env so the backend knows where they landed."
+                    )
 
         else:
             raise RuntimeError(
-                f"Unknown ENV_MODE='{self.mode}'. Valid values: MOCK, SAMPLE, LOCAL"
+                f"Unknown ENV_MODE='{self.mode}'. Valid values: ZIP, LOCAL"
             )
 
     # ── Public interface ───────────────────────────────────────────────────────
@@ -148,8 +125,6 @@ class DataProvider:
                 )
                 response.raise_for_status()
                 return response.json()
-        if self.mode == "MOCK":
-            return {"status": "skipped", "reason": "MOCK mode has no text encoder"}
         if self._text_encoder is None:
             from app.services.text_encoder import PECoreTextEncoder
 
@@ -186,98 +161,59 @@ class DataProvider:
             if excluded:
                 payload["exclude_frame_ids"] = excluded
             async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=15.0) as client:
-                response = await client.post(
-                    "/api/retrieve",
-                    json=payload,
-                )
+                response = await client.post("/api/retrieve", json=payload)
                 response.raise_for_status()
                 return response.json().get("hits", [])
 
-        if channel in VISUAL_FEATURE_DIRS:
-            if self.mode == "MOCK":
-                hits = [
-                    dict(frame) for frame in self._frames
-                    if frame.get("frame_id") not in set(excluded)
-                ][:top_k]
-            elif self._numpy_store and channel == "raw.semantic":
-                from app.db import numpy_vector_store
+        if channel in REMOTE_ONLY_CHANNELS:
+            raise RuntimeError(
+                f"'{channel}' is not in the lot archives — it is indexed on "
+                f"remote-server. Run with ENV_MODE=LOCAL to reach it."
+            )
 
-                t_encode = time.monotonic()
-                query_vector = self._encode_sample_text(query)
-                logger.info(
-                    "[TIMER] text_encode %.3f ms text_len=%s",
-                    (time.monotonic() - t_encode) * 1000, len(query),
-                )
-                t_search = time.monotonic()
-                hits = numpy_vector_store.vector_search(
-                    query_vector.tolist(),
-                    top_k=top_k,
-                    exclude_frame_ids=excluded,
-                    video_genre=video_genre,
-                    include_vector=True,
-                )
-                logger.info(
-                    "[TIMER] vector_search %.3f ms backend=numpy channel=%s top_k=%s "
-                    "excluded=%s hits=%s",
-                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
-                )
-                for hit in hits:
-                    hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
-            elif self._milvus_collection is not None and channel == "raw.semantic":
-                from app.db import milvus_client
-
-                t_encode = time.monotonic()
-                query_vector = self._encode_sample_text(query)
-                logger.info(
-                    "[TIMER] text_encode %.3f ms text_len=%s",
-                    (time.monotonic() - t_encode) * 1000, len(query),
-                )
-                t_search = time.monotonic()
-                hits = milvus_client.vector_search(
-                    self._milvus_collection,
-                    query_vector.tolist(),
-                    top_k=top_k,
-                    algorithm=milvus_client.DEFAULT_ALGORITHM,
-                    expr=_exclude_frames_expr(excluded),
-                    include_vector=True,
-                )
-                logger.info(
-                    "[TIMER] vector_search %.3f ms backend=milvus channel=%s top_k=%s "
-                    "excluded=%s hits=%s",
-                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
-                )
-                # Derive the thumbnail URL from video_id/timestamp_ms rather than
-                # trusting whatever image_url an ingest script happened to store —
-                # local-backend is the one that knows how *it* serves zip-sourced
-                # frames (/api/zip-frame), so it's the source of truth here, not
-                # a value baked in at ingest time.
-                for hit in hits:
-                    hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
-            else:
-                t_encode = time.monotonic()
-                query_vector = self._encode_sample_text(query)
-                logger.info(
-                    "[TIMER] text_encode %.3f ms text_len=%s",
-                    (time.monotonic() - t_encode) * 1000, len(query),
-                )
-                t_search = time.monotonic()
-                hits = self.linear_search_by_vector(
-                    query_vector,
-                    top_k=top_k,
-                    channel=channel,
-                    exclude_frame_ids=excluded,
-                )
-                logger.info(
-                    "[TIMER] linear_search %.3f ms channel=%s top_k=%s excluded=%s hits=%s",
-                    (time.monotonic() - t_search) * 1000, channel, top_k, len(excluded), len(hits),
-                )
-            return self._rank_hits(channel, hits)
         if channel == "transcript.lexical":
             return self._search_local_transcripts(query, top_k)
-        raise RuntimeError(
-            "transcript.semantic is available through the remote SERVER; "
-            f"it is not indexed in {self.mode} mode"
+
+        t_encode = time.monotonic()
+        query_vector = self._encode_text(query)
+        logger.info(
+            "[TIMER] text_encode %.3f ms text_len=%s",
+            (time.monotonic() - t_encode) * 1000, len(query),
         )
+        t_search = time.monotonic()
+        if self._numpy_store:
+            from app.db import numpy_vector_store
+
+            hits = numpy_vector_store.vector_search(
+                query_vector.tolist(),
+                top_k=top_k,
+                exclude_frame_ids=excluded,
+                video_genre=video_genre,
+                include_vector=True,
+            )
+            backend = "numpy"
+        else:
+            from app.db import milvus_client
+
+            hits = milvus_client.vector_search(
+                self._milvus_collection,
+                query_vector.tolist(),
+                top_k=top_k,
+                algorithm=milvus_client.DEFAULT_ALGORITHM,
+                expr=_exclude_frames_expr(excluded),
+                include_vector=True,
+            )
+            backend = "milvus"
+        logger.info(
+            "[TIMER] vector_search %.3f ms backend=%s channel=%s top_k=%s excluded=%s hits=%s",
+            (time.monotonic() - t_search) * 1000, backend, channel, top_k, len(excluded), len(hits),
+        )
+        # Derived here rather than trusted from whatever an ingest script stored:
+        # this backend is the one that knows how *it* serves zip-sourced frames,
+        # so a URL baked in at ingest time can only go stale.
+        for hit in hits:
+            hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
+        return self._rank_hits(channel, hits)
 
     async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, list[float]]:
         frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
@@ -291,25 +227,14 @@ class DataProvider:
                 )
                 response.raise_for_status()
                 return response.json().get("embeddings", {})
-        if self.mode == "MOCK":
-            return {
-                frame_id: list(self._frames_by_id[frame_id]["_embedding"])
-                for frame_id in frame_ids
-                if frame_id in self._frames_by_id and self._frames_by_id[frame_id].get("_embedding")
-            }
+        if self._numpy_store:
+            from app.db import numpy_vector_store
 
-        if self._milvus_collection is not None:
-            from app.db import milvus_client
+            return numpy_vector_store.frame_vectors(frame_ids)
 
-            return milvus_client.query_frame_vectors(self._milvus_collection, frame_ids)
-        self._ensure_feature_index("raw.semantic")
-        matrix, _ = self._feature_indexes["raw.semantic"]
-        positions = self._feature_positions_by_channel["raw.semantic"]
-        return {
-            frame_id: matrix[positions[frame_id]].tolist()
-            for frame_id in frame_ids
-            if frame_id in positions
-        }
+        from app.db import milvus_client
+
+        return milvus_client.query_frame_vectors(self._milvus_collection, frame_ids)
 
     async def keyframes(
         self,
@@ -335,47 +260,65 @@ class DataProvider:
                 )
                 response.raise_for_status()
                 return response.json().get("hits", [])
-        return [
-            dict(frame)
-            for frame in self._frames
-            if frame.get("video_id") == video_id
-            and int(start_ms) <= int(frame.get("timestamp_ms", -1)) <= int(end_ms)
-        ][:limit]
+        if self._numpy_store:
+            from app.db import numpy_vector_store
+
+            hits = numpy_vector_store.frames_in_range(
+                video_id, int(start_ms), int(end_ms), limit=limit
+            )
+        else:
+            from app.db import milvus_client
+
+            hits = milvus_client.query_frames_in_time_range(
+                self._milvus_collection, video_id, int(start_ms), int(end_ms), limit=limit
+            )
+        for hit in hits:
+            hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
+        return hits
 
     def results(self, hits: list[dict]) -> list[dict]:
+        from app.services.zip_frame_source import ingest_fps
+
         output = []
         seen = set()
         for hit in hits:
             frame_id = hit.get("frame_id")
             if not frame_id:
-                raise ValueError("Final result hit must contain frame_id; call keyframes() for transcript chunks")
+                raise ValueError(
+                    "Final result hit must contain frame_id; call keyframes() for transcript chunks"
+                )
             if frame_id in seen:
                 continue
             seen.add(frame_id)
-            frame = {**self._frames_by_id.get(frame_id, {}), **hit}
-            video = self._videos_by_id.get(frame.get("video_id"), {})
-            confidence = float(frame.get("confidence", frame.get("score", 0.0)))
+            video_id = hit.get("video_id", "")
+            confidence = float(hit.get("confidence", hit.get("score", 0.0)))
             row = {
-                **frame,
-                "video_id": frame.get("video_id", ""),
-                "youtube_id": frame.get("youtube_id", video.get("youtube_id", "")),
+                **hit,
+                "video_id": video_id,
+                "youtube_id": hit.get("youtube_id", ""),
                 "frame_id": frame_id,
-                "frame_number": int(frame.get("frame_number", 0)),
-                "timestamp_ms": int(frame.get("timestamp_ms", 0)),
+                "frame_number": int(hit.get("frame_number", 0)),
+                "timestamp_ms": int(hit.get("timestamp_ms", 0)),
                 "confidence": max(0.0, min(1.0, confidence)),
-                "frame_image_url": frame.get("frame_image_url", frame.get("image_url", "")),
-                "fps": float(frame.get("fps", video.get("fps", 25.0))),
+                "frame_image_url": hit.get("frame_image_url", hit.get("image_url", "")),
+                # The same fps the ingest used, so the frontend's frame counter
+                # agrees with the frame_number the search returned.
+                "fps": float(hit.get("fps") or ingest_fps(video_id) or 25.0),
             }
             output.append(_strip_private(row))
         return output
 
-    async def search_transcript_chunks(self, query: str, limit: int = 100, topic_filter: str | None = None) -> list[dict]:
-        """Search topic-based transcript chunks via remote server (vector search)."""
-        if self.mode in ("MOCK", "SAMPLE"):
+    async def search_transcript_chunks(
+        self, query: str, limit: int = 100, topic_filter: str | None = None
+    ) -> list[dict]:
+        """Topic-based transcript chunk search — indexed on remote-server only."""
+        if self.mode != "LOCAL":
             return []
         return await self._transcript_chunks_search_remote(query, limit, topic_filter)
 
-    async def _transcript_chunks_search_remote(self, query: str, limit: int, topic_filter: str | None = None) -> list[dict]:
+    async def _transcript_chunks_search_remote(
+        self, query: str, limit: int, topic_filter: str | None = None
+    ) -> list[dict]:
         if not REMOTE_SERVER_URL:
             logger.warning("LOCAL mode but REMOTE_SERVER_URL not set. Returning empty results.")
             return []
@@ -386,8 +329,7 @@ class DataProvider:
             async with httpx.AsyncClient(base_url=REMOTE_SERVER_URL, timeout=10.0) as client:
                 response = await client.post("/api/search/transcript", json=payload)
                 response.raise_for_status()
-                data = response.json()
-                return data.get("results", [])
+                return response.json().get("results", [])
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
                 logger.warning("Remote server does not have /api/search/transcript endpoint.")
@@ -398,103 +340,22 @@ class DataProvider:
             logger.error("Remote transcript chunk search error: %s", exc)
             return []
 
-    # ── MOCK ──────────────────────────────────────────────────────────────────
-
-    def _load_mock(self):
-        def load(name):
-            return json.loads((MOCK_DIR / name).read_text(encoding="utf-8"))
-
-        videos_list = load("mock_videos.json")
-        frames = load("mock_frames.json")
-        ocr = load("mock_ocr.json")
-        transcripts = load("mock_transcripts.json")
-        return videos_list, frames, ocr, transcripts
-
-    # ── SAMPLE ───────────────────────────────────────────────────────────────
-
-    def _load_sample(self):
-        metadata_dir = sample_subdir("metadata")
-        keyframes_dir = sample_subdir("keyframes")
-        features_dir = sample_subdir("PECore-features")
-
-        for label, path in {
-            "metadata": metadata_dir,
-            "keyframes": keyframes_dir,
-            "PECore-features": features_dir,
-        }.items():
-            if not path.is_dir():
-                raise RuntimeError(f"AIC sample {label} directory not found: {path}")
-
-        videos = []
-        frames = []
-        self._feature_paths_by_channel = {
-            channel: {
-                f"{video_dir.name}_{path.stem}": path
-                for video_dir in sorted((features_dir / dirname).glob("*"))
-                if video_dir.is_dir()
-                for path in video_dir.glob("*.npy")
-            }
-            for channel, dirname in VISUAL_FEATURE_DIRS.items()
-        }
-
-        for metadata_path in sorted(metadata_dir.glob("*.json")):
-            video_id = metadata_path.stem
-            data = json.loads(metadata_path.read_text(encoding="utf-8"))
-            fps = float(data.get("fps") or 25.0)
-            frame_paths = sorted(
-                (features_dir / VISUAL_FEATURE_DIRS["raw.semantic"] / video_id).glob("*.npy")
-            )
-            if not frame_paths:
-                frame_paths = sorted((keyframes_dir / video_id).glob("*.jpg"))
-
-            youtube_id = data.get("youtube_id") or self._youtube_id_from_link(
-                data.get("video_link", ""),
-                fallback=video_id,
-            )
-            max_timestamp_ms = 0
-
-            for path in frame_paths:
-                frame_number = int(path.stem)
-                timestamp_ms = int(frame_number / fps * 1000)
-                max_timestamp_ms = max(max_timestamp_ms, timestamp_ms)
-                frames.append({
-                    "frame_id":     f"{video_id}_{path.stem}",
-                    "video_id":     video_id,
-                    "frame_number": frame_number,
-                    "timestamp_ms": timestamp_ms,
-                    "image_url":    f"/static/frames/{video_id}/{path.stem}.jpg",
-                    "_feature_path": str(path) if path.suffix == ".npy" else "",
-                })
-
-            videos.append({
-                "video_id":    video_id,
-                "title":       data.get("title") or video_id,
-                "youtube_id":  youtube_id,
-                "fps":         fps,
-                "duration_ms": max_timestamp_ms,
-                "frame_count": len(frame_paths),
-            })
-
-        frames.sort(key=lambda f: (f["video_id"], f["frame_number"]))
-        return videos, frames
+    # ── Internals ─────────────────────────────────────────────────────────────
 
     def _connect_milvus_lite(self):
-        """Optional: query a lightweight, embedded Milvus Lite instead of
-        linear numpy search over the locally loaded .npy files — the
-        local-backend-weight workaround for remote-server's real Milvus (same
-        app/db/milvus_client.py, same schema). Enabled by setting
-        MILVUS_LITE_PATH; falls back to linear_search_by_vector() untouched
-        when unset or unavailable."""
+        """Fallback vector search for a machine that has not run
+        scripts/export_vectors_npy.py — same app/db/milvus_client.py and schema
+        as remote-server, reading the file the ingest wrote. Enabled by
+        MILVUS_LITE_PATH."""
         if not os.getenv("MILVUS_LITE_PATH", "").strip():
             return None
         try:
             from app.db import milvus_client
 
             milvus_client.connect()
-            # Was hard-wired to "hnsw", which silently ignored
-            # VECTOR_SEARCH_BACKEND and pinned local search to the HNSW
-            # collection — the one whose search path in milvus_lite 3.2.0
-            # returns wrong neighbours (docs/milvus-lite-hnsw-recall-bug.md).
+            # Follows VECTOR_SEARCH_BACKEND rather than hard-wiring "hnsw" —
+            # milvus_lite 3.2.0's HNSW search returns wrong neighbours
+            # (docs/milvus-lite-hnsw-recall-bug.md), so this must land on flat.
             algorithm = milvus_client.DEFAULT_ALGORITHM
             if not milvus_client.has_collection_for_algorithm(algorithm, "raw.semantic"):
                 print(
@@ -511,110 +372,12 @@ class DataProvider:
             print(f"DataProvider: MILVUS_LITE_PATH is set but connection failed: {exc}")
             return None
 
-    # ── SAMPLE linear vector search ──────────────────────────────────────────
-
-    def _encode_sample_text(self, text: str):
+    def _encode_text(self, text: str):
         if self._text_encoder is None:
             from app.services.text_encoder import PECoreTextEncoder
 
             self._text_encoder = PECoreTextEncoder()
         return self._text_encoder.encode(text)
-
-    def get_frame_and_video(self, frame_id: str) -> tuple[dict, dict] | None:
-        """Look up frame/video metadata used by SAMPLE-mode image routes."""
-        if self.mode != "SAMPLE":
-            return None
-        frame = self._frames_by_id.get(frame_id)
-        if frame is None:
-            return None
-        video = self._videos_by_id.get(frame["video_id"])
-        if video is None:
-            return None
-        return frame, video
-
-    def linear_search_by_vector(
-        self,
-        query_vector,
-        top_k: int = 100,
-        channel: str = "raw.semantic",
-        exclude_frame_ids: list[str] | None = None,
-    ) -> list[dict]:
-        if self.mode != "SAMPLE":
-            raise RuntimeError("linear_search_by_vector is only available in ENV_MODE=SAMPLE")
-        self._ensure_feature_index(channel)
-        matrix, frame_ids = self._feature_indexes[channel]
-
-        import numpy as np
-
-        query_vector = np.asarray(query_vector, dtype="float32").reshape(-1)
-        if query_vector.shape[0] != matrix.shape[1]:
-            raise ValueError(
-                f"Query vector has dim {query_vector.shape[0]}; "
-                f"expected {matrix.shape[1]}"
-            )
-        norm = np.linalg.norm(query_vector)
-        if norm == 0:
-            raise ValueError("Query vector has zero norm")
-
-        query_vector = query_vector / norm
-        scores = matrix @ query_vector
-        excluded_count = 0
-        for frame_id in exclude_frame_ids or []:
-            index = self._feature_positions_by_channel[channel].get(str(frame_id))
-            if index is not None and scores[index] != -float("inf"):
-                scores[index] = -float("inf")
-                excluded_count += 1
-        available = len(scores) - excluded_count
-        if available <= 0:
-            return []
-        top_k = max(1, min(int(top_k), available))
-        partition_k = min(top_k - 1, len(scores) - 1)
-        top_indices = np.argpartition(-scores, partition_k)[:top_k]
-        top_indices = top_indices[np.argsort(-scores[top_indices])]
-
-        results = []
-        for idx in top_indices:
-            hit_frame_id = frame_ids[int(idx)]
-            frame = dict(self._frames_by_id[hit_frame_id])
-            frame["score"] = float(scores[int(idx)])
-            results.append(frame)
-        return results
-
-    def _ensure_feature_index(self, channel: str = "raw.semantic") -> None:
-        if channel not in VISUAL_FEATURE_DIRS:
-            raise ValueError(f"'{channel}' is not a visual channel")
-        if channel in self._feature_indexes:
-            return
-
-        import numpy as np
-        from tqdm import tqdm
-
-        vectors = []
-        frame_ids = []
-        paths = self._feature_paths_by_channel.get(channel, {})
-        for frame in tqdm(self._frames, desc=f"Building {channel} index", unit="frame"):
-            feature_path = paths.get(frame["frame_id"])
-            if not feature_path:
-                continue
-            vector = np.load(feature_path).astype("float32").reshape(-1)
-            norm = np.linalg.norm(vector)
-            if norm == 0:
-                continue
-            vectors.append(vector / norm)
-            frame_ids.append(frame["frame_id"])
-
-        if not vectors:
-            raise RuntimeError("No PECore .npy feature vectors found for SAMPLE mode")
-
-        matrix = np.vstack(vectors)
-        self._feature_indexes[channel] = (matrix, frame_ids)
-        self._feature_positions_by_channel[channel] = {
-            frame_id: index for index, frame_id in enumerate(frame_ids)
-        }
-        print(
-            f"DataProvider: built {channel} index — "
-            f"{matrix.shape[0]} vectors x {matrix.shape[1]} dims"
-        )
 
     @staticmethod
     def _rank_hits(channel: str, hits: list[dict]) -> list[dict]:
@@ -624,34 +387,22 @@ class DataProvider:
         ]
 
     def _search_local_transcripts(self, query: str, top_k: int) -> list[dict]:
-        if self.mode == "MOCK":
-            chunks = [
-                {
-                    "chunk_id": row.get("id", f"mock:{index}"),
-                    "video_id": row["video_id"],
-                    "start_time_ms": row["start_time_ms"],
-                    "end_time_ms": row["end_time_ms"],
-                    "text": row["text"],
-                }
-                for index, row in enumerate(self._transcripts)
-            ]
-        else:
-            if self._transcript_chunks is None:
-                from app.services.transcript_index import Transcript
+        if self._transcript_chunks is None:
+            from app.services.transcript_index import Transcript
 
-                chunks = []
-                for path in sorted(sample_subdir("transcripts").glob("*_Transcript.txt")):
-                    transcript = Transcript.from_txt(path)
-                    for index, segment in enumerate(transcript.segments):
-                        chunks.append({
-                            "chunk_id": f"{transcript.video_id}:{index}",
-                            "video_id": transcript.video_id,
-                            "start_time_ms": segment.start_ms,
-                            "end_time_ms": segment.end_ms,
-                            "text": segment.text,
-                        })
-                self._transcript_chunks = chunks
-            chunks = self._transcript_chunks
+            chunks = []
+            for path in sorted(data_subdir("transcripts").glob("*_Transcript.txt")):
+                transcript = Transcript.from_txt(path)
+                for index, segment in enumerate(transcript.segments):
+                    chunks.append({
+                        "chunk_id": f"{transcript.video_id}:{index}",
+                        "video_id": transcript.video_id,
+                        "start_time_ms": segment.start_ms,
+                        "end_time_ms": segment.end_ms,
+                        "text": segment.text,
+                    })
+            self._transcript_chunks = chunks
+        chunks = self._transcript_chunks
 
         tokens = set(re.findall(r"\w+", query.casefold()))
         scored = []
@@ -666,19 +417,13 @@ class DataProvider:
             for rank, (hit, _) in enumerate(scored[:top_k], start=1)
         ]
 
-    @staticmethod
-    def _youtube_id_from_link(link: str, fallback: str) -> str:
-        parsed = urlparse(link)
-        if parsed.netloc.endswith("youtu.be"):
-            return parsed.path.strip("/") or fallback
-        return parse_qs(parsed.query).get("v", [fallback])[0] or fallback
-
 
 def _exclude_frames_expr(frame_ids: list[str]) -> str | None:
     if not frame_ids:
         return None
     quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
     return f"frame_id not in [{quoted}]"
+
 
 def _strip_private(value):
     if isinstance(value, dict):

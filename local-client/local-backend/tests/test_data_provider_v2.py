@@ -5,67 +5,57 @@ from app.data_provider import DataProvider
 
 
 class DataProviderV2Tests(unittest.IsolatedAsyncioTestCase):
-    def test_sample_layout_maps_both_visual_channels_to_same_frame_ids(self):
-        provider = DataProvider.__new__(DataProvider)
-        provider._feature_paths_by_channel = {}
-
-        videos, frames = provider._load_sample()
-
-        raw = provider._feature_paths_by_channel["raw.semantic"]
-        subtitled = provider._feature_paths_by_channel["subtitled.semantic"]
-        self.assertTrue(videos)
-        self.assertTrue(frames)
-        self.assertEqual(set(raw), set(subtitled))
-        self.assertEqual(set(raw), {frame["frame_id"] for frame in frames})
-
     async def test_retrieve_rejects_unknown_channel(self):
         provider = DataProvider.__new__(DataProvider)
-        provider.mode = "MOCK"
+        provider.mode = "ZIP"
         with self.assertRaisesRegex(ValueError, "Unknown channel"):
             await provider.retrieve("made.up", "query", top_k=10)
 
-    async def test_keyframes_returns_only_requested_interval(self):
+    async def test_remote_only_channels_say_so_instead_of_returning_nothing(self):
+        """An empty list would read as 'no matches' for a channel the lot
+        archives simply do not carry."""
         provider = DataProvider.__new__(DataProvider)
-        provider.mode = "SAMPLE"
-        provider._frames = [
-            {"frame_id": "a", "video_id": "v", "timestamp_ms": 900},
-            {"frame_id": "b", "video_id": "v", "timestamp_ms": 1000},
-            {"frame_id": "c", "video_id": "v", "timestamp_ms": 2000},
-            {"frame_id": "d", "video_id": "v", "timestamp_ms": 2100},
-        ]
+        provider.mode = "ZIP"
+        for channel in ("subtitled.semantic", "transcript.semantic"):
+            with self.assertRaisesRegex(RuntimeError, "remote-server"):
+                await provider.retrieve(channel, "query", top_k=10)
 
-        frames = await provider.keyframes("v", 1000, 2000, limit=20)
-
-        self.assertEqual([frame["frame_id"] for frame in frames], ["b", "c"])
-
-    def test_results_hydrates_frame_hit_and_rejects_transcript_chunk(self):
+    def test_results_carries_hit_fields_and_strips_private_keys(self):
         provider = DataProvider.__new__(DataProvider)
-        provider.mode = "SAMPLE"
-        provider._frames_by_id = {
-            "f1": {
-                "frame_id": "f1",
-                "video_id": "v1",
-                "frame_number": 25,
-                "timestamp_ms": 1000,
-                "image_url": "/static/frames/v1/25.jpg",
-            }
-        }
-        provider._videos_by_id = {
-            "v1": {"youtube_id": "abcdefghijk", "fps": 25.0}
-        }
+        provider.mode = "ZIP"
 
         results = provider.results([{
-            "frame_id": "f1",
+            "frame_id": "L30_V001_000100",
+            "video_id": "L30_V001",
+            "frame_number": 100,
+            "timestamp_ms": 4000,
+            "youtube_id": "abcdefghijk",
+            "image_url": "/api/zip-frame/L30_V001/4000",
             "score": 0.75,
-            "evidence": [{"frame_id": "f1", "_feature_path": "private.npy"}],
+            "evidence": [{"frame_id": "L30_V001_000100", "_vector": [0.1]}],
         }])
 
         self.assertEqual(results[0]["youtube_id"], "abcdefghijk")
-        self.assertEqual(results[0]["frame_image_url"], "/static/frames/v1/25.jpg")
+        self.assertEqual(results[0]["frame_image_url"], "/api/zip-frame/L30_V001/4000")
         self.assertEqual(results[0]["confidence"], 0.75)
-        self.assertNotIn("_feature_path", results[0]["evidence"][0])
+        self.assertNotIn("_vector", results[0]["evidence"][0])
         with self.assertRaisesRegex(ValueError, "frame_id"):
             provider.results([{"chunk_id": "chunk-1", "video_id": "v1"}])
+
+    def test_results_uses_the_fps_the_ingest_used(self):
+        """timestamp_ms was computed at ingest as frame_number / fps * 1000.
+        A hit without fps must get that same number back, not a 25.0 default,
+        or the frontend's frame counter drifts on the 91 non-25 fps videos."""
+        provider = DataProvider.__new__(DataProvider)
+        provider.mode = "ZIP"
+
+        with patch("app.services.zip_frame_source.ingest_fps", return_value=29.97002997002997):
+            results = provider.results([{
+                "frame_id": "L25_V004_000100", "video_id": "L25_V004",
+                "frame_number": 100, "timestamp_ms": 3336, "score": 0.5,
+            }])
+
+        self.assertAlmostEqual(results[0]["fps"], 29.97002997002997)
 
     async def test_local_mode_proxies_channel_without_exposing_database(self):
         provider = DataProvider.__new__(DataProvider)
