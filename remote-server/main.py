@@ -1,6 +1,4 @@
-import json
 import os
-import re
 import time
 import importlib
 import inspect
@@ -8,10 +6,10 @@ import logging
 import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
-from urllib.parse import parse_qs, urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -26,7 +24,7 @@ from app.services.strategy_config import StrategyConfigStore
 from app.services.transcript_search import TranscriptSearchService
 from app.services.transcript_jsonl_reader import transcript_response
 from app.services.query_parser import QueryParser
-from scripts.sample_paths import default_sample_root, sample_subdir
+from app.services import local_zip_media
 
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 REMOTE_ROOT = Path(__file__).parent
@@ -37,52 +35,7 @@ _transcript_search_service: TranscriptSearchService | None = None
 _strategy_configs = StrategyConfigStore(REMOTE_ROOT.parent / "challenge_resources" / "data" / "strategy-configs")
 logger = logging.getLogger(__name__)
 
-YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
-
-
-def _youtube_id_from_link(link: str) -> str:
-    if not link:
-        return ""
-    try:
-        parsed = urlparse(link)
-        if parsed.netloc.endswith("youtu.be"):
-            return parsed.path.strip("/")
-        return parse_qs(parsed.query).get("v", [""])[0]
-    except Exception:
-        return ""
-
-
-def _load_video_metadata_from_disk() -> list[dict]:
-    sample_root = default_sample_root(REMOTE_ROOT.parent)
-    metadata_dir = sample_subdir(sample_root, "metadata")
-    if not metadata_dir.is_dir():
-        return []
-    videos = []
-    for path in sorted(metadata_dir.glob("*.json")):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            video_id = path.stem
-            youtube_id = data.get("youtube_id") or _youtube_id_from_link(data.get("video_link", ""))
-            if youtube_id and not YOUTUBE_ID_PATTERN.fullmatch(youtube_id):
-                continue
-            videos.append({
-                "video_id": video_id,
-                "title": data.get("title") or video_id,
-                "youtube_id": youtube_id or "",
-                "fps": float(data.get("fps") or 25.0),
-                "duration_ms": 0,
-                "frame_count": 0,
-            })
-        except Exception:
-            pass
-    return videos
-
-
-async def _auto_populate_video_metadata() -> int:
-    videos = _load_video_metadata_from_disk()
-    if not videos:
-        return 0
-    return await postgres_client.upsert_video_metadata(videos)
+ZIP_FRAME_TIMEOUT_SEC = float(os.getenv("ZIP_FRAME_TIMEOUT_SEC", "45"))
 
 
 def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
@@ -111,10 +64,6 @@ async def lifespan(app: FastAPI):
     await postgres_client.init_schema()
     milvus_client.connect()
     milvus_client.create_collection_if_missing()
-
-    populated = await _auto_populate_video_metadata()
-    if populated:
-        print(f"Auto-populated {populated} video metadata entries (with youtube_id)")
 
     print("Loading DataProvider...")
     _data_provider = DataProvider()
@@ -167,18 +116,14 @@ app.add_middleware(
 )
 
 def _frame_static_dir() -> Path:
+    """Only for lots that shipped keyframe JPGs. Lot archives carry none, so the
+    default is an empty directory and thumbnails come from /api/zip-frame."""
     configured = os.getenv("FRAME_STATIC_DIR", "").strip()
     if configured:
         path = Path(configured).expanduser()
         if not path.is_dir():
             raise RuntimeError(f"FRAME_STATIC_DIR does not exist or is not a directory: {path}")
         return path
-
-    sample_root = default_sample_root(REMOTE_ROOT.parent)
-    sample_keyframes = sample_subdir(sample_root, "keyframes")
-    if sample_keyframes.is_dir():
-        return sample_keyframes
-
     return REMOTE_ROOT / "static" / "frames"
 
 
@@ -259,6 +204,10 @@ async def health():
         "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
+        # Scans raw_zip/ on first call — this is the check for whether the
+        # /api/zip-frame and /api/zip-video routes have anything to serve.
+        "local_zip_videos": await local_zip_media.available_video_count(),
+        "raw_zip_dir": str(local_zip_media.raw_zip_dir()),
     }
 
 
@@ -319,6 +268,59 @@ async def get_transcript(video_id: str):
     if payload is None:
         raise HTTPException(404, f"No transcript found for video_id={video_id}")
     return payload
+
+
+@app.get("/api/zip-video/{video_id}")
+async def zip_video(video_id: str, request: Request):
+    """Stream playback from a local `Videos_L*.zip` in raw_zip/, translating the
+    browser's Range request into a seek inside the archive. Nothing is unpacked
+    and nothing is decoded — the <video> element seeks against this URL exactly
+    as it would against a plain MP4.
+
+    404 (no archive holds this video_id) is the expected signal for VideoModal
+    to fall back to YouTube."""
+    try:
+        headers, body = await local_zip_media.open_range(
+            video_id, request.headers.get("range")
+        )
+    except local_zip_media.LocalZipUnavailable as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Unexpected error opening zip-video stream for %s", video_id)
+        raise HTTPException(500, f"Unexpected error opening video stream: {exc}") from exc
+
+    return StreamingResponse(body, status_code=206, headers=headers)
+
+
+@app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
+async def zip_frame(video_id: str, timestamp_ms: int):
+    """Decode one JPEG straight out of a local archive, for lots ingested
+    without keyframe JPGs (ingest_zip_pipeline_results.py). The per-video sample
+    table is parsed once and cached; each frame is then one seek plus one
+    ffmpeg decode.
+
+    This route is the boundary where every failure has to become an HTTP
+    response — get_frame_jpeg guarantees bytes or LocalZipUnavailable, and the
+    timeout bounds total wall time so a client is never left waiting."""
+    try:
+        jpeg_bytes = await asyncio.wait_for(
+            local_zip_media.get_frame_jpeg(video_id, timestamp_ms),
+            timeout=ZIP_FRAME_TIMEOUT_SEC,
+        )
+    except local_zip_media.LocalZipUnavailable as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(504, f"Frame request timed out for {video_id}") from exc
+    except Exception as exc:
+        logger.exception("Unexpected error decoding zip-frame %s/%s", video_id, timestamp_ms)
+        raise HTTPException(500, f"Unexpected error decoding frame: {exc}") from exc
+
+    return Response(
+        content=jpeg_bytes,
+        media_type="image/jpeg",
+        # A frame of an archive that never changes.
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/api/strategies")

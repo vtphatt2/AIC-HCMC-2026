@@ -74,10 +74,12 @@ class DataProvider:
         if TRANSCRIPT_CHUNK_SEARCH_ENABLED:
             try:
                 from pathlib import Path
-                keyframe_dir = Path(os.getenv("FRAME_STATIC_DIR", ""))
-                if not keyframe_dir.is_dir():
-                    sample_root = Path(__file__).parent.parent.parent / "AIC2026_sample"
-                    keyframe_dir = sample_root / "keyframes" / "keyframes"
+                # Lot archives ship no JPGs, so this is usually an empty
+                # directory and thumbnails resolve through /api/zip-frame.
+                keyframe_dir = Path(
+                    os.getenv("FRAME_STATIC_DIR", "")
+                    or Path(__file__).resolve().parents[2] / "static" / "frames"
+                )
                 self._transcript_search = TranscriptSearchService(keyframe_dir=keyframe_dir)
                 logger.info("Transcript chunk search enabled (keyframe_dir=%s)", keyframe_dir)
             except Exception as exc:
@@ -272,8 +274,22 @@ class DataProvider:
         videos = {row["video_id"]: row for row in rows}
         for hit in hits:
             video = videos.get(hit["video_id"], {})
-            hit["youtube_id"] = str(video.get("youtube_id", ""))
-            hit["fps"] = float(video.get("fps", 25.0))
+            # Only overwrite when PostgreSQL actually knows better. The zip
+            # ingest denormalizes youtube_id/fps straight into each Milvus
+            # record precisely so playback works without a videos row — and
+            # with --skip-postgres there is no row at all, so an unconditional
+            # assignment blanked a value that was already correct.
+            if video.get("youtube_id"):
+                hit["youtube_id"] = str(video["youtube_id"])
+            else:
+                hit["youtube_id"] = str(hit.get("youtube_id", ""))
+            hit["fps"] = float(video.get("fps") or hit.get("fps") or 25.0)
+            # Lots ingested from *_results.zip carry no JPG and no image_url
+            # (ingest_zip_pipeline_results.py leaves it blank on purpose, so the
+            # URL can't go stale when the serving mechanism changes). Derive it
+            # here from what every hit already has. Same rule as local-backend.
+            if not hit.get("image_url"):
+                hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
 
     async def get_raw_data(self, query_groups: list[dict], limit: int = 1000, video_genre: str = "All") -> dict:
         """
