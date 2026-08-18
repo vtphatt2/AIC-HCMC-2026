@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+import logging
 import os
 import struct
+import zipfile
 import subprocess
 from bisect import bisect_right
 from collections import OrderedDict
@@ -29,13 +32,97 @@ import httpx
 from app.services import mp4_box_parser as box
 from app.services.range_http_client import RangeFetchError, RangeHTTPClient
 from app.services.remote_zip_proxy import RemoteZipVideoProxy
-# Same repo-root walk the storyboard cache uses — reused rather than copied a
-# third time (text_encoder.py has its own).
-from app.services.youtube_thumbnail import _find_repo_root
+
+logger = logging.getLogger(__name__)
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+# How far past the target to look for frames presented before it. H.264
+# reordering depth is small; 32 is far past any real encoder setting.
+REORDER_LOOKAHEAD = 32
 
 
 class ZipFrameUnavailable(RuntimeError):
     pass
+
+
+# ── Authoritative fps ─────────────────────────────────────────────────────────
+# The fps a video was *ingested* with, not the one derived from its moov.
+# `timestamp_ms = frame_number / fps * 1000` was computed at ingest from
+# scenes.json; this route inverts it, so it has to invert with the same number.
+# They agree for the 25.0 fps majority, but 91 videos are 29.97/30.0 where a
+# derived value can land on the wrong one — and that error grows with the
+# timestamp instead of staying bounded. Precomputed by
+# remote-server/scripts/export_video_fps.py.
+
+def results_zip_dir() -> Path:
+    configured = os.getenv("RESULTS_ZIP_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return REPO_ROOT / "challenge_resources" / "data" / "zip_file"
+
+
+def fps_map_path() -> Path:
+    configured = os.getenv("VIDEO_FPS_MAP", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return results_zip_dir().parent / "video_fps.json"
+
+
+def _scan_scenes() -> dict[str, float]:
+    """Fallback when video_fps.json is absent: read every scenes.json. ~1s for
+    873 videos, once per process — cheap enough not to need its own cache file,
+    which is exactly what export_video_fps.py already writes."""
+    fps_by_video: dict[str, float] = {}
+    directory = results_zip_dir()
+    if not directory.is_dir():
+        return fps_by_video
+    for zip_path in sorted(directory.glob("*_results.zip")):
+        try:
+            with zipfile.ZipFile(zip_path) as archive:
+                for name in archive.namelist():
+                    if not (name.endswith("/scenes.json") and "video__" in name):
+                        continue
+                    video_id = name.split("video__")[1].split("/")[0]
+                    if video_id in fps_by_video:
+                        continue
+                    try:
+                        fps = float(json.loads(archive.read(name))["fps"])
+                    except (KeyError, ValueError, json.JSONDecodeError):
+                        continue
+                    if fps > 0:
+                        fps_by_video[video_id] = fps
+        except (OSError, zipfile.BadZipFile) as exc:
+            logger.warning("ingest fps: skipping %s (%s)", zip_path.name, exc)
+    return fps_by_video
+
+
+_fps_map: dict[str, float] | None = None
+
+
+def _load_fps_map() -> dict[str, float]:
+    path = fps_map_path()
+    try:
+        if path.is_file():
+            loaded = {k: float(v) for k, v in json.loads(path.read_text(encoding="utf-8")).items()}
+            logger.info("ingest fps: %s videos from %s", len(loaded), path.name)
+            return loaded
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("ingest fps: %s unreadable (%s) — falling back to the archives", path, exc)
+    scanned = _scan_scenes()
+    logger.info(
+        "ingest fps: %s videos scanned from %s (run scripts/export_video_fps.py to skip this)",
+        len(scanned), results_zip_dir(),
+    )
+    return scanned
+
+
+def ingest_fps(video_id: str) -> float | None:
+    """fps from the ingest archives, or None when this video has no record."""
+    global _fps_map
+    if _fps_map is None:
+        _fps_map = _load_fps_map()
+    return _fps_map.get(video_id)
 
 
 @dataclass
@@ -44,6 +131,7 @@ class VideoFrameIndex:
     data_offset: int  # mp4 start offset within the zip
     timescale: int
     fps: float
+    base_pts: int  # pts of the first *presented* frame — rarely 0 when B-frames reorder
     samples: list[dict]  # [{"o": offset, "s": size, "p": pts}, ...] within the mp4
     keyframe_samples: list[int]  # sorted sample indices that are keyframes
     keyframe_frames: list[int] = field(default_factory=list)  # matching frame_id per keyframe
@@ -146,7 +234,7 @@ async def _find_moov(client: RangeHTTPClient, url: str, mp4_offset: int, mp4_siz
 
 def _moov_cache_path(video_id: str) -> Path:
     override = os.getenv("ZIP_MOOV_CACHE_DIR")
-    path = Path(override) if override else _find_repo_root() / "cache" / "zip_moov"
+    path = Path(override) if override else REPO_ROOT / "cache" / "zip_moov"
     path.mkdir(parents=True, exist_ok=True)
     return path / f"{video_id}.moov"
 
@@ -210,13 +298,22 @@ async def _build_index(client: RangeHTTPClient, video_id: str) -> VideoFrameInde
 
     avg_delta = duration / sample_count if sample_count else 0
     fps = (timescale / avg_delta) if avg_delta else 0.0
+    authoritative = ingest_fps(video_id)
+    if authoritative is not None:
+        if abs(authoritative - fps) > 1e-6:
+            logger.info(
+                "%s: using ingest fps %.6f over moov-derived %.6f",
+                video_id, authoritative, fps,
+            )
+        fps = authoritative
 
     samples = [{"o": offsets[i], "s": sizes[i], "p": pts[i]} for i in range(sample_count)]
 
+    base_pts = min(pts) if pts else 0
     keyset = sorted(s - 1 for s in key_samples_1based)  # 0-based
     keyframe_samples = keyset
     keyframe_frames = [
-        int(round((samples[s]["p"] / timescale) * fps)) if fps else s
+        int(round(((samples[s]["p"] - base_pts) / timescale) * fps)) if fps else s
         for s in keyset
     ]
 
@@ -227,6 +324,7 @@ async def _build_index(client: RangeHTTPClient, video_id: str) -> VideoFrameInde
         data_offset=int(entry["data_offset"]),
         timescale=timescale,
         fps=fps,
+        base_pts=base_pts,
         samples=samples,
         keyframe_samples=keyframe_samples,
         keyframe_frames=keyframe_frames,
@@ -250,19 +348,42 @@ async def _get_index(client: RangeHTTPClient, video_id: str) -> VideoFrameIndex:
         return index
 
 
-def _range_plan(index: VideoFrameIndex, frame_id: int, reorder_margin: int = 4) -> tuple[int, int, int]:
-    """Returns (start_sample, target_sample, end_sample) — target_sample is
-    the exact sample whose pts covers frame_id; end_sample adds a small
-    margin so B-frame reordering has enough decoded lookahead."""
-    target_pts = (frame_id / index.fps) * index.timescale if index.fps else 0
+def _range_plan(
+    index: VideoFrameIndex, frame_id: int, reorder_margin: int = 4
+) -> tuple[int, int, int, int]:
+    """Returns (start_sample, target_sample, end_sample, target_index).
+
+    Two things this has to get right, both measured against ffmpeg decoding the
+    unpacked MP4 (remote-server/tests/test_local_zip_media.py runs the same
+    check against the same code):
+
+    * Samples sit in the file in *decode* order; a decoder emits them in
+      *presentation* order, and with B-frames those differ. `target_index` is
+      the target's rank in presentation order within the decoded region, which
+      is what ffmpeg's `select=eq(n,…)` counts — the decode-order position
+      returned a neighbouring picture (3 frames off at 60 s on L30_V001).
+    * The first presented frame's pts is `base_pts`, not 0, whenever there is
+      reordering — ignoring that returned the frame before the one asked for.
+    """
+    target_pts = (
+        index.base_pts + (frame_id / index.fps) * index.timescale if index.fps else 0
+    )
     start_sample = index.nearest_keyframe_sample(frame_id)
-    target_sample = len(index.samples) - 1
-    for i in range(start_sample, len(index.samples)):
-        if index.samples[i]["p"] >= target_pts:
-            target_sample = i
-            break
-    end_sample = min(target_sample + reorder_margin, len(index.samples) - 1)
-    return start_sample, target_sample, end_sample
+    tail = range(start_sample, len(index.samples))
+    target_sample = min(tail, key=lambda i: (abs(index.samples[i]["p"] - target_pts), i))
+    target_p = index.samples[target_sample]["p"]
+
+    # Every frame presented before the target must be decoded too, or the rank
+    # below counts a picture the decoder never emitted.
+    horizon = min(len(index.samples), target_sample + 1 + REORDER_LOOKAHEAD)
+    last_needed = max(
+        i for i in range(start_sample, horizon) if index.samples[i]["p"] <= target_p
+    )
+    end_sample = min(last_needed + reorder_margin, len(index.samples) - 1)
+    target_index = sum(
+        1 for i in range(start_sample, end_sample + 1) if index.samples[i]["p"] < target_p
+    )
+    return start_sample, target_sample, end_sample, target_index
 
 
 def _avcc_to_annexb(sample_bytes: bytes, nal_length_size: int) -> bytes:
@@ -344,7 +465,7 @@ async def get_frame_plan(
         index = await _get_index(client, video_id)
 
         frame_id = round(max(0, int(timestamp_ms)) / 1000 * index.fps) if index.fps else 0
-        start_sample, target_sample, end_sample = _range_plan(index, frame_id)
+        start_sample, target_sample, end_sample, target_index = _range_plan(index, frame_id)
         region = index.samples[start_sample:end_sample + 1]
         region_start = min(s["o"] for s in region)
         region_end = max(s["o"] + s["s"] for s in region)
@@ -423,7 +544,7 @@ async def get_frame_jpeg(
         index = await _get_index(client, video_id)
 
         frame_id = round(max(0, int(timestamp_ms)) / 1000 * index.fps) if index.fps else 0
-        start_sample, target_sample, end_sample = _range_plan(index, frame_id)
+        start_sample, target_sample, end_sample, target_index = _range_plan(index, frame_id)
         region = index.samples[start_sample:end_sample + 1]
         region_start = min(s["o"] for s in region)
         region_end = max(s["o"] + s["s"] for s in region)
@@ -442,7 +563,6 @@ async def get_frame_jpeg(
             rel = s["o"] - region_start
             stream += _avcc_to_annexb(fetched[rel:rel + s["s"]], index.nal_length_size)
 
-        target_index = target_sample - start_sample
         async with _decode_semaphore:
             return await asyncio.to_thread(_decode_jpeg, bytes(stream), target_index, timeout_sec)
     except ZipFrameUnavailable:
