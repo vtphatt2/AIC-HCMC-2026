@@ -196,18 +196,3 @@ Higher is more similar. Results are returned sorted descending by score.
 Milvus: video_frames.frame_id  ──►  PostgreSQL: ocr_frames.frame_id
                                                 videos.video_id
 ```
-
----
-
-## Mock Data (Development)
-
-Located in `local-client/local-backend/app/mock/`. These files mirror the shape of the production databases.
-
-| File | Rows | Equivalent to |
-|---|---|---|
-| `mock_videos.json` | 3 | `videos` table |
-| `mock_frames.json` | 105 | Milvus `video_frames` collection (no vectors) |
-| `mock_ocr.json` | 10 | `ocr_frames` table |
-| `mock_transcripts.json` | 11 | `transcripts` table |
-
-Mock frames do **not** contain embedding vectors — the example strategy uses random scores instead. Frame images use `https://picsum.photos/seed/{frame_id}/320/180` as placeholders; replace with real frame paths when the ingestion pipeline is ready.

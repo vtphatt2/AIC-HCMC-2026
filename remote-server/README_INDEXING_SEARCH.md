@@ -1,43 +1,39 @@
 # Backend Indexing & Visual Search (remote-server)
 
-How to ingest `AIC2026_sample` into Milvus + PostgreSQL and validate the
-result. For bringing up the whole GPU server (env vars, CAGRA/MPS,
+How to ingest the organizers' lot archives into Milvus + PostgreSQL and
+validate the result. For bringing up the whole GPU server (env vars, CAGRA/MPS,
 translation, Docker), see [../docs/setup.md → Option
 C](../docs/setup.md#option-c--gpu-server-production). For the Milvus/Postgres
 schema and the `/api/search` request/response contract, see
 [../docs/db_schema.md](../docs/db_schema.md) and
 [../docs/architecture.md](../docs/architecture.md).
 
-## 1. Dataset layout
+## 1. Dataset
 
-There are two supported sources — pick whichever matches what you have. Both
-write to the same Milvus + PostgreSQL, so they can coexist.
+`challenge_resources/data/zip_file/*_results.zip` — one archive per organizer
+"lot", holding per-video scene metadata and PE-Core embeddings, no JPGs. This is
+the only dataset the system indexes; ingestion is [§4](#4-ingest-the-lot-archives).
 
-**A. `AIC2026_sample`-shaped dataset** (keyframe JPGs + PE-Core `.npy`
-features) — `ingest_embeddings_to_milvus.py`. The scripts auto-detect the
-repo's `challenge_resources/data/` directory (and still accept the old
-`AIC2026_sample/` layout):
+Frames and video playback do not come from here — they are read from the
+*video* archives (`raw_zip/Videos_L*.zip`) at request time, see
+[../docs/zip_media.md](../docs/zip_media.md).
 
-```text
-AIC-HCMC-2026/
-  challenge_resources/
-    data/
-      keyframes/L01_V001/...                         # frame images
-      metadata/L01_V001.json                         # fps, youtube_id
-      PECore-features/raw_keyframe_embeddings/L01_V001/...
-      PECore-features/subtitled_keyframe_embeddings/L01_V001/...
-```
+<details>
+<summary>Legacy: the <code>AIC2026_sample</code> layout</summary>
 
-Flat layout (`keyframes/`, `metadata/`, `PECore-features/` containing video
-folders/files directly) also works. For any other location, pass
-`--sample-root /path/to/AIC2026_sample` to every script below.
+`ingest_embeddings_to_milvus.py`'s CLI reads an older layout (`keyframes/`,
+`metadata/`, `PECore-features/` — nine L01–L03 videos with keyframe JPGs, one
+`.npy` per frame). That dataset is no longer part of the repo; it sits unread in
+`challenge_resources/data/_legacy_aic2026_sample/`.
 
-Minimum required for Search by Text: `PECore-features` (or `--features-subdir
-embeddings` for a different embedding source), `keyframes`, `metadata`.
+**The file itself stays**, because `ingest_zip_pipeline_results.py` imports
+`upsert_vectors()` and `upsert_videos()` from it — those are the shared
+Milvus/PostgreSQL writers, not sample-specific code. Only its `main()` and
+`iter_video_records()` are legacy, and it cannot read a `*_results.zip`: no zip
+handling, and the archives hold one batched `embeddings.npy` per video where it
+expects one `.npy` per frame.
 
-**B. `keyframe_pipeline_global_v9_3` output** (`*_results.zip` archives,
-embeddings + scene metadata, no JPGs) — `ingest_zip_pipeline_results.py`, see
-[§4b](#4b-ingest-keyframe_pipeline_global_v9_3-zip-results) below.
+</details>
 
 ## 2. Start databases
 
@@ -76,45 +72,10 @@ python -m venv .venv && source .venv/bin/activate   # .venv\Scripts\activate on 
 pip install -r requirements.txt                      # base: PECore ONNX, real Milvus server, PostgreSQL
 pip install -r requirements-torch.txt                 # optional: full OpenCLIP torch backend
 pip install --extra-index-url https://pypi.nvidia.com -r requirements-cagra.txt  # optional: CUDA 13 CAGRA
-pip install -r requirements-youtube-thumbnail.txt      # optional: YouTube thumbnail workaround
 pip install -r requirements-milvus-lite.txt            # optional: dev-only, see "No Docker" above
 ```
 
-## 4. Create the Milvus index and ingest embeddings
-
-```bash
-python scripts/create_milvus_index.py                 # --recreate to drop+rebuild
-python scripts/ingest_embeddings_to_milvus.py
-```
-
-`ingest_embeddings_to_milvus.py` flags:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--sample-root` | auto-detect | Path to `AIC2026_sample` |
-| `--features-subdir` | `PECore-features` | Embedding subfolder (e.g. `embeddings`) |
-| `--channel` | `raw.semantic` | `raw.semantic` or `subtitled.semantic` |
-| `--batch-size` | 256 | Vectors per Milvus insert batch |
-| `--vector-index` | `hnsw` | `hnsw`, `flat`, `scann`, or `all` (build all three for runtime switching) |
-| `--recreate-milvus` | false | Drop collection before inserting |
-| `--copy-keyframes` | false | Copy jpgs into `remote-server/static/frames` |
-| `--skip-postgres` | false | Skip PostgreSQL video metadata upsert |
-| `--dry-run` | false | Scan only, no writes |
-
-```bash
-# Full re-ingest: recreate + all three indexes + copy keyframes to static/
-python scripts/ingest_embeddings_to_milvus.py \
-  --channel raw.semantic --recreate-milvus --copy-keyframes --vector-index all
-python scripts/ingest_embeddings_to_milvus.py \
-  --channel subtitled.semantic --recreate-milvus --vector-index all
-```
-
-Safe to rerun after correcting metadata — it upserts rather than duplicating.
-Frame images are served from `AIC2026_sample/keyframes` by default; set
-`FRAME_STATIC_DIR` to override, or use `--copy-keyframes` to stage a copy
-under `remote-server/static/frames`.
-
-## 4b. Ingest `keyframe_pipeline_global_v9_3` zip results
+## 4. Ingest the lot archives
 
 Each `challenge_resources/data/zip_file/*_results.zip` archive is one
 organizer "lot" (e.g. `L26_c_results.zip`, produced from `Videos_L26_c.zip`)
@@ -153,8 +114,20 @@ rewrites it to `/api/zip-frame/{video_id}/{timestamp_ms}`). Baking a URL in
 at ingest time risks it going stale the moment a consumer's serving
 mechanism changes.
 
-Safe to rerun — it upserts by `frame_id`/`video_id`, same as
-`ingest_embeddings_to_milvus.py`.
+Safe to rerun — it upserts by `frame_id`/`video_id`.
+
+Two exports must follow every ingest, or search and the frame routes drift out
+of sync with what was just indexed:
+
+```bash
+python scripts/export_video_fps.py                       # video_fps.json, ~0.1s
+cd ../local-client/local-backend
+python scripts/export_vectors_npy.py                     # vectors.f32.npy, ~11s
+```
+
+`export_vectors_npy.py` is what local search actually reads; `export_video_fps.py`
+is what both backends use to turn a `timestamp_ms` back into the right frame
+([../docs/zip_media.md §5](../docs/zip_media.md#5-getting-the-frame-right)).
 
 ## 5. Run the backend
 
@@ -188,15 +161,12 @@ error).
 python scripts/check_index_integrity.py
 ```
 
-**`compare_linear_vs_milvus.py`** — validates HNSW recall against brute-force
-search over `AIC2026_sample/PECore-features`. Reports `overlap@5`/`overlap@10`
-(how many frame IDs match) and `score_difference_on_shared` (large values
-suggest a normalization/indexing bug). Add `--include-cagra` once a CAGRA
-index exists to compare all three.
-
-```bash
-python scripts/compare_linear_vs_milvus.py --query "a busy street with people" --top-k 10
-```
+Recall validation used to live in `compare_linear_vs_milvus.py`, which
+brute-forced the legacy `PECore-features` layout and compared it with Milvus.
+Deleted: the two corpora are now disjoint (nine L01–L03 videos versus the
+indexed L21–L30), so its overlap was structurally zero. For the recall question
+it existed to answer, `docs/repro/milvus_lite_hnsw_recall.py` is self-contained
+and needs no dataset at all.
 
 **`smoke_search_queries.py`** — end-to-end sanity check against a running
 backend. Empty output usually means the backend isn't up, the strategy wasn't
@@ -206,15 +176,10 @@ discovered, or the PE-Core model/Milvus index is unavailable.
 python scripts/smoke_search_queries.py --backend-url http://localhost:8000 --query "cars on a road" --top-k 5
 ```
 
-**`evaluate_query_set.py`** — runs a JSON query set (`{"queries": [{"id":
-"q1", "semantic_query": "..."}]}`) and writes `evaluation_report.json` /
-`.csv` with top-k results, latency, and score distribution. There's no ground
-truth yet, so this doesn't compute recall/MAP — use it for spotting retrieval
-regressions via score distribution and visual inspection of top-k frames.
-
-```bash
-python scripts/evaluate_query_set.py queries.json --top-k 10
-```
+Batch evaluation over a query set is **not** a script here — it lives in the
+notebooks (`notebooks/NOTEBOOK_EVALUATION_INPUT_SPEC.md`). An earlier version of
+this page documented an `evaluate_query_set.py` that was never written; see
+[../docs/gaps.md](../docs/gaps.md#3-evaluate_query_setpy-is-documented-but-does-not-exist).
 
 ## Runtime notes
 
@@ -224,9 +189,9 @@ python scripts/evaluate_query_set.py queries.json --top-k 10
 - Backend logs `[TIMER] request_received / model_load / text_encode /
   milvus_search / fusion / total_request / warmup_text_encoder` — use these to
   find latency bottlenecks.
-- Local-client proxy mode (`ENV_MODE=LOCAL` pointed at this server) and
-  `ENV_MODE=SAMPLE` (searches `AIC2026_sample` directly, no Milvus/Postgres)
-  are documented in [../docs/setup.md](../docs/setup.md).
+- Local-client modes (`ENV_MODE=ZIP` searching the exported vectors,
+  `ENV_MODE=LOCAL` proxying to this server) are documented in
+  [../docs/running.md](../docs/running.md).
 - `/api/frame-embeddings` (`query_frame_vectors()` in `milvus_client.py`)
   batch-fetches raw vectors by `frame_id`, used by the near-duplicate result
   filter (`duplicate_threshold` in `/api/search` — see

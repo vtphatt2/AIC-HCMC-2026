@@ -23,10 +23,17 @@ itself. Run this every time you add archives:
 cd remote-server
 python scripts/ingest_zip_pipeline_results.py --dry-run --skip-postgres   # preview counts first
 python scripts/ingest_zip_pipeline_results.py --skip-postgres
+python scripts/export_video_fps.py                                        # required, ~0.1s
 
 cd ../local-client/local-backend
 python scripts/export_vectors_npy.py                                      # required, ~11s
 ```
+
+`export_video_fps.py` writes `video_fps.json` — the fps each video was ingested
+with, which both backends need to turn a `timestamp_ms` back into the right
+frame. Deriving it from the MP4 instead is wrong for the 91 videos that are not
+25 fps, and the error grows with the timestamp
+([../../../docs/zip_media.md](../../../docs/zip_media.md#5-getting-the-frame-right)).
 
 **The export step is not optional.** `local-backend` searches a flat
 `vectors.f32.npy` rather than Milvus, because `milvus_lite`'s HNSW path returns
@@ -44,8 +51,8 @@ export is the fix. It reads these archives directly and takes ~11 seconds.
   memory-mapped, and Windows refuses to overwrite a mapped file (writing to a temp name
   and swapping does not help — the rename is refused too). Restart the backend once both
   steps finish.
-- **`--skip-postgres`**: `local-backend` never reads PostgreSQL (Milvus only, per the
-  local/remote weight split — see `docs/architecture.md`), and `youtube_id`/title are
+- **`--skip-postgres`**: `local-backend` never reads PostgreSQL (per the local/remote
+  weight split — see `docs/architecture.md`), and `youtube_id`/title are
   already denormalized straight into each Milvus frame record. Only drop this flag if
   you're running `remote-server` for real and want the PostgreSQL `videos` table
   populated too.
@@ -56,7 +63,7 @@ export is the fix. It reads these archives directly and takes ~11 seconds.
 - **`--vector-index all`** builds HNSW + FLAT + ScaNN collections for runtime algorithm
   switching; default is HNSW only.
 - Full flag reference and troubleshooting:
-  [`../../../remote-server/README_INDEXING_SEARCH.md`](../../../remote-server/README_INDEXING_SEARCH.md#4b-ingest-keyframe_pipeline_global_v9_3-zip-results).
+  [`../../../remote-server/README_INDEXING_SEARCH.md`](../../../remote-server/README_INDEXING_SEARCH.md#4-ingest-the-lot-archives).
 
 ## Verifying what's actually indexed
 

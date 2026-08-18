@@ -122,6 +122,6 @@ by port instead:
 ## Not covered by `--backend`
 
 The learned reranker's ONNX cross-encoder
-([basic_learned_reranker.py](../local-client/local-backend/app/strategies/basic_learned_reranker.py))
-always runs on `CPUExecutionProvider`, regardless of `--backend` — it has no
-GPU path yet.
+([basic_learned_reranker.py](../local-client/local-backend/app/archive_v1/strategies/basic_learned_reranker.py),
+now archived out of the active strategy set) always runs on
+`CPUExecutionProvider`, regardless of `--backend` — it has no GPU path.

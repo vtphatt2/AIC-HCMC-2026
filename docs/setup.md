@@ -2,11 +2,12 @@
 
 ## Choose Your Setup
 
-| Goal | Backend | Data source | Section |
+There is one dataset — the lot archives in `challenge_resources/data/zip_file/`.
+
+| Goal | Backend | Reads | Section |
 |---|---|---|---|
-| Full demo on one GPU machine | `remote-server` | CAGRA/HNSW + PostgreSQL | **Recommended Full Demo** |
-| UI or strategy smoke test | `local-backend` | Mock JSON | Option A |
-| Search sample vectors without Docker | `local-backend` | `AIC2026_sample` | SAMPLE mode |
+| Full demo on one GPU machine | `remote-server` | Milvus/CAGRA + PostgreSQL | **Recommended Full Demo** |
+| Develop strategies on your own machine | `local-backend` | `vectors.f32.npy` exported from the archives | Option A |
 | Develop against another GPU server | `local-backend` | Remote raw-data proxy | Option B |
 
 For the current complete demo with **CAGRA + local CTranslate2 INT8**, use the recommended
@@ -58,8 +59,8 @@ bash scripts/start-local-postgres.sh start   # scoop-installed portable postgres
 bash scripts/start-local-postgres.sh status
 ```
 
-`local-client/local-backend` can point `MILVUS_LITE_PATH` at the **same**
-file to get its own lightweight vector search in `SAMPLE` mode — see
+`local-client/local-backend` points `MILVUS_LITE_PATH` at the **same** file —
+it is also where the exported `vectors.f32.npy` lives. See
 [running.md](running.md).
 
 ### 2. Start the remote backend
@@ -99,9 +100,8 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 Open http://localhost:3000.
 
-Use Option A, SAMPLE mode, and Option B only for their specific development
-workflows. The sections below contain first-time setup and troubleshooting
-details.
+Use Option A and Option B only for their specific development workflows. The
+sections below contain first-time setup and troubleshooting details.
 
 ### Teammate Frontend-Only Access
 
@@ -136,9 +136,10 @@ Cloudflare Tunnel) with `NEXT_PUBLIC_API_URL` set to the tunnel URL.
 
 ---
 
-## Option A — Local Development (Mock Data)
+## Option A — Local Development (ZIP mode)
 
-This is the default. No GPU server needed. All data comes from JSON files.
+No GPU server needed. Search runs against vectors exported from the lot
+archives, on this machine.
 
 ### 1. Clone the repo
 
@@ -147,87 +148,102 @@ git clone <repo-url>
 cd AIC-HCMC-2026
 ```
 
-### 2. Set up the local backend
+### 2. Get the data
+
+You need `challenge_resources/data/zip_file/*_results.zip` (the lot archives),
+then two derived files. Both are cheap and both must be rebuilt after every
+ingest:
+
+```bash
+cd remote-server
+python scripts/ingest_zip_pipeline_results.py --skip-postgres   # → Milvus records
+python scripts/export_video_fps.py                              # → video_fps.json  (~0.1s)
+
+cd ../local-client/local-backend
+python scripts/export_vectors_npy.py                            # → vectors.f32.npy (~11s)
+```
+
+See [Readme-Ingest.md](../challenge_resources/data/zip_file/Readme-Ingest.md)
+for flags and the one-process-at-a-time caveat.
+
+### 3. Set up the local backend
 
 ```bash
 cd local-client/local-backend
 
-# Create a virtual environment
 python -m venv .venv
-
-# Activate it
 # Windows:
 .venv\Scripts\activate
 # macOS / Linux:
 source .venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
-
-# Copy the env file (MOCK mode is the default)
 cp .env.example .env
 ```
 
-`.env` contents (no changes needed for mock mode):
+`.env` needs the data path — the vector files sit next to `MILVUS_LITE_PATH`:
+
 ```env
-ENV_MODE=MOCK
+ENV_MODE=ZIP
+AIC_SAMPLE_ROOT=/abs/path/to/AIC-HCMC-2026/challenge_resources/data
+MILVUS_LITE_PATH=/abs/path/to/AIC-HCMC-2026/challenge_resources/data/milvus_lite.db
 CORS_ORIGINS=http://localhost:3000
 ```
 
-Start the backend:
+Start it:
+
 ```bash
 uvicorn main:app --reload --port 8000
 ```
 
 Expected startup output:
+
 ```
-Starting local backend…
-DataProvider: MOCK mode — 3 videos, 105 frames loaded
-Discovering strategies…
-  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
-  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
-Ready — 2 strategy/strategies available.
+Starting local backend...
+DataProvider: ZIP mode -> numpy memmap (exact), 193508 vectors
+Discovering strategies...
+  OK raw_visual  [Raw visual]  by AIC HCMC
+  ...
+Ready - 8 strategy/strategies available.
 ```
 
-Verify: open http://localhost:8000/api/strategies — you should see a JSON list.
+If it refuses to start, the two export commands above are what it is asking for.
 
-### 3. Set up the frontend
+### 4. Thumbnails and playback
+
+Frames live in the organizers' *video* archives, not the results archives. Build
+the byte-offset index once:
+
+```bash
+python -m scripts.build_zip_video_index \
+    --urls-file ../../challenge_resources/data/zip_video_links.txt \
+    --output   ../../challenge_resources/data/zip_video_index.json
+```
+
+Without it every thumbnail 404s and the UI falls back to YouTube — usable, but
+you lose the frame grid. Full detail: [zip_media.md](zip_media.md).
+
+### 5. Set up the frontend
 
 Open a **second terminal**:
 
 ```bash
 cd local-client/frontend
-
-# Install dependencies
 npm install
-
-# Copy the env file
 cp .env.local.example .env.local
 ```
 
-`.env.local` contents (no changes needed):
+`.env.local`:
+
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
 ```
 
-Start the frontend:
 ```bash
 npm run dev
 ```
 
-Open http://localhost:3000. You should see the search UI with the strategy dropdown populated.
-
-This MOCK setup is for UI and strategy development. VI→EN translation runs in
-the local backend; point `NEXT_PUBLIC_API_URL` to `remote-server` only for the
-complete GPU-search demo.
-
----
-
-## Optional — Local Sample Search (SAMPLE mode)
-
-To search local `AIC2026_sample` PE-Core vectors without Milvus/PostgreSQL,
-set `ENV_MODE=SAMPLE`. The dataset is detected inside or beside the repository;
-otherwise set `AIC_SAMPLE_ROOT`.
+Open http://localhost:3000 — the strategy dropdown should be populated.
 
 ---
 
@@ -257,14 +273,14 @@ uvicorn main:app --reload --port 8000
 
 Expected startup output:
 ```
-DataProvider: LOCAL mode → https://xxxx.ngrok.io
-Discovering strategies…
-  OK nam_visual_search_v1  [Nam Visual Search v1]  by Nam
-  OK transcript_search  [Transcript Search v1]  by Team AIC 2026
-Ready — 2 strategy/strategies available.
+DataProvider: LOCAL mode -> https://xxxx.ngrok.io
+Discovering strategies...
+Ready - 8 strategy/strategies available.
 ```
 
-The frontend setup is identical to Option A.
+The frontend setup is identical to Option A. In this mode all four retrieval
+channels come from the server, including the two the lot archives do not carry
+(`subtitled.semantic`, `transcript.semantic`).
 
 ---
 
@@ -272,8 +288,12 @@ The frontend setup is identical to Option A.
 
 Run this on the GPU workstation, with the full dataset. Docker is the default
 path; a no-Docker path (embedded Milvus Lite + portable PostgreSQL) also
-works for lighter/offline dev — see [running.md](running.md#everything-else)
-and the "No Docker" callout under **Recommended Full Demo** above.
+works for lighter/offline dev — see the "No Docker" callout under
+**Recommended Full Demo** above.
+
+This section is first-time setup. Once it is set up, the day-to-day start,
+restart, and post-update commands are in
+[running.md → Remote server](running.md#remote-server-server-mode).
 
 ### 1. Start the databases
 
@@ -365,38 +385,24 @@ ngrok http 8000
 
 Share the Ngrok URL with the team. They set it as `REMOTE_SERVER_URL` in their local `.env`.
 
-### 4. Ingest sample data
-
-Place `AIC2026_sample` inside or beside the repository. The scripts detect
-both nested dataset folders (`keyframes/keyframes`, `metadata/metadata`,
-`PECore-features/PECore-features`) and flat folders (`keyframes`, `metadata`,
-`PECore-features`). For any other location, pass its path explicitly:
+### 4. Ingest the dataset
 
 ```bash
-python scripts/ingest_embeddings_to_milvus.py \
-  --sample-root /path/to/AIC2026_sample \
-  --copy-keyframes
+cd remote-server
+python scripts/ingest_zip_pipeline_results.py --dry-run   # preview counts
+python scripts/ingest_zip_pipeline_results.py             # --vector-index all for runtime HNSW/FLAT/ScaNN switching
+python scripts/export_video_fps.py                        # required: frame ↔ timestamp
 ```
 
-To enable runtime HNSW/FLAT/ScaNN selection, build all three Milvus collections:
+Safe to rerun — it upserts by `frame_id`/`video_id`. Full flag reference:
+[../remote-server/README_INDEXING_SEARCH.md](../remote-server/README_INDEXING_SEARCH.md#4-ingest-the-lot-archives).
 
-```bash
-python scripts/ingest_embeddings_to_milvus.py \
-  --sample-root /path/to/AIC2026_sample \
-  --copy-keyframes \
-  --vector-index all \
-  --recreate-milvus
-```
+### 5. Media
 
-The script upserts video metadata into PostgreSQL and frame embeddings into
-Milvus, so it is safe to rerun after correcting metadata.
-
-To ingest `keyframe_pipeline_global_v9_3` output (`*_results.zip` archives
-under `challenge_resources/data/zip_file/`) instead of/in addition to
-`AIC2026_sample`, use `scripts/ingest_zip_pipeline_results.py` — see
-[../remote-server/README_INDEXING_SEARCH.md](../remote-server/README_INDEXING_SEARCH.md#4b-ingest-keyframe_pipeline_global_v9_3-zip-results)
-for the full walkthrough (including how `youtube_id`/title get resolved from
-the organizers' media-info archive).
+Drop the organizers' `Videos_L*.zip` into `challenge_resources/data/raw_zip/`.
+Nothing to build — `/api/zip-frame` and `/api/zip-video` read byte ranges out of
+them directly, and `/api/health` reports how many videos were found. Lots whose
+archive is absent fall back to YouTube playback with no thumbnail.
 
 After ingestion, verify:
 ```bash
@@ -437,10 +443,6 @@ The frontend can't reach `localhost:8000`. Check:
 
 The backend didn't load your strategy. Check the startup log for a `✗` line with an error message. Common causes: syntax error in the file, missing `name`/`description`/`author` attributes, or a failed import.
 
-### Backend loads 30 frames instead of 105 after updating mock_frames.json
-
-Uvicorn's `--reload` only watches `.py` files. Restart the backend manually (Ctrl+C, then `uvicorn main:app --reload --port 8000`).
-
 ### YouTube player doesn't seek to the right time
 
 The `seekTo()` call requires the video to be loaded. Make sure the video ID in the mock data (`youtube_id` field) is a real, publicly available YouTube video.
@@ -453,18 +455,30 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 
 | Variable | Default | Description |
 |---|---|---|
-| `ENV_MODE` | `MOCK` | `MOCK`, `SAMPLE`, or `LOCAL` |
-| `AIC_SAMPLE_ROOT` | auto-detected | Optional dataset path for `SAMPLE` mode |
+| `ENV_MODE` | `ZIP` | `ZIP` (search the exported lot vectors) or `LOCAL` (proxy to the GPU server) |
+| `AIC_SAMPLE_ROOT` | auto-detected | `challenge_resources/data`; where transcripts and the vector files live |
 | `REMOTE_SERVER_URL` | _(empty)_ | Required when `ENV_MODE=LOCAL` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) — see [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
-| `FRAME_IMAGE_SOURCE` | `local` | `local` (JPG), `local_video` (ffmpeg over `data/videos`), or `youtube_storyboard` fallback |
-| `MILVUS_LITE_PATH` | _(unset)_ | Optional: path to an embedded Milvus Lite file (e.g. `challenge_resources/data/milvus_lite.db`) for `raw.semantic` vector search in `SAMPLE` mode. Falls back to linear numpy search when unset or the collection doesn't exist. |
+| `PECORE_DEVICE` | `cpu` | `cpu` or `mps` (Apple silicon) |
+| `PECORE_PRECISION` | `fp32` | Keep `fp32` on CPU/MPS |
+| `PECORE_ONNX_THREADS` | `14` | ONNX Runtime intra-op threads per text-encode. Measured on 20 cores: 105 ms at 14, 115 ms at 20 — past bandwidth saturation more threads only contend |
+| `WARMUP_TEXT_ENCODER` | `false` | Load PE-Core at startup instead of on the first query (~3.3 s) |
+| `MILVUS_LITE_PATH` | _(unset)_ | Path to the data directory's `milvus_lite.db`. Also tells the backend where `vectors.f32.npy`/`.meta.npz` live — **set this even though the fast path does not query Milvus**. Search priority: numpy memmap → Milvus Lite FLAT → linear `.npy` scan |
+| `VECTOR_SEARCH_BACKEND` | `milvus` | Only consulted on the Milvus Lite fallback path. Must be `flat` — its HNSW index returns wrong neighbours ([doc](milvus-lite-hnsw-recall-bug.md)) |
+| `NUMPY_SEARCH_CHUNK_ROWS` | `65536` | Rows scanned per block in the exact-search path. Bounds peak memory; barely affects speed |
+| `ZIP_FRAME_CONCURRENCY` | `12` | In-flight requests on `/api/zip-frame` |
+| `ZIP_FRAME_DECODE_CONCURRENCY` | `6` | Concurrent ffmpeg processes (CPU-bound) |
+| `ZIP_REGION_CACHE_MB` | `192` | In-memory GOP byte cache |
+| `ZIP_MOOV_CACHE_DIR` | `cache/zip_moov/` | On-disk MP4 `moov` cache |
+| `GEMINI_API_KEY` | _(unset)_ | Enables `QueryParser`; only strategies calling `context.parse_json()` need it |
+| `GEMINI_QUERY_MODEL` | `gemini-3.1-flash-lite` | Model used by that parser |
 
-The local backend also exposes `/api/zip-video/{video_id}` and
-`/api/zip-frame/{video_id}/{timestamp_ms}` (organizer-ZIP video/frame proxy) —
-no extra env vars needed, just a `challenge_resources/data/zip_video_index.json`
-manifest, built once via `python local-client/local-backend/scripts/build_zip_video_index.py`.
+The local backend also exposes the organizer-ZIP media routes
+(`/api/zip-video`, `/api/zip-frame`, `/api/zip-frame-plan`, `/api/zip-bytes`).
+They need no env vars beyond the tuning knobs above — just a
+`challenge_resources/data/zip_video_index.json` manifest, built once. Full
+walkthrough: [zip_media.md](zip_media.md).
 
 See [running.md](running.md) for the full scenario matrix and exact commands.
 
@@ -489,9 +503,27 @@ See [running.md](running.md) for the full scenario matrix and exact commands.
 | `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
 | `WARMUP_TEXT_ENCODER` | `false` | Load and warm PE-Core during startup |
 | `WARMUP_TRANSLATION` | `false` | Initialize the Google Translate client during startup (no model to download) |
+| `FRAME_STATIC_DIR` | `remote-server/static/frames` | Directory served at `/static/frames`. Lot archives ship no JPGs, so this is normally empty and thumbnails come from `/api/zip-frame` |
+| `RAW_ZIP_DIR` | `challenge_resources/data/raw_zip` | Where `Videos_L*.zip` archives live, for `/api/zip-frame` and `/api/zip-video` |
+| `VIDEO_FPS_MAP` | `challenge_resources/data/video_fps.json` | Precomputed `video_id → fps`, built by `scripts/export_video_fps.py` |
+| `ZIP_FRAME_TIMEOUT_SEC` | `45` | Wall-clock bound on one frame request |
+| `ZIP_FRAME_DECODE_CONCURRENCY` | `6` | Concurrent ffmpeg processes |
+| `ALLOW_STRATEGY_CONFIG_WRITES` | `false` | Keep `false` on a shared server — clients tune via per-request `config_overrides` instead |
+| `TRANSCRIPT_CHUNK_SEARCH_ENABLED` | `true` | Topic-based transcript chunk search ([doc](search_by_transcript.md)) |
+| `TRANSCRIPT_MODEL_ID` | `intfloat/multilingual-e5-small` | Sentence-transformer for chunk embeddings |
+| `TRANSCRIPT_MODEL_DEVICE` | `cpu` | Device for that model |
+| `MILVUS_TRANSCRIPT_COLLECTION` | `transcript_chunks` | Transcript chunk collection |
+| `TRANSCRIPT_VECTOR_DIM` | `384` | Dimension of that collection |
+| `WARMUP_TRANSCRIPT_SEARCH` | `true` | Load the transcript model at startup |
+| `GEMINI_API_KEY` / `GEMINI_QUERY_MODEL` | _(unset)_ | Structured query parser, used only by strategies calling `context.parse_json()` |
+
+remote-server serves thumbnails and playback from `raw_zip/Videos_L*.zip`
+directly ([zip_media.md](zip_media.md)); lots whose archive is not on its disk
+return 404 and the UI falls back to YouTube.
 
 ### `local-client/frontend/.env.local`
 
 | Variable | Default | Description |
 |---|---|---|
 | `NEXT_PUBLIC_API_URL` | `http://localhost:8000` | FastAPI backend used by the frontend |
+| `NEXT_PUBLIC_FRAME_DECODE` | `server` | `client` decodes thumbnails in the browser with WebCodecs — decode cost then scales with viewers instead of stacking on the backend ([doc](zip_media.md#4-client-side-decode-optional-recommended-when-sharing)) |
