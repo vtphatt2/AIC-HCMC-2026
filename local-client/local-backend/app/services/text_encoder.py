@@ -27,9 +27,7 @@ def _find_onnx_model() -> Path | None:
 
     here = Path(__file__).resolve()
     for parent in here.parents:
-        candidate = (
-            parent / "challenge_resources" / "onnx-models" / "text_model_int8.onnx"
-        )
+        candidate = parent / "challenge_resources" / "onnx-models" / "text_model_int8.onnx"
         if candidate.is_file():
             return candidate
     return None
@@ -58,17 +56,10 @@ def _validate_device_config(torch, config: TextEncoderConfig) -> None:
     if config.device == "cuda" and not torch.cuda.is_available():
         raise TextEncoderUnavailable("PECORE_DEVICE=cuda but CUDA is not available.")
     if config.device == "mps":
-        if (
-            not getattr(torch.backends, "mps", None)
-            or not torch.backends.mps.is_available()
-        ):
-            raise TextEncoderUnavailable(
-                "PECORE_DEVICE=mps but PyTorch MPS is not available."
-            )
+        if not getattr(torch.backends, "mps", None) or not torch.backends.mps.is_available():
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps but PyTorch MPS is not available.")
         if config.precision != "fp32":
-            raise TextEncoderUnavailable(
-                "PECORE_DEVICE=mps requires PECORE_PRECISION=fp32."
-            )
+            raise TextEncoderUnavailable("PECORE_DEVICE=mps requires PECORE_PRECISION=fp32.")
     if config.device not in {"cpu", "cuda", "mps"}:
         raise TextEncoderUnavailable("PECORE_DEVICE must be one of: cpu, cuda, mps.")
 
@@ -238,11 +229,11 @@ class PECoreTextEncoder:
     def _load_torch(self) -> None:
         try:
             import json
-
             import torch
+
+            from safetensors.torch import load_file
             from open_clip.model import _build_text_tower
             from open_clip.tokenizer import SimpleTokenizer
-            from safetensors.torch import load_file
         except ImportError as exc:
             raise TextEncoderUnavailable(
                 "PECore text encoder dependencies are missing. Install them with: "
@@ -254,7 +245,9 @@ class PECoreTextEncoder:
         cached_model = self.config.cached_model
 
         if not cached_model:
-            raise TextEncoderUnavailable("CACHED_MODEL is not set.")
+            raise TextEncoderUnavailable(
+                "CACHED_MODEL is not set."
+            )
 
         model_dir = Path(cached_model)
 
@@ -268,7 +261,11 @@ class PECoreTextEncoder:
             bpe_path,
         ]
 
-        missing = [path for path in required_files if not path.is_file()]
+        missing = [
+            path
+            for path in required_files
+            if not path.is_file()
+        ]
 
         if missing:
             raise TextEncoderUnavailable(
@@ -352,13 +349,9 @@ class PECoreTextEncoder:
 
         try:
             session = ort.InferenceSession(
-                str(model_path),
-                sess_options=options,
-                providers=["CPUExecutionProvider"],
+                str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
             )
-            tokenizer = SimpleTokenizer(
-                vocab_path, context_length=self.config.context_length
-            )
+            tokenizer = SimpleTokenizer(vocab_path, context_length=self.config.context_length)
         except Exception as exc:
             raise TextEncoderUnavailable(
                 f"Could not load PECore ONNX text encoder from '{model_path}'."

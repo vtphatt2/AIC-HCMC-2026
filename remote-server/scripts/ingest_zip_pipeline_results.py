@@ -210,9 +210,69 @@ async def main() -> None:
     logger.info("Found %s result archive(s) under %s", len(archives), args.zip_dir)
     media_info = load_media_info(args.zip_dir)
 
+    # Keep only lightweight video metadata globally. Vector records are streamed
+    # to Milvus in bounded buffers so the whole embedding dataset never lives
+    # in Python memory at once.
     videos: list[dict[str, Any]] = []
-    records: list[dict[str, Any]] = []
     seen_video_ids: set[str] = set()
+    total_vectors = 0
+
+    if args.dry_run:
+        for archive in archives:
+            for video, video_records in tqdm(
+                iter_video_records(archive, media_info),
+                desc=archive.name,
+                unit="video",
+            ):
+                if video["video_id"] in seen_video_ids:
+                    logger.warning("Duplicate video_id %s (already seen), skipping", video["video_id"])
+                    continue
+                seen_video_ids.add(video["video_id"])
+                videos.append(video)
+                total_vectors += len(video_records)
+
+        logger.info(
+            "Parsed %s videos and %s PE-Core vectors from %s archive(s)",
+            len(videos), total_vectors, len(archives),
+        )
+        return
+
+    from app.db import milvus_client
+
+    milvus_client.connect()
+
+    target_indexes = ["hnsw", "flat", "scann"] if args.vector_index == "all" else [args.vector_index]
+    collections: list[tuple[str, Any]] = []
+    for vector_index in target_indexes:
+        if args.recreate_milvus:
+            milvus_client.drop_collection_if_exists(vector_index, "raw.semantic")
+        collection = milvus_client.create_collection_if_missing(vector_index, "raw.semantic")
+        collections.append((vector_index, collection))
+
+    batch_size = max(1, args.batch_size)
+    # A small multiple of the Milvus batch size amortizes Python call/progress
+    # overhead while keeping peak RAM bounded. With the default batch_size=256,
+    # this holds at most ~1024 vector records plus one video's temporary records.
+    stream_buffer_size = batch_size * 120
+    pending_records: list[dict[str, Any]] = []
+    indexed_by_algorithm = {vector_index: 0 for vector_index in target_indexes}
+
+    def flush_pending() -> None:
+        nonlocal pending_records
+        if not pending_records:
+            return
+
+        batch = pending_records
+        pending_records = []
+
+        for vector_index, collection in collections:
+            indexed = upsert_vectors(
+                collection,
+                batch,
+                batch_size,
+                milvus_client.VECTOR_DIM,
+            )
+            indexed_by_algorithm[vector_index] += indexed
 
     for archive in archives:
         for video, video_records in tqdm(
@@ -223,32 +283,31 @@ async def main() -> None:
             if video["video_id"] in seen_video_ids:
                 logger.warning("Duplicate video_id %s (already seen), skipping", video["video_id"])
                 continue
+
             seen_video_ids.add(video["video_id"])
             videos.append(video)
-            records.extend(video_records)
+            total_vectors += len(video_records)
+            pending_records.extend(video_records)
 
-    logger.info("Parsed %s videos and %s PE-Core vectors from %s archive(s)", len(videos), len(records), len(archives))
-    if args.dry_run:
-        return
+            if len(pending_records) >= stream_buffer_size:
+                flush_pending()
 
-    from app.db import milvus_client
+    flush_pending()
 
-    milvus_client.connect()
+    logger.info(
+        "Parsed %s videos and streamed %s PE-Core vectors from %s archive(s)",
+        len(videos), total_vectors, len(archives),
+    )
 
     if not args.skip_postgres:
         await upsert_videos(videos)
         logger.info("Upserted %s videos into PostgreSQL", len(videos))
 
-    target_indexes = ["hnsw", "flat", "scann"] if args.vector_index == "all" else [args.vector_index]
-    for vector_index in target_indexes:
-        if args.recreate_milvus:
-            milvus_client.drop_collection_if_exists(vector_index, "raw.semantic")
-        collection = milvus_client.create_collection_if_missing(vector_index, "raw.semantic")
-        indexed = upsert_vectors(collection, records, max(1, args.batch_size), milvus_client.VECTOR_DIM)
+    for vector_index, _collection in collections:
         collection_name = milvus_client.collection_name_for_algorithm(vector_index, "raw.semantic")
         logger.info(
             "Done. Indexed %s vectors into Milvus collection '%s' (%s).",
-            indexed, collection_name, vector_index,
+            indexed_by_algorithm[vector_index], collection_name, vector_index,
         )
 
 
