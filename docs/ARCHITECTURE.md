@@ -87,12 +87,15 @@ otherwise                                 → GET /api/zip-video/{video_id}
 
 Both backends serve `/api/zip-frame` and `/api/zip-video` by reading exact
 byte ranges out of the organizers' `Videos_L*.zip` archives — no unpacking,
-no full download. `local-backend` does this over HTTP Range against the
-organizer's host; `remote-server` seeks its own local copy under
+no full download. `remote-server` always seeks its own local copy under
 `challenge_resources/data/raw_zip_videos/` (only `Videos_L30_a.zip` is present
 there today — other lots 404 and fall back to YouTube on that machine).
-Full mechanism (MP4 box parsing, `moov` caching, concurrency knobs):
-[archive/zip_media.md](archive/zip_media.md).
+`local-backend` defaults to HTTP Range against the organizer's host
+(`ZIP_MEDIA_SOURCE=remote`) but can read a local copy the same way
+`remote-server` does (`ZIP_MEDIA_SOURCE=local`) — for when it runs on a
+machine that already holds the archives, no network fetch needed. Same
+routes, same response shapes either way. Full mechanism (MP4 box parsing,
+`moov` caching, concurrency knobs): [archive/zip_media.md](archive/zip_media.md).
 
 ## Guardrails (always enforced)
 

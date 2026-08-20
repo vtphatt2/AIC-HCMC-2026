@@ -33,6 +33,7 @@ from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
 from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
+from app.services import local_zip_media
 
 logger = logging.getLogger(__name__)
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -47,6 +48,16 @@ _strategy_configs = StrategyConfigStore(
 # VideoModal falls back to YouTube, so this is safe to leave always-on.
 _zip_video_proxy = RemoteZipVideoProxy()
 _zip_upstream_client = httpx.AsyncClient(timeout=30.0)
+
+# "remote" (default): fetch the organizers' ZIPs over HTTP Range from their
+# host (zip_frame_source.py) -- unchanged behavior for a laptop that doesn't
+# have the archives. "local": read challenge_resources/data/raw_zip_videos/
+# straight off this machine's disk (local_zip_media.py) -- for when
+# local-backend runs on a machine that already holds them, e.g. what used to
+# be the remote-server's job. Same routes, same response shapes either way.
+_ZIP_MEDIA_SOURCE = os.getenv("ZIP_MEDIA_SOURCE", "remote").strip().lower()
+if _ZIP_MEDIA_SOURCE not in {"remote", "local"}:
+    raise RuntimeError(f"ZIP_MEDIA_SOURCE must be 'remote' or 'local', got {_ZIP_MEDIA_SOURCE!r}")
 
 
 def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
@@ -77,6 +88,8 @@ def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, B
 async def lifespan(app: FastAPI):
     global _strategies, _data_provider
     print("Starting local backend…")
+    print(f"Zip media source: {_ZIP_MEDIA_SOURCE}"
+          + (f" -> {local_zip_media.raw_zip_dir()}" if _ZIP_MEDIA_SOURCE == "local" else ""))
     _data_provider = DataProvider()
     if os.getenv("WARMUP_TEXT_ENCODER", "false").lower() in {"1", "true", "yes"}:
         print("Warming up text encoder...")
@@ -160,11 +173,16 @@ class StrategyConfigUpdate(BaseModel):
 
 @app.get("/api/health")
 async def health():
+    zip_count = (
+        await local_zip_media.available_video_count()
+        if _ZIP_MEDIA_SOURCE == "local" else len(_zip_video_proxy)
+    )
     return {
         "status":     "ok",
         "env_mode":   os.getenv("ENV_MODE", "ZIP"),
         "strategies": len(_strategies),
-        "zip_video_index": len(_zip_video_proxy),
+        "zip_media_source": _ZIP_MEDIA_SOURCE,
+        "zip_video_index": zip_count,
     }
 
 
@@ -211,6 +229,12 @@ async def zip_video(video_id: str, request: Request):
     upstream refusing Range) is the expected signal for VideoModal to fall
     back to YouTube."""
     try:
+        if _ZIP_MEDIA_SOURCE == "local":
+            headers, body_gen = await local_zip_media.open_range(
+                video_id, request.headers.get("range")
+            )
+            return StreamingResponse(body_gen, status_code=206, headers=headers)
+
         headers, upstream = await _zip_video_proxy.open_range(
             _zip_upstream_client, video_id, request.headers.get("range")
         )
@@ -292,6 +316,8 @@ async def zip_frame(video_id: str, timestamp_ms: int):
 
     async def decode():
         async with _zip_frame_semaphore:
+            if _ZIP_MEDIA_SOURCE == "local":
+                return await local_zip_media.get_frame_jpeg(video_id, timestamp_ms)
             return await get_frame_jpeg(_zip_upstream_client, video_id, timestamp_ms)
 
     try:
@@ -325,12 +351,14 @@ async def zip_frame_plan(video_id: str, timestamp_ms: int):
     video the moov index is cached, so this is pure arithmetic."""
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_plan
 
+    plan_call = (
+        (lambda: local_zip_media.get_frame_plan(video_id, timestamp_ms))
+        if _ZIP_MEDIA_SOURCE == "local"
+        else (lambda: get_frame_plan(_zip_upstream_client, video_id, timestamp_ms))
+    )
     try:
         return await asyncio.wait_for(
-            _single_flight(
-                ("plan", video_id, timestamp_ms),
-                lambda: get_frame_plan(_zip_upstream_client, video_id, timestamp_ms),
-            ),
+            _single_flight(("plan", video_id, timestamp_ms), plan_call),
             timeout=ZIP_FRAME_TIMEOUT_SEC,
         )
     except ZipFrameUnavailable as exc:
@@ -351,11 +379,13 @@ async def zip_bytes(video_id: str, region_start: int, length: int):
     extent inside the archive, so it can't be aimed anywhere else."""
     from app.services.zip_frame_source import ZipFrameUnavailable, fetch_region
 
+    fetch_call = (
+        local_zip_media.fetch_region(video_id, region_start, length)
+        if _ZIP_MEDIA_SOURCE == "local"
+        else fetch_region(_zip_upstream_client, video_id, region_start, length)
+    )
     try:
-        data = await asyncio.wait_for(
-            fetch_region(_zip_upstream_client, video_id, region_start, length),
-            timeout=ZIP_FRAME_TIMEOUT_SEC,
-        )
+        data = await asyncio.wait_for(fetch_call, timeout=ZIP_FRAME_TIMEOUT_SEC)
     except ZipFrameUnavailable as exc:
         raise HTTPException(502, str(exc)) from exc
     except asyncio.TimeoutError as exc:

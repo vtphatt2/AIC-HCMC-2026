@@ -81,14 +81,27 @@ Startup log should say `DataProvider: ZIP mode -> numpy memmap (exact),
 193508 vectors`. If it refuses to start, the two export commands above are
 what it's asking for.
 
-**Thumbnails and playback** need one more one-time build — without it every
-frame 404s and the UI falls back to YouTube:
+**Thumbnails and playback** — two options:
 
-```bash
-python -m scripts.build_zip_video_index \
-    --urls-file ../../challenge_resources/data/zip_video_links.txt \
-    --output   ../../challenge_resources/data/zip_video_index.json
-```
+- **Organizer archives not on this machine** (the common case): one-time
+  build, then frames/video stream over HTTP Range from the organizers' host.
+  Without it every frame 404s and the UI falls back to YouTube.
+  ```bash
+  python -m scripts.build_zip_video_index \
+      --urls-file ../../challenge_resources/data/zip_video_links.txt \
+      --output   ../../challenge_resources/data/zip_video_index.json
+  ```
+- **`raw_zip_videos/Videos_L*.zip` archives already on this machine**
+  (e.g. running `local-backend` directly on what used to be the
+  `remote-server` host): skip the build above and read them straight off
+  disk instead — no `zip_video_index.json`, no network fetch:
+  ```env
+  ZIP_MEDIA_SOURCE=local
+  RAW_ZIP_DIR=D:\path\to\challenge_resources\data\raw_zip_videos   # optional, this is the default
+  ```
+  `/api/health` reports `"zip_media_source":"local"` and the video count
+  found there. Same routes, same behavior otherwise — including client-side
+  decode (`NEXT_PUBLIC_FRAME_DECODE=client`) when sharing with teammates.
 
 Then the frontend, in a second terminal:
 
