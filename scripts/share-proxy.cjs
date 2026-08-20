@@ -17,10 +17,10 @@ const PORT = Number(process.env.SHARE_PORT) || 3001;
 const NEXT = { host: "127.0.0.1", port: Number(process.env.FRONTEND_PORT) || 3000 };
 const API = { host: "127.0.0.1", port: Number(process.env.BACKEND_PORT) || 8000 };
 
-// /api/tuning-draft is a Next page route (reads a local JSON file), not a
-// backend route — it has to stay on the Next side.
+// /api/tuning-draft and /api/submission are Next page routes (read/write
+// local JSON files), not backend routes — they have to stay on the Next side.
 function upstreamFor(url) {
-  if (url.startsWith("/api/tuning-draft")) return NEXT;
+  if (url.startsWith("/api/tuning-draft") || url.startsWith("/api/submission")) return NEXT;
   if (url.startsWith("/api/") || url.startsWith("/static/")) return API;
   return NEXT;
 }

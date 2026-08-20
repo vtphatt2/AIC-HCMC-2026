@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, TranscriptSegment } from "@/types";
 import { apiUrl, fetchTranscript } from "@/lib/api";
+import { addSubmissionEntry } from "@/lib/submission";
+import { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
 
 interface Props {
   result: SearchResult;
   onClose: () => void;
   showTranscript: boolean;
   onToggleTranscript: () => void;
+  onOpenSubmissionPanel: () => void;
 }
 
 declare global {
@@ -18,7 +21,7 @@ declare global {
 
 const PLAYER_DOM_ID = "yt-player-container";
 
-export default function VideoModal({ result, onClose, showTranscript, onToggleTranscript }: Props) {
+export default function VideoModal({ result, onClose, showTranscript, onToggleTranscript, onOpenSubmissionPanel }: Props) {
   const playerRef = useRef<any>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
   const youtubeId = result.youtube_id || "";
@@ -57,6 +60,26 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const wantsPlayRef = useRef(false);
   const currentFrame = Math.floor(currentTimeSec * fps);
+
+  // "Add to submission" — targets whichever session this browser last picked
+  // in the SubmissionPanel (localStorage.SUBMISSION_SESSION_KEY). No session
+  // yet -> open the panel to pick/create one instead of adding blindly.
+  const [addStatus, setAddStatus] = useState<"idle" | "added" | "error">("idle");
+  const handleAddToSubmission = useCallback(async () => {
+    const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
+    if (!session) {
+      onOpenSubmissionPanel();
+      return;
+    }
+    try {
+      await addSubmissionEntry(session, result.video_id, currentFrame, sharpUrl || result.frame_image_url);
+      setAddStatus("added");
+      setTimeout(() => setAddStatus("idle"), 1500);
+    } catch {
+      setAddStatus("error");
+      setTimeout(() => setAddStatus("idle"), 1500);
+    }
+  }, [result.video_id, result.frame_image_url, currentFrame, onOpenSubmissionPanel]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.
@@ -392,7 +415,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
           </div>
 
           {/* Live info bar — updates as the video plays */}
-          <div className="mt-2 flex gap-4 text-sm text-stone-400 font-mono">
+          <div className="mt-2 flex items-center gap-4 text-sm text-stone-400 font-mono">
             <span>{result.video_id}</span>
             <span>·</span>
             <span>
@@ -404,6 +427,13 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
             </span>
             <span>·</span>
             <span>{fps} fps</span>
+            <button
+              type="button"
+              onClick={handleAddToSubmission}
+              className="font-retro ml-auto text-xs uppercase tracking-wide border-2 border-stone-500 rounded px-2 py-1 text-stone-300 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition"
+            >
+              {addStatus === "added" ? "✓ Added" : addStatus === "error" ? "✕ Failed" : "＋ Add to submission"}
+            </button>
           </div>
         </div>
 

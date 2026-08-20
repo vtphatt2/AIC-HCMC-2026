@@ -31,6 +31,8 @@ import VideoGroupGrid from "@/components/VideoGroupGrid";
 import TranscriptChunkCard from "@/components/TranscriptChunkCard";
 import VideoModal from "@/components/VideoModal";
 import HelpModal from "@/components/HelpModal";
+import SubmissionPanel, { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
+import { fetchSubmissionSessions } from "@/lib/submission";
 
 const DEFAULT_GROUP: QueryGroup = {
   semanticQuery: "",
@@ -95,6 +97,8 @@ export default function Home() {
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showSubmission, setShowSubmission] = useState(false);
+  const [submissionBadge, setSubmissionBadge] = useState<{ session: string; count: number } | null>(null);
   const [viewMode, setViewMode] = useState<"score" | "video">("score");
   const [videoGenre, setVideoGenre] = useState("All");
   const [vectorAlgorithms, setVectorAlgorithms] = useState<VectorSearchAlgorithm[]>([]);
@@ -139,6 +143,24 @@ export default function Home() {
       if (thresholdSearchTimerRef.current) clearTimeout(thresholdSearchTimerRef.current);
     };
   }, []);
+
+  // Header badge: entry count for whichever submission session this browser
+  // last picked. Polled since another teammate may be adding to it too.
+  useEffect(() => {
+    function refresh() {
+      const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
+      if (!session) { setSubmissionBadge(null); return; }
+      fetchSubmissionSessions()
+        .then((sessions) => {
+          const found = sessions.find((s) => s.session === session);
+          setSubmissionBadge(found ? { session, count: found.entryCount } : { session, count: 0 });
+        })
+        .catch(() => {});
+    }
+    refresh();
+    const interval = setInterval(refresh, 5000);
+    return () => clearInterval(interval);
+  }, [showSubmission]);
 
   useEffect(() => {
     if (!selectedStrategy) return;
@@ -537,6 +559,15 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => setShowSubmission(true)}
+                    className="h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 px-2 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
+                    title="Submission basket"
+                  >
+                    <span className="text-xs font-bold whitespace-nowrap">
+                      🗳 {submissionBadge ? `${submissionBadge.session} (${submissionBadge.count})` : "No session"}
+                    </span>
+                  </button>
                   <button
                     onClick={() => setShowHelp(true)}
                     className="w-7 h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
@@ -1156,11 +1187,15 @@ export default function Home() {
           onClose={() => setActiveResult(null)}
           showTranscript={showTranscript}
           onToggleTranscript={() => setShowTranscriptPersisted(!showTranscript)}
+          onOpenSubmissionPanel={() => setShowSubmission(true)}
         />
       )}
 
       {/* ── Help / usage guide modal ── */}
       {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
+
+      {/* ── Submission basket panel ── */}
+      {showSubmission && <SubmissionPanel onClose={() => setShowSubmission(false)} />}
     </div>
   );
 }

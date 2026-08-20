@@ -80,6 +80,42 @@ export interface SearchResult {
   steps?: SearchResult[];
 }
 
+// ── Submission sessions ───────────────────────────────────────────────────
+// A "session" is a named working folder a searcher creates or joins, so
+// multiple teammates can each solve a different organizer query at once
+// without stepping on each other. Backed by pages/api/submission.ts.
+
+export type SubmissionQueryType = "kis" | "qa" | "trake";
+
+export interface SubmissionEntry {
+  id: string;
+  videoId: string;
+  frame: number;
+  imageUrl?: string;
+  groupIndex: number; // TRAKE candidate grouping; always 0 for kis/qa
+  addedAt: number;
+}
+
+export interface SubmissionState {
+  session: string;
+  revision: number;
+  queryType: SubmissionQueryType;
+  queryNumber: number;
+  answer: string; // qa only
+  nextGroupIndex: number;
+  entries: SubmissionEntry[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SubmissionSessionSummary {
+  session: string;
+  queryType: SubmissionQueryType;
+  queryNumber: number;
+  entryCount: number;
+  updatedAt: number;
+}
+
 export interface SearchResponse {
   results: SearchResult[];
   strategy_id: string;
