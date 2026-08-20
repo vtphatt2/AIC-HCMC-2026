@@ -27,6 +27,7 @@ export default function SubmissionsDashboard() {
   const [sessions, setSessions] = useState<SubmissionSessionSummary[]>([]);
   const [states, setStates] = useState<Record<string, SubmissionState>>({});
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
+  const [dragOver, setDragOver] = useState<{ session: string; group: number } | null>(null);
 
   useEffect(() => {
     document.documentElement.classList.toggle(
@@ -66,11 +67,17 @@ export default function SubmissionsDashboard() {
     setStates((prev) => ({ ...prev, [session]: updated }));
   }
 
-  async function handleMoveGroup(session: string, id: string, raw: string) {
-    const groupIndex = (Number.parseInt(raw, 10) || 1) - 1;
+  async function handleMoveGroup(session: string, id: string, groupIndex: number) {
     if (groupIndex < 0) return;
     const updated = await editSubmissionEntryGroup(session, id, groupIndex);
     setStates((prev) => ({ ...prev, [session]: updated }));
+  }
+
+  function handleDrop(e: React.DragEvent, session: string, groupIndex: number) {
+    e.preventDefault();
+    setDragOver(null);
+    const id = e.dataTransfer.getData("text/plain");
+    if (id) handleMoveGroup(session, id, groupIndex);
   }
 
   function handleDownload(state: SubmissionState) {
@@ -159,64 +166,63 @@ export default function SubmissionsDashboard() {
 
                 {state.entries.length > 0 && state.queryType === "trake" && (
                   <div className="space-y-2">
-                    {trakeSortedGroups(state.entries).map((groupEntries) => (
-                      <div
-                        key={groupEntries[0].groupIndex}
-                        className="border-2 border-stone-400 dark:border-stone-600 rounded p-2"
-                      >
-                        <p className="text-xs font-bold uppercase text-stone-500 mb-1.5">
-                          Candidate {groupEntries[0].groupIndex + 1} · {groupEntries.length} frame
-                          {groupEntries.length === 1 ? "" : "s"}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {groupEntries.map((entry) => (
-                            <div
-                              key={entry.id}
-                              className="flex flex-col items-center gap-1 w-24 border border-stone-300 dark:border-stone-700 rounded p-1.5"
-                            >
-                              {entry.imageUrl && (
-                                <button type="button" onClick={() => setActiveResult(submissionEntryToSearchResult(entry))}>
-                                  <img
-                                    src={entry.imageUrl}
-                                    alt=""
-                                    className="w-20 h-11 object-cover rounded hover:ring-2 hover:ring-orange-600 transition"
-                                  />
-                                </button>
-                              )}
-                              <span className="text-[10px] font-mono text-stone-500 truncate max-w-full">{entry.videoId}</span>
-                              <input
-                                key={entry.frame}
-                                type="number"
-                                min={0}
-                                defaultValue={entry.frame}
-                                className={`${FRAME_INPUT} w-20 text-center px-1`}
-                                onBlur={(e) => handleEditFrame(summary.session, entry.id, e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                              />
-                              <label className="flex items-center gap-1 text-[10px] text-stone-500">
-                                cand.
+                    {trakeSortedGroups(state.entries).map((groupEntries) => {
+                      const gi = groupEntries[0].groupIndex;
+                      const isOver = dragOver?.session === summary.session && dragOver.group === gi;
+                      return (
+                        <div
+                          key={gi}
+                          onDragOver={(e) => { e.preventDefault(); setDragOver({ session: summary.session, group: gi }); }}
+                          onDragLeave={() => setDragOver((d) => (d?.session === summary.session && d.group === gi ? null : d))}
+                          onDrop={(e) => handleDrop(e, summary.session, gi)}
+                          className={`border-2 rounded p-2 transition-colors ${
+                            isOver ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30" : "border-stone-400 dark:border-stone-600"
+                          }`}
+                        >
+                          <p className="text-xs font-bold uppercase text-stone-500 mb-1.5">
+                            Candidate {gi + 1} · {groupEntries.length} frame{groupEntries.length === 1 ? "" : "s"}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {groupEntries.map((entry) => (
+                              <div
+                                key={entry.id}
+                                draggable
+                                onDragStart={(e) => e.dataTransfer.setData("text/plain", entry.id)}
+                                className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream-card dark:bg-stone-900"
+                              >
+                                {entry.imageUrl && (
+                                  <button type="button" onClick={() => setActiveResult(submissionEntryToSearchResult(entry))}>
+                                    <img
+                                      src={entry.imageUrl}
+                                      alt=""
+                                      className="w-24 h-14 object-cover rounded hover:ring-2 hover:ring-orange-600 transition pointer-events-none"
+                                    />
+                                  </button>
+                                )}
+                                <span className="text-xs font-mono text-stone-500 truncate max-w-full">{entry.videoId}</span>
                                 <input
-                                  key={entry.groupIndex}
+                                  key={entry.frame}
                                   type="number"
-                                  min={1}
-                                  defaultValue={entry.groupIndex + 1}
-                                  className={`${FRAME_INPUT} w-10 text-center px-1`}
-                                  onBlur={(e) => handleMoveGroup(summary.session, entry.id, e.target.value)}
+                                  min={0}
+                                  defaultValue={entry.frame}
+                                  className={`${FRAME_INPUT} w-full text-center px-1`}
+                                  onBlur={(e) => handleEditFrame(summary.session, entry.id, e.target.value)}
                                   onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                                 />
-                              </label>
-                              <button
-                                onClick={() => handleRemove(summary.session, entry.id)}
-                                className="text-stone-400 hover:text-red-600 transition text-xs"
-                                aria-label="Remove"
-                              >
-                                ✕ remove
-                              </button>
-                            </div>
-                          ))}
+                                <button
+                                  onClick={() => handleRemove(summary.session, entry.id)}
+                                  className="text-stone-400 hover:text-red-600 transition text-xs"
+                                  aria-label="Remove"
+                                >
+                                  ✕ remove
+                                </button>
+                              </div>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+                    <p className="text-xs text-stone-500 italic">Drag a frame onto a different candidate box to move it.</p>
                   </div>
                 )}
 

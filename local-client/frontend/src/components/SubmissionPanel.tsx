@@ -4,6 +4,7 @@ import {
   buildSubmissionCsv,
   createSubmissionSession,
   downloadCsv,
+  editSubmissionEntryFrame,
   editSubmissionEntryGroup,
   fetchSubmission,
   fetchSubmissionSessions,
@@ -13,6 +14,7 @@ import {
   setSubmissionMeta,
   trakeCandidateSizeMismatch,
   trakeCandidateVideoMismatch,
+  trakeSortedGroups,
 } from "@/lib/submission";
 
 export const SUBMISSION_SESSION_KEY = "aic2026-submission-session";
@@ -33,6 +35,7 @@ export default function SubmissionPanel({ onClose }: Props) {
   const [session, setSession] = useState<string>("");
   const [state, setState] = useState<SubmissionState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dragOverGroup, setDragOverGroup] = useState<number | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
@@ -97,6 +100,19 @@ export default function SubmissionPanel({ onClose }: Props) {
   async function handleMoveGroup(id: string, groupIndex: number) {
     if (!session || !Number.isFinite(groupIndex) || groupIndex < 0) return;
     setState(await editSubmissionEntryGroup(session, id, groupIndex));
+  }
+
+  async function handleEditFrame(id: string, raw: string) {
+    const frame = Number.parseInt(raw, 10);
+    if (!session || !Number.isFinite(frame) || frame < 0) return;
+    setState(await editSubmissionEntryFrame(session, id, frame));
+  }
+
+  function handleDrop(e: React.DragEvent, groupIndex: number) {
+    e.preventDefault();
+    setDragOverGroup(null);
+    const id = e.dataTransfer.getData("text/plain");
+    if (id) handleMoveGroup(id, groupIndex);
   }
 
   async function handleReset() {
@@ -233,45 +249,91 @@ export default function SubmissionPanel({ onClose }: Props) {
               )}
 
               {/* Entries */}
-              <div className="space-y-1">
-                {state.entries.length === 0 && (
-                  <p className="text-sm text-stone-500 italic">No frames added yet.</p>
-                )}
-                {state.entries.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="flex items-center gap-2 border border-stone-300 dark:border-stone-700 rounded px-2 py-1"
-                  >
-                    {entry.imageUrl && (
-                      <img src={entry.imageUrl} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
-                    )}
-                    <span className="text-sm font-mono text-stone-800 dark:text-stone-200 truncate">
-                      {entry.videoId} · frame {entry.frame}
-                    </span>
-                    {state.queryType === "trake" && (
-                      <label className="flex items-center gap-1 text-xs text-stone-500 shrink-0">
-                        candidate
-                        <input
-                          key={entry.groupIndex}
-                          type="number"
-                          min={1}
-                          defaultValue={entry.groupIndex + 1}
-                          className={`${INPUT} w-14 py-0.5 px-1.5`}
-                          onBlur={(e) => handleMoveGroup(entry.id, (Number.parseInt(e.target.value, 10) || 1) - 1)}
-                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                        />
-                      </label>
-                    )}
-                    <button
-                      onClick={() => handleRemove(entry.id)}
-                      className="ml-auto text-stone-400 hover:text-red-600 transition"
-                      aria-label="Remove"
+              {state.entries.length === 0 && (
+                <p className="text-sm text-stone-500 italic">No frames added yet.</p>
+              )}
+
+              {state.entries.length > 0 && state.queryType === "trake" && (
+                <div className="space-y-2">
+                  {trakeSortedGroups(state.entries).map((groupEntries) => {
+                    const gi = groupEntries[0].groupIndex;
+                    return (
+                      <div
+                        key={gi}
+                        onDragOver={(e) => { e.preventDefault(); setDragOverGroup(gi); }}
+                        onDragLeave={() => setDragOverGroup((g) => (g === gi ? null : g))}
+                        onDrop={(e) => handleDrop(e, gi)}
+                        className={`border-2 rounded p-2 transition-colors ${
+                          dragOverGroup === gi
+                            ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30"
+                            : "border-stone-400 dark:border-stone-600"
+                        }`}
+                      >
+                        <p className="text-xs font-bold uppercase text-stone-500 mb-1.5">
+                          Candidate {gi + 1} · {groupEntries.length} frame{groupEntries.length === 1 ? "" : "s"}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {groupEntries.map((entry) => (
+                            <div
+                              key={entry.id}
+                              draggable
+                              onDragStart={(e) => e.dataTransfer.setData("text/plain", entry.id)}
+                              className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream dark:bg-stone-900"
+                            >
+                              {entry.imageUrl && (
+                                <img src={entry.imageUrl} alt="" className="w-24 h-14 object-cover rounded pointer-events-none" />
+                              )}
+                              <span className="text-xs font-mono text-stone-600 dark:text-stone-400 truncate max-w-full">{entry.videoId}</span>
+                              <input
+                                key={entry.frame}
+                                type="number"
+                                min={0}
+                                defaultValue={entry.frame}
+                                className={`${INPUT} w-full text-center py-1 px-1 text-sm`}
+                                onBlur={(e) => handleEditFrame(entry.id, e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                              />
+                              <button
+                                onClick={() => handleRemove(entry.id)}
+                                className="text-xs text-stone-400 hover:text-red-600 transition"
+                                aria-label="Remove"
+                              >
+                                ✕ remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <p className="text-xs text-stone-500 italic">Drag a frame onto a different candidate box to move it.</p>
+                </div>
+              )}
+
+              {state.entries.length > 0 && state.queryType !== "trake" && (
+                <div className="space-y-1">
+                  {state.entries.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-center gap-2 border border-stone-300 dark:border-stone-700 rounded px-2 py-1"
                     >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
+                      {entry.imageUrl && (
+                        <img src={entry.imageUrl} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
+                      )}
+                      <span className="text-sm font-mono text-stone-800 dark:text-stone-200 truncate">
+                        {entry.videoId} · frame {entry.frame}
+                      </span>
+                      <button
+                        onClick={() => handleRemove(entry.id)}
+                        className="ml-auto text-stone-400 hover:text-red-600 transition"
+                        aria-label="Remove"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               <p className="text-xs text-stone-500">
                 {state.entries.length} row candidate{state.entries.length === 1 ? "" : "s"} added (organizer cap: 100 rows/query).
