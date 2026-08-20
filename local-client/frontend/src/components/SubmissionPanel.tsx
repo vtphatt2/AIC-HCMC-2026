@@ -14,6 +14,7 @@ import {
   reorderKeys,
   reorderSubmissionRows,
   resetSubmission,
+  submissionEntryThumbUrl,
   setSubmissionMeta,
   trakeCandidateSizeMismatch,
   trakeCandidateVideoMismatch,
@@ -317,9 +318,7 @@ export default function SubmissionPanel({ onClose }: Props) {
                               onDragStart={(e) => e.dataTransfer.setData("application/x-frame-id", entry.id)}
                               className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream dark:bg-stone-900"
                             >
-                              {entry.imageUrl && (
-                                <img src={entry.imageUrl} alt="" className="w-24 h-14 object-cover rounded pointer-events-none" />
-                              )}
+                              <img src={submissionEntryThumbUrl(entry)} alt="" className="w-24 h-14 object-cover rounded pointer-events-none" />
                               <span className="text-xs font-mono text-stone-600 dark:text-stone-400 truncate max-w-full">{entry.videoId}</span>
                               <input
                                 key={entry.frame}
@@ -366,9 +365,7 @@ export default function SubmissionPanel({ onClose }: Props) {
                       }`}
                     >
                       <span className="text-stone-400 select-none">⠿</span>
-                      {entry.imageUrl && (
-                        <img src={entry.imageUrl} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
-                      )}
+                      <img src={submissionEntryThumbUrl(entry)} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
                       <span className="text-sm font-mono text-stone-800 dark:text-stone-200 truncate">
                         {entry.videoId} · frame {entry.frame}
                       </span>

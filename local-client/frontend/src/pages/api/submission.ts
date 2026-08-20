@@ -135,7 +135,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (typeof fps !== "number" || !Number.isFinite(fps) || fps <= 0) {
       return res.status(400).json({ error: "Invalid fps" });
     }
-    const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl : undefined;
     const youtubeId =
       typeof req.body?.youtubeId === "string" && req.body.youtubeId.length <= 32
         ? req.body.youtubeId
@@ -155,7 +154,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       id: randomUUID(),
       videoId,
       frame,
-      imageUrl,
       fps,
       youtubeId,
       groupIndex,

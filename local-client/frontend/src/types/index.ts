@@ -91,7 +91,9 @@ export interface SubmissionEntry {
   id: string;
   videoId: string;
   frame: number;
-  imageUrl?: string;
+  // No stored thumbnail — always recomputed from videoId/frame/fps via
+  // /api/zip-frame (lib/submission's submissionEntryThumbUrl), so editing
+  // the frame number never leaves a stale image behind.
   fps: number; // captured at add-time so a later dashboard view can reopen VideoModal
   youtubeId?: string;
   groupIndex: number; // TRAKE candidate grouping; always 0 for kis/qa

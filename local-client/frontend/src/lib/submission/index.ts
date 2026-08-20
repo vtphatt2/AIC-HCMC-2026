@@ -1,4 +1,5 @@
 import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
+import { apiUrl } from "@/lib/api";
 import { sortByRowOrder } from "./types";
 
 export { reorderKeys } from "./types";
@@ -60,12 +61,11 @@ export function addSubmissionEntry(
   session: string,
   videoId: string,
   frame: number,
-  imageUrl?: string,
   fps?: number,
   youtubeId?: string,
   groupIndex?: number,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "add", videoId, frame, imageUrl, fps, youtubeId, groupIndex });
+  return postAction(session, { action: "add", videoId, frame, fps, youtubeId, groupIndex });
 }
 
 export function editSubmissionEntryFrame(session: string, id: string, frame: number): Promise<SubmissionState> {
@@ -84,9 +84,19 @@ export function reorderSubmissionRows(session: string, rowOrder: string[]): Prom
   return postAction(session, { action: "reorderRows", rowOrder });
 }
 
+// No stored thumbnail — always decode fresh from videoId/frame/fps via the
+// same route VideoModal/ResultCard already use, so editing the frame number
+// (or moving it to a different candidate) never leaves a stale image
+// behind. `|| 25` only covers entries added before fps was captured.
+export function submissionEntryThumbUrl(entry: SubmissionEntry): string {
+  const fps = entry.fps || 25;
+  const timestampMs = Math.round((entry.frame / fps) * 1000);
+  return apiUrl(`/api/zip-frame/${encodeURIComponent(entry.videoId)}/${timestampMs}`);
+}
+
 // Reconstructs the SearchResult shape VideoModal needs from a stored
 // submission entry, so the dashboard can reopen the same modal the search
-// grid uses. `|| 25` only covers entries added before fps was captured.
+// grid uses.
 export function submissionEntryToSearchResult(entry: SubmissionEntry): SearchResult {
   const fps = entry.fps || 25;
   return {
@@ -96,7 +106,7 @@ export function submissionEntryToSearchResult(entry: SubmissionEntry): SearchRes
     frame_number: entry.frame,
     timestamp_ms: (entry.frame / fps) * 1000,
     confidence: 1,
-    frame_image_url: entry.imageUrl || "",
+    frame_image_url: submissionEntryThumbUrl(entry),
     fps,
   };
 }

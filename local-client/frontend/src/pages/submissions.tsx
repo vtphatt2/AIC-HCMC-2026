@@ -14,6 +14,7 @@ import {
   removeSubmissionEntry,
   reorderKeys,
   reorderSubmissionRows,
+  submissionEntryThumbUrl,
   submissionEntryToSearchResult,
   trakeCandidateSizeMismatch,
   trakeCandidateVideoMismatch,
@@ -235,15 +236,13 @@ export default function SubmissionsDashboard() {
                                 onDragStart={(e) => e.dataTransfer.setData("application/x-frame-id", entry.id)}
                                 className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream-card dark:bg-stone-900"
                               >
-                                {entry.imageUrl && (
-                                  <button type="button" onClick={() => openEntry(summary.session, entry)}>
-                                    <img
-                                      src={entry.imageUrl}
-                                      alt=""
-                                      className="w-24 h-14 object-cover rounded hover:ring-2 hover:ring-orange-600 transition pointer-events-none"
-                                    />
-                                  </button>
-                                )}
+                                <button type="button" onClick={() => openEntry(summary.session, entry)}>
+                                  <img
+                                    src={submissionEntryThumbUrl(entry)}
+                                    alt=""
+                                    className="w-24 h-14 object-cover rounded hover:ring-2 hover:ring-orange-600 transition pointer-events-none"
+                                  />
+                                </button>
                                 <span className="text-xs font-mono text-stone-500 truncate max-w-full">{entry.videoId}</span>
                                 <input
                                   key={entry.frame}
@@ -290,11 +289,9 @@ export default function SubmissionsDashboard() {
                         }`}
                       >
                         <span className="text-stone-400 select-none">⠿</span>
-                        {entry.imageUrl && (
-                          <button type="button" onClick={() => openEntry(summary.session, entry)}>
-                            <img src={entry.imageUrl} alt="" className="w-16 h-9 object-cover rounded shrink-0 hover:ring-2 hover:ring-orange-600 transition" />
-                          </button>
-                        )}
+                        <button type="button" onClick={() => openEntry(summary.session, entry)}>
+                          <img src={submissionEntryThumbUrl(entry)} alt="" className="w-16 h-9 object-cover rounded shrink-0 hover:ring-2 hover:ring-orange-600 transition" />
+                        </button>
                         <span className="text-sm font-mono text-stone-800 dark:text-stone-200">{entry.videoId}</span>
                         <span className="text-xs text-stone-500">frame</span>
                         <input

@@ -102,23 +102,17 @@ export default function VideoModal({
       return;
     }
     try {
-      await addSubmissionEntry(
-        session,
-        result.video_id,
-        currentFrame,
-        sharpUrl || result.frame_image_url,
-        fps,
-        result.youtube_id,
-        overrideGroupIndex,
-      );
+      // The add response already IS the updated state — no need for a
+      // second round trip just to re-fetch what we already have.
+      const updated = await addSubmissionEntry(session, result.video_id, currentFrame, fps, result.youtube_id, overrideGroupIndex);
+      setSessionInfo(updated);
       setAddStatus("added");
-      refreshSessionInfo();
       setTimeout(() => setAddStatus("idle"), 1500);
     } catch {
       setAddStatus("error");
       setTimeout(() => setAddStatus("idle"), 1500);
     }
-  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, refreshSessionInfo, overrideSession, overrideGroupIndex]);
+  }, [result.video_id, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, overrideSession, overrideGroupIndex]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.
