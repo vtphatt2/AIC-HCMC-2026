@@ -1,7 +1,7 @@
 """
 Verify the vendored torch-free SimpleTokenizer against open_clip's original,
 and verify the ONNX backend's output against the reference vector documented
-in docs/PE-Core-bigG-14-448-Text-Encoder.README.md.
+in docs/archive/PE-Core-bigG-14-448-Text-Encoder.README.md.
 
 Run from local-client/local-backend:
   python scripts/verify_onnx_tokenizer.py

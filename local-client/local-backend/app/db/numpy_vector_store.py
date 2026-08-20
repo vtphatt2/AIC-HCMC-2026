@@ -1,7 +1,7 @@
 """Exact vector search over a memory-mapped array.
 
 Local search has to be exact regardless of speed: milvus_lite 3.2.0's HNSW path
-returns wrong neighbours (docs/milvus-lite-hnsw-recall-bug.md). Given that, the
+returns wrong neighbours (docs/archive/milvus-lite-hnsw-recall-bug.md). Given that, the
 only question is which exact search to run. Measured over the same 990 MB,
 top_k=1000:
 

@@ -12,50 +12,27 @@ by that server directly.
 
 ## Documentation Map
 
-**New here?** [running.md](docs/running.md) → [architecture.md](docs/architecture.md)
-→ [backend_flow.md](docs/backend_flow.md) → [strategy_template_v2.md](docs/strategy_template_v2.md).
-That is the whole onboarding path; everything below is reference.
-
-### Running it
+Three docs cover everything day to day:
 
 | Document | Description |
 |---|---|
-| [docs/running.md](docs/running.md) | **Start here** — scenario picker, exact commands, what to re-run after an update |
-| [docs/setup.md](docs/setup.md) | First-time setup, step by step, for local dev and the GPU server |
-| [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local/remote launch (Windows/Mac/Linux/WSL), ngrok sharing |
-| [docs/ngrok.md](docs/ngrok.md) | Ngrok setup + both sharing scenarios: local dev instance, remote server |
-| [docs/USAGE.md](docs/USAGE.md) | Using the search UI: query modes, command bar, results, player |
-| [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | remote-server: ingestion, HNSW/CAGRA, validation scripts |
+| [docs/SETUP.md](docs/SETUP.md) | **Start here** — every way to run it (local, GPU server, proxy mode), launch scripts, sharing across machines over ngrok, troubleshooting |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the system works: ENV_MODE, request flow, media serving, known limitations |
+| [docs/STRATEGIES.md](docs/STRATEGIES.md) | How to write a new search strategy |
 
-### How it works
+Plus: [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md)
+(ingestion/CAGRA/validation detail) and
+[challenge_resources/data/zip_file/Readme-Ingest.md](challenge_resources/data/zip_file/Readme-Ingest.md)
+(what the lot archives contain).
 
-| Document | Description |
-|---|---|
-| [docs/architecture.md](docs/architecture.md) | System design, ENV_MODE switching, data flow, duplicate filtering |
-| [docs/backend_flow.md](docs/backend_flow.md) | Backend code flow: startup, request path, module map, endpoint map |
-| [docs/zip_media.md](docs/zip_media.md) | Frames and video playback out of the organizer ZIPs, without downloading them |
-| [docs/db_schema.md](docs/db_schema.md) | PostgreSQL DDL + Milvus collection schema |
-| [docs/gaps.md](docs/gaps.md) | What is documented or implied but **not implemented** |
+### Archive
 
-### Writing strategies
-
-| Document | Description |
-|---|---|
-| [docs/strategy_template_v2.md](docs/strategy_template_v2.md) | **How to write your own strategy** — copy this |
-| [docs/strategy_v2.md](docs/strategy_v2.md) | Strategy/data contract: channels, SearchContext, hit shape |
-| [docs/search_by_transcript.md](docs/search_by_transcript.md) | Topic-based transcript chunking + vector search |
-| [docs/reranking_hybrid_notes.md](docs/reranking_hybrid_notes.md) | Ideas and measurements for hybrid reranking |
-
-### Models, data, and measurements
-
-| Document | Description |
-|---|---|
-| [docs/PE-Core-bigG-14-448-Text-Encoder.README.md](docs/PE-Core-bigG-14-448-Text-Encoder.README.md) | Lightweight ONNX text encoder (no torch) |
-| [docs/keyframe_selection.md](docs/keyframe_selection.md) | Keyframe sampling rule |
-| [challenge_resources/data/zip_file/Readme-Ingest.md](challenge_resources/data/zip_file/Readme-Ingest.md) | What the lot archives contain and how to ingest them |
-| [docs/performance_pain_points.md](docs/performance_pain_points.md) | Every measured bottleneck, what fixed it, and the wrong turns |
-| [docs/vector_search_benchmark_report.md](docs/vector_search_benchmark_report.md) | HNSW vs CAGRA vs ScaNN |
-| [docs/milvus-lite-hnsw-recall-bug.md](docs/milvus-lite-hnsw-recall-bug.md) | Why local search does not use Milvus Lite's HNSW |
+[docs/archive/](docs/archive/) holds everything the three docs above
+condensed: module-by-module backend flow, full DB schema, the app's
+in-UI usage guide, measured performance bottlenecks, benchmark reports,
+and incident writeups (e.g. the Milvus Lite HNSW recall bug). Historical
+reference, not actively maintained — see
+[docs/archive/README.md](docs/archive/README.md).
 
 ### Sub-projects (own docs, own lifecycle)
 
@@ -186,7 +163,7 @@ optional cuVS CAGRA, plus PostgreSQL for metadata and text retrieval.
 
 ## Strategy Development Quickstart
 
-Copy the template in [docs/strategy_template_v2.md](docs/strategy_template_v2.md)
+Copy the minimal example in [docs/STRATEGIES.md](docs/STRATEGIES.md)
 into `local-client/local-backend/app/strategies/`; backend discovery adds it to
 the dropdown automatically.
 
@@ -204,5 +181,5 @@ the dropdown automatically.
 | Video player | YouTube IFrame API, falling back to a Range-proxied organizer-ZIP `<video>` stream on embed failure |
 | Translation | Google Translate (free web endpoint via `deep-translator`); button replaces the editable query |
 | Local transport | HTTP via `httpx` (LOCAL mode) |
-| Local vector search | Exact search over a memmapped `vectors.f32.npy` (BLAS, ~35 ms at `top_k=1000`); Milvus Lite FLAT as fallback — [why not HNSW](docs/milvus-lite-hnsw-recall-bug.md) |
-| Media | Frames and playback read straight out of the organizers' video ZIPs — HTTP Range on local-backend, a file seek on remote-server, no unpacking either way ([zip_media.md](docs/zip_media.md)) |
+| Local vector search | Exact search over a memmapped `vectors.f32.npy` (BLAS, ~35 ms at `top_k=1000`); Milvus Lite FLAT as fallback — [why not HNSW](docs/archive/milvus-lite-hnsw-recall-bug.md) |
+| Media | Frames and playback read straight out of the organizers' video ZIPs — HTTP Range on local-backend, a file seek on remote-server, no unpacking either way ([ARCHITECTURE.md § Media](docs/ARCHITECTURE.md#media-youtube-first-zip-proxy-fallback)) |

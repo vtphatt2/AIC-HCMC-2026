@@ -20,7 +20,7 @@ deep-translator==1.11.4
 
 # PECore text encoder — "onnx" backend (PECORE_BACKEND=onnx). CPU-only, no
 # multi-GB model download. See app/services/simple_tokenizer.py and
-# docs/PE-Core-bigG-14-448-Text-Encoder.README.md.
+# docs/archive/PE-Core-bigG-14-448-Text-Encoder.README.md.
 # Note: sentence-transformers above already pulls in torch for transcript
 # chunk embeddings, so this only saves the PE-Core-bigG weight download,
 # not torch itself, on this server.

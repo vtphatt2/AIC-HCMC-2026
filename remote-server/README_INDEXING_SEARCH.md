@@ -2,11 +2,11 @@
 
 How to ingest the organizers' lot archives into Milvus + PostgreSQL and
 validate the result. For bringing up the whole GPU server (env vars, CAGRA/MPS,
-translation, Docker), see [../docs/setup.md → Option
-C](../docs/setup.md#option-c--gpu-server-production). For the Milvus/Postgres
-schema and the `/api/search` request/response contract, see
-[../docs/db_schema.md](../docs/db_schema.md) and
-[../docs/architecture.md](../docs/architecture.md).
+translation, Docker), see [../docs/SETUP.md § Remote
+server](../docs/SETUP.md#2-remote-server--gpu-workstation). For the
+Milvus/Postgres schema and the `/api/search` request/response contract, see
+[../docs/archive/db_schema.md](../docs/archive/db_schema.md) and
+[../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
 
 ## 1. Dataset
 
@@ -16,7 +16,8 @@ the only dataset the system indexes; ingestion is [§4](#4-ingest-the-lot-archiv
 
 Frames and video playback do not come from here — they are read from the
 *video* archives (`raw_zip/Videos_L*.zip`) at request time, see
-[../docs/zip_media.md](../docs/zip_media.md).
+[../docs/ARCHITECTURE.md § Media](../docs/ARCHITECTURE.md#media-youtube-first-zip-proxy-fallback)
+(full mechanism: [../docs/archive/zip_media.md](../docs/archive/zip_media.md)).
 
 <details>
 <summary>Legacy: the <code>AIC2026_sample</code> layout</summary>
@@ -60,7 +61,7 @@ cd remote-server
 bash scripts/start-local-postgres.sh start
 ```
 `local-backend` can point at the same `milvus_lite.db` file for its own
-lightweight search — see [../docs/running.md](../docs/running.md). Only one
+lightweight search — see [../docs/SETUP.md](../docs/SETUP.md). Only one
 process can hold the Milvus Lite file open at a time, so stop the backend
 before running an ingestion script against it.
 
@@ -127,7 +128,7 @@ python scripts/export_vectors_npy.py                     # vectors.f32.npy, ~11s
 
 `export_vectors_npy.py` is what local search actually reads; `export_video_fps.py`
 is what both backends use to turn a `timestamp_ms` back into the right frame
-([../docs/zip_media.md §5](../docs/zip_media.md#5-getting-the-frame-right)).
+([../docs/archive/zip_media.md §5](../docs/archive/zip_media.md#5-getting-the-frame-right)).
 
 ## 5. Run the backend
 
@@ -138,7 +139,7 @@ curl -X POST http://localhost:8000/api/warmup_text_encoder   # load the text mod
 ```
 
 For `VECTOR_SEARCH_BACKEND=cagra` / Apple MPS / translation env vars, see
-[../docs/setup.md → Option C](../docs/setup.md#option-c--gpu-server-production).
+[../docs/SETUP.md § Remote server](../docs/SETUP.md#2-remote-server--gpu-workstation).
 Building the CAGRA index itself is part of this ingestion pipeline:
 
 ```bash
@@ -179,7 +180,7 @@ python scripts/smoke_search_queries.py --backend-url http://localhost:8000 --que
 Batch evaluation over a query set is **not** a script here — it lives in the
 notebooks (`notebooks/NOTEBOOK_EVALUATION_INPUT_SPEC.md`). An earlier version of
 this page documented an `evaluate_query_set.py` that was never written; see
-[../docs/gaps.md](../docs/gaps.md#3-evaluate_query_setpy-is-documented-but-does-not-exist).
+[../docs/archive/gaps.md](../docs/archive/gaps.md#3-evaluate_query_setpy-is-documented-but-does-not-exist).
 
 ## Runtime notes
 
@@ -191,8 +192,8 @@ this page documented an `evaluate_query_set.py` that was never written; see
   find latency bottlenecks.
 - Local-client modes (`ENV_MODE=ZIP` searching the exported vectors,
   `ENV_MODE=LOCAL` proxying to this server) are documented in
-  [../docs/running.md](../docs/running.md).
+  [../docs/SETUP.md](../docs/SETUP.md).
 - `/api/frame-embeddings` (`query_frame_vectors()` in `milvus_client.py`)
   batch-fetches raw vectors by `frame_id`, used by the near-duplicate result
   filter (`duplicate_threshold` in `/api/search` — see
-  [../docs/architecture.md](../docs/architecture.md#duplicate-result-filtering)).
+  [../docs/archive/architecture.md](../docs/archive/architecture.md#duplicate-result-filtering)).

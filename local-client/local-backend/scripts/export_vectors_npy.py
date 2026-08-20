@@ -9,7 +9,7 @@ we can read directly in seconds, and it needs the backend stopped for the
 single-process lock.
 
 Why a flat array at all: milvus_lite 3.2.0's HNSW search returns wrong
-neighbours (docs/milvus-lite-hnsw-recall-bug.md), so local search has to be
+neighbours (docs/archive/milvus-lite-hnsw-recall-bug.md), so local search has to be
 exact either way. Its BruteForceIndex manages roughly 1 GB/s over the same
 bytes; a memmapped array through BLAS should do several times that.
 

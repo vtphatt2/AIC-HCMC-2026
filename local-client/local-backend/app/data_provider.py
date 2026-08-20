@@ -79,7 +79,7 @@ class DataProvider:
             # force over the same bytes (~35 ms vs ~1570 ms at top_k=1000).
             # Milvus Lite stays as the fallback so a machine that has not run
             # scripts/export_vectors_npy.py still works — but see
-            # docs/milvus-lite-hnsw-recall-bug.md for why that fallback must
+            # docs/archive/milvus-lite-hnsw-recall-bug.md for why that fallback must
             # not be pointed at an HNSW collection.
             from app.db import numpy_vector_store
 
@@ -355,7 +355,7 @@ class DataProvider:
             milvus_client.connect()
             # Follows VECTOR_SEARCH_BACKEND rather than hard-wiring "hnsw" —
             # milvus_lite 3.2.0's HNSW search returns wrong neighbours
-            # (docs/milvus-lite-hnsw-recall-bug.md), so this must land on flat.
+            # (docs/archive/milvus-lite-hnsw-recall-bug.md), so this must land on flat.
             algorithm = milvus_client.DEFAULT_ALGORITHM
             if not milvus_client.has_collection_for_algorithm(algorithm, "raw.semantic"):
                 print(

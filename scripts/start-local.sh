@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Mac / Linux / WSL launcher for local-backend + frontend.
 # Windows (non-WSL): use scripts/start-local.ps1 instead.
-# See docs/launch_scripts.md for which --backend to pick per machine.
+# See docs/SETUP.md § 4 for which --backend to pick per machine.
 set -euo pipefail
 
 backend_port=8000

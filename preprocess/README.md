@@ -283,7 +283,7 @@ Output có hai artifact độc lập:
 
 ### Selector scene segments (TransNetV2)
 
-`docs/keyframe_selection.md` mô tả selector rule-based dựa trên scene segment
+`docs/archive/keyframe_selection.md` mô tả selector rule-based dựa trên scene segment
 của TransNetV2. Dùng `--selector scene-segments` cùng JSON detector-agnostic:
 
 ```json

@@ -33,11 +33,11 @@ python scripts/export_vectors_npy.py                                      # requ
 with, which both backends need to turn a `timestamp_ms` back into the right
 frame. Deriving it from the MP4 instead is wrong for the 91 videos that are not
 25 fps, and the error grows with the timestamp
-([../../../docs/zip_media.md](../../../docs/zip_media.md#5-getting-the-frame-right)).
+([../../../docs/archive/zip_media.md](../../../docs/archive/zip_media.md#5-getting-the-frame-right)).
 
 **The export step is not optional.** `local-backend` searches a flat
 `vectors.f32.npy` rather than Milvus, because `milvus_lite`'s HNSW path returns
-wrong neighbours (see [milvus-lite-hnsw-recall-bug.md](../../../docs/milvus-lite-hnsw-recall-bug.md))
+wrong neighbours (see [milvus-lite-hnsw-recall-bug.md](../../../docs/archive/milvus-lite-hnsw-recall-bug.md))
 and its brute-force path is ~45x slower than a memmapped BLAS scan (~1570 ms vs
 ~35 ms at `top_k=1000`). Skipping the export leaves search on the *previous*
 ingest's vectors — the file is still valid, just older, so nothing would fail.
@@ -52,7 +52,7 @@ export is the fix. It reads these archives directly and takes ~11 seconds.
   and swapping does not help — the rename is refused too). Restart the backend once both
   steps finish.
 - **`--skip-postgres`**: `local-backend` never reads PostgreSQL (per the local/remote
-  weight split — see `docs/architecture.md`), and `youtube_id`/title are
+  weight split — see `docs/ARCHITECTURE.md`), and `youtube_id`/title are
   already denormalized straight into each Milvus frame record. Only drop this flag if
   you're running `remote-server` for real and want the PostgreSQL `videos` table
   populated too.

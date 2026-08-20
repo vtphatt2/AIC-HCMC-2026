@@ -143,7 +143,7 @@ export default function HelpModal({ onClose }: Props) {
           </Section>
 
           <p className="text-xs text-stone-500 dark:text-stone-500 pt-1">
-            Full written guide: <code className="font-mono">docs/USAGE.md</code> in the repo.
+            Full written guide: <code className="font-mono">docs/archive/USAGE.md</code> in the repo.
           </p>
         </div>
       </div>

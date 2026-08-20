@@ -12,7 +12,7 @@ deep-translator==1.11.4
 
 # PECore text encoder — "onnx" backend (PECORE_BACKEND=onnx, default here).
 # CPU-only, no multi-GB model download. See app/services/simple_tokenizer.py
-# and docs/PE-Core-bigG-14-448-Text-Encoder.README.md.
+# and docs/archive/PE-Core-bigG-14-448-Text-Encoder.README.md.
 onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10

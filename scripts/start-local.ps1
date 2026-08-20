@@ -11,7 +11,7 @@ param(
     # onnx-cpu:  PECore ONNX text encoder, CPU only, no torch install needed (default; matches this machine).
     # torch-cpu: full OpenCLIP model on CPU.
     # torch-cuda: full OpenCLIP model on an NVIDIA GPU.
-    # See docs/launch_scripts.md for which one to pick and what to install first.
+    # See docs/SETUP.md § 4 for which one to pick and what to install first.
     [ValidateSet("onnx-cpu", "torch-cpu", "torch-cuda")]
     [string]$Backend = "onnx-cpu"
 )

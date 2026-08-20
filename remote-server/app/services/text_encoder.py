@@ -41,7 +41,7 @@ class TextEncoderConfig:
     expected_dim: int = int(os.getenv("PECORE_TEXT_DIM", "1280"))
     # "torch" loads the full OpenCLIP model (GPU-capable, multi-GB weight download).
     # "onnx" loads the quantized INT8 text-encoder-only graph (CPU only, ~515MB,
-    # no PE-Core weight download) — see docs/PE-Core-bigG-14-448-Text-Encoder.README.md
+    # no PE-Core weight download) — see docs/archive/PE-Core-bigG-14-448-Text-Encoder.README.md
     backend: str = os.getenv("PECORE_BACKEND", "torch")
     context_length: int = int(os.getenv("PECORE_CONTEXT_LENGTH", "72"))
 
