@@ -18,7 +18,9 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_REPO_ROOT / ".env", override=False)   # shared defaults (ports, ngrok, tuning)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)  # this service, wins
 
 logging.basicConfig(
     level=logging.INFO,

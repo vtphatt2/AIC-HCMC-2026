@@ -14,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(_REPO_ROOT / ".env", override=False)   # shared defaults (ports, ngrok, tuning)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)  # this service, wins
 
 from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP

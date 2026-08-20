@@ -27,12 +27,12 @@ from pathlib import Path
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(REPO_ROOT / ".env", override=False)   # shared defaults (ports, ngrok, tuning)
+load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)  # this service, wins
 
 ENV_MODE = os.getenv("ENV_MODE", "ZIP").upper()
 REMOTE_SERVER_URL = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_ROOT = Path(os.getenv("AIC_SAMPLE_ROOT", REPO_ROOT / "challenge_resources" / "data"))
 logger = logging.getLogger(__name__)
 CHANNELS = {

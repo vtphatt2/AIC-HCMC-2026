@@ -452,6 +452,16 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 
 ## Environment Variable Reference
 
+### Root `.env` — shared defaults
+
+Both backends load the repo-root `.env` **first** as a base layer, then their
+own `.env` **second**, which wins on any key set in both. Put a value in the
+root file once if both backends should share it (`CORS_ORIGINS` default,
+PE-Core/ZIP tuning knobs); put it in a service's own `.env` only when that
+service needs a different value. The frontend does not participate in this —
+Next.js only reads `local-client/frontend/.env.local`, a hard constraint of
+how Next.js loads env vars. Full variable list: [`.env.example`](../.env.example).
+
 ### `local-client/local-backend/.env`
 
 | Variable | Default | Description |
@@ -459,7 +469,7 @@ The `seekTo()` call requires the video to be loaded. Make sure the video ID in t
 | `ENV_MODE` | `ZIP` | `ZIP` (search the exported lot vectors) or `LOCAL` (proxy to the GPU server) |
 | `AIC_SAMPLE_ROOT` | auto-detected | `challenge_resources/data`; where transcripts and the vector files live |
 | `REMOTE_SERVER_URL` | _(empty)_ | Required when `ENV_MODE=LOCAL` |
-| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `CORS_ORIGINS` | `http://localhost:3000` (from root `.env`) | Comma-separated allowed origins; set here only to override the shared default |
 | `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) — see [PE-Core-bigG-14-448-Text-Encoder.README.md](PE-Core-bigG-14-448-Text-Encoder.README.md) |
 | `PECORE_DEVICE` | `cpu` | `cpu` or `mps` (Apple silicon) |
 | `PECORE_PRECISION` | `fp32` | Keep `fp32` on CPU/MPS |
@@ -498,7 +508,7 @@ See [running.md](running.md) for the full scenario matrix and exact commands.
 | `VECTOR_DIM` | `1280` | Embedding dimension (PE-Core-bigG-14-448) |
 | `VECTOR_SEARCH_BACKEND` | `milvus` | `milvus`/`hnsw`, `flat`, `scann`, or `cagra` |
 | `POSTGRES_URL` | _(see .env.example)_ | Full asyncpg connection string |
-| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
+| `CORS_ORIGINS` | `http://localhost:3000` (from root `.env`) | Comma-separated allowed origins; set here to add the ngrok tunnel URL — see [ngrok.md](ngrok.md) |
 | `PECORE_BACKEND` | `torch` | `torch` (full model) or `onnx` (lightweight, no torch download) |
 | `PECORE_DEVICE` | `cpu` | `cpu`, `cuda`, or `mps`; use `mps` on Apple silicon |
 | `PECORE_PRECISION` | `fp32` | Use `fp16` for CUDA/CAGRA; keep `fp32` for CPU/MPS |
