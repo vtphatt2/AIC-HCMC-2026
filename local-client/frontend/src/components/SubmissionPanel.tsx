@@ -115,9 +115,19 @@ export default function SubmissionPanel({ onClose }: Props) {
           <h2 className="font-retro text-lg font-bold text-stone-900 dark:text-stone-50">
             🗳 Submission
           </h2>
-          <button onClick={onClose} className="font-retro text-stone-500 hover:text-orange-700 dark:hover:text-orange-400 text-xs uppercase tracking-wide transition">
-            ✕ Close
-          </button>
+          <div className="flex items-center gap-3">
+            <a
+              href="/submissions"
+              target="_blank"
+              rel="noreferrer"
+              className="font-retro text-stone-500 hover:text-orange-700 dark:hover:text-orange-400 text-xs uppercase tracking-wide transition"
+            >
+              ↗ Full dashboard
+            </a>
+            <button onClick={onClose} className="font-retro text-stone-500 hover:text-orange-700 dark:hover:text-orange-400 text-xs uppercase tracking-wide transition">
+              ✕ Close
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">

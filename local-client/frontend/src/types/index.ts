@@ -92,6 +92,8 @@ export interface SubmissionEntry {
   videoId: string;
   frame: number;
   imageUrl?: string;
+  fps: number; // captured at add-time so a later dashboard view can reopen VideoModal
+  youtubeId?: string;
   groupIndex: number; // TRAKE candidate grouping; always 0 for kis/qa
   addedAt: number;
 }

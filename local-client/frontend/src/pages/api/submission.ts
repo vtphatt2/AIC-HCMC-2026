@@ -101,18 +101,35 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (action === "add") {
     const videoId = typeof req.body?.videoId === "string" ? req.body.videoId : "";
     const frame = req.body?.frame;
+    const fps = req.body?.fps;
     if (!ID.test(videoId)) return res.status(400).json({ error: "Invalid videoId" });
     if (!isNonNegativeInt(frame)) return res.status(400).json({ error: "Invalid frame" });
+    if (typeof fps !== "number" || !Number.isFinite(fps) || fps <= 0) {
+      return res.status(400).json({ error: "Invalid fps" });
+    }
     const imageUrl = typeof req.body?.imageUrl === "string" ? req.body.imageUrl : undefined;
+    const youtubeId =
+      typeof req.body?.youtubeId === "string" && req.body.youtubeId.length <= 32
+        ? req.body.youtubeId
+        : undefined;
     const entry: SubmissionEntry = {
       id: randomUUID(),
       videoId,
       frame,
       imageUrl,
+      fps,
+      youtubeId,
       groupIndex: current.nextGroupIndex,
       addedAt: Date.now(),
     };
     current.entries.push(entry);
+  } else if (action === "editFrame") {
+    const id = typeof req.body?.id === "string" ? req.body.id : "";
+    const frame = req.body?.frame;
+    if (!isNonNegativeInt(frame)) return res.status(400).json({ error: "Invalid frame" });
+    const entry = current.entries.find((e) => e.id === id);
+    if (!entry) return res.status(404).json({ error: "Entry not found" });
+    entry.frame = frame;
   } else if (action === "remove") {
     const id = typeof req.body?.id === "string" ? req.body.id : "";
     current.entries = current.entries.filter((e) => e.id !== id);

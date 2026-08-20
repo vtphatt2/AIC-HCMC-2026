@@ -72,14 +72,21 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
       return;
     }
     try {
-      await addSubmissionEntry(session, result.video_id, currentFrame, sharpUrl || result.frame_image_url);
+      await addSubmissionEntry(
+        session,
+        result.video_id,
+        currentFrame,
+        sharpUrl || result.frame_image_url,
+        fps,
+        result.youtube_id,
+      );
       setAddStatus("added");
       setTimeout(() => setAddStatus("idle"), 1500);
     } catch {
       setAddStatus("error");
       setTimeout(() => setAddStatus("idle"), 1500);
     }
-  }, [result.video_id, result.frame_image_url, currentFrame, onOpenSubmissionPanel]);
+  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.

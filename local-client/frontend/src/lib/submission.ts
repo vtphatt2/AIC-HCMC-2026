@@ -1,4 +1,4 @@
-import type { SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
+import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
 
 // Talks to pages/api/submission.ts — a same-origin Next.js route, NOT the
 // FastAPI backend, so these calls deliberately do not go through apiUrl().
@@ -53,12 +53,35 @@ export function addSubmissionEntry(
   videoId: string,
   frame: number,
   imageUrl?: string,
+  fps?: number,
+  youtubeId?: string,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "add", videoId, frame, imageUrl });
+  return postAction(session, { action: "add", videoId, frame, imageUrl, fps, youtubeId });
+}
+
+export function editSubmissionEntryFrame(session: string, id: string, frame: number): Promise<SubmissionState> {
+  return postAction(session, { action: "editFrame", id, frame });
 }
 
 export function removeSubmissionEntry(session: string, id: string): Promise<SubmissionState> {
   return postAction(session, { action: "remove", id });
+}
+
+// Reconstructs the SearchResult shape VideoModal needs from a stored
+// submission entry, so the dashboard can reopen the same modal the search
+// grid uses. `|| 25` only covers entries added before fps was captured.
+export function submissionEntryToSearchResult(entry: SubmissionEntry): SearchResult {
+  const fps = entry.fps || 25;
+  return {
+    video_id: entry.videoId,
+    youtube_id: entry.youtubeId,
+    frame_id: entry.id,
+    frame_number: entry.frame,
+    timestamp_ms: (entry.frame / fps) * 1000,
+    confidence: 1,
+    frame_image_url: entry.imageUrl || "",
+    fps,
+  };
 }
 
 export function setSubmissionMeta(
