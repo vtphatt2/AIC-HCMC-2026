@@ -15,9 +15,14 @@ doesn't change every time you restart the tunnel.
 
 ---
 
-## Case A — backend + frontend running on your laptop
+## Case A — frontend + backend both running on your machine
 
-**Started them with `start-local.ps1`?** Stop and restart with `-Ngrok`
+Applies whether the backend is `local-backend` **or** `remote-server` —
+`share-proxy.cjs` just forwards by port (3000 for the frontend, 8000 for the
+backend), it doesn't care which one is actually listening there.
+
+**Started them with `start-local.ps1`?** (this only ever starts
+`local-backend`, not `remote-server`) — stop and restart with `-Ngrok`
 added:
 
 ```powershell
@@ -28,15 +33,17 @@ This opens the tunnel automatically along with everything else. Share the
 `https://your-domain.ngrok-free.dev` URL it prints — that's the only link
 your teammate needs.
 
-**Backend (8000) and frontend (3000) already running in their own terminals
-and you don't want to restart them?** Just add the proxy + tunnel on top:
+**Backend (8000, `local-backend` or `remote-server`) and frontend (3000)
+already running in their own terminals and you don't want to restart
+them?** — this is the case for a `remote-server` backend, since
+`start-local.ps1` can't manage it. Just add the proxy + tunnel on top:
 
 ```bash
 node scripts/share-proxy.cjs
 ngrok http 3001
 ```
 
-(Windows: use `NGROK_DOMAIN` from `.env` — `ngrok http 3001 --domain your-domain.ngrok-free.dev`.)
+(With a claimed static domain: `ngrok http 3001 --domain your-domain.ngrok-free.dev`.)
 
 ---
 
