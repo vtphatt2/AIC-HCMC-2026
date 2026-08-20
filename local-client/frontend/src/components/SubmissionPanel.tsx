@@ -10,6 +10,7 @@ import {
   removeSubmissionEntry,
   resetSubmission,
   setSubmissionMeta,
+  trakeCandidateSizeMismatch,
 } from "@/lib/submission";
 
 export const SUBMISSION_SESSION_KEY = "aic2026-submission-session";
@@ -104,6 +105,7 @@ export default function SubmissionPanel({ onClose }: Props) {
   }
 
   const groupCount = state ? new Set(state.entries.map((e) => e.groupIndex)).size : 0;
+  const sizeMismatch = state ? trakeCandidateSizeMismatch(state) : null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
@@ -182,22 +184,34 @@ export default function SubmissionPanel({ onClose }: Props) {
               </div>
 
               {state.queryType === "qa" && (
-                <textarea
-                  className={`${INPUT} w-full`}
-                  placeholder="Answer text (applied to every row on export)"
-                  value={state.answer}
-                  onChange={(e) => handleMeta({ answer: e.target.value })}
-                  rows={2}
-                />
+                <div className="space-y-1">
+                  <textarea
+                    className={`${INPUT} w-full`}
+                    placeholder="Answer text (applied to every row on export)"
+                    value={state.answer}
+                    maxLength={100}
+                    onChange={(e) => handleMeta({ answer: e.target.value })}
+                    rows={2}
+                  />
+                  <p className="text-xs text-stone-500 text-right">{state.answer.length}/100</p>
+                </div>
               )}
 
               {state.queryType === "trake" && (
-                <div className="flex items-center gap-2">
-                  <button className={BTN} onClick={handleNewCandidate}>+ New candidate</button>
-                  <span className="text-xs text-stone-500">
-                    {groupCount} candidate{groupCount === 1 ? "" : "s"} so far — "Add to submission" from the
-                    video modal appends to the current one.
-                  </span>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <button className={BTN} onClick={handleNewCandidate}>+ New candidate</button>
+                    <span className="text-xs text-stone-500">
+                      {groupCount} candidate{groupCount === 1 ? "" : "s"} so far — "Add to submission" from the
+                      video modal appends to the current one.
+                    </span>
+                  </div>
+                  {sizeMismatch && (
+                    <p className="text-xs text-red-600">
+                      ⚠ Candidates have different frame counts ({sizeMismatch.join(", ")}) — organizer scoring
+                      requires every candidate to match the query's event count exactly.
+                    </p>
+                  )}
                 </div>
               )}
 

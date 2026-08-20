@@ -5,11 +5,13 @@ import type { SearchResult, SubmissionSessionSummary, SubmissionState } from "@/
 import {
   buildSubmissionCsv,
   downloadCsv,
+  downloadSubmissionZip,
   editSubmissionEntryFrame,
   fetchSubmission,
   fetchSubmissionSessions,
   removeSubmissionEntry,
   submissionEntryToSearchResult,
+  trakeCandidateSizeMismatch,
 } from "@/lib/submission";
 import VideoModal from "@/components/VideoModal";
 
@@ -67,6 +69,11 @@ export default function SubmissionsDashboard() {
     downloadCsv(filename, content);
   }
 
+  function handleDownloadZip() {
+    const ok = downloadSubmissionZip(Object.values(states));
+    if (!ok) window.alert("No sessions with entries to bundle yet.");
+  }
+
   return (
     <>
       <Head><title>Submission Dashboard</title></Head>
@@ -79,7 +86,10 @@ export default function SubmissionsDashboard() {
                 Every session, live — click a frame to review it, edit the frame number inline.
               </p>
             </div>
-            <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
+            <div className="flex items-center gap-3 shrink-0">
+              <button className={BTN} onClick={handleDownloadZip}>⬇ Download submission.zip</button>
+              <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
+            </div>
           </header>
 
           {sessions.length === 0 && (
@@ -90,6 +100,7 @@ export default function SubmissionsDashboard() {
             const state = states[summary.session];
             if (!state) return null;
             const groupCount = new Set(state.entries.map((e) => e.groupIndex)).size;
+            const sizeMismatch = trakeCandidateSizeMismatch(state);
             return (
               <section
                 key={summary.session}
@@ -109,6 +120,13 @@ export default function SubmissionsDashboard() {
 
                 {state.queryType === "qa" && state.answer && (
                   <p className="text-sm text-stone-600 dark:text-stone-300">Answer: {state.answer}</p>
+                )}
+
+                {sizeMismatch && (
+                  <p className="text-xs text-red-600">
+                    ⚠ Candidates have different frame counts ({sizeMismatch.join(", ")}) — organizer scoring
+                    requires every candidate to match the query's event count exactly.
+                  </p>
                 )}
 
                 <div className="space-y-1">

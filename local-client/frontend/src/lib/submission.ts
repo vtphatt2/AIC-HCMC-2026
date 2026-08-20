@@ -110,21 +110,32 @@ function csvRow(fields: (string | number)[]): string {
   return fields.map(csvField).join(",");
 }
 
+function trakeGroups(state: SubmissionState): SubmissionEntry[][] {
+  const groups = new Map<number, SubmissionEntry[]>();
+  for (const entry of state.entries) {
+    if (!groups.has(entry.groupIndex)) groups.set(entry.groupIndex, []);
+    groups.get(entry.groupIndex)!.push(entry);
+  }
+  return Array.from(groups.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, entries]) => [...entries].sort((a, b) => a.addedAt - b.addedAt));
+}
+
+// Organizer rule: every TRAKE candidate row must have the same number of
+// frames (matching the query's event count). Returns null when consistent,
+// otherwise the set of distinct counts found — for a UI warning, not a hard
+// block (a half-built candidate mid-edit shouldn't be an error).
+export function trakeCandidateSizeMismatch(state: SubmissionState): number[] | null {
+  if (state.queryType !== "trake") return null;
+  const sizes = new Set(trakeGroups(state).map((g) => g.length));
+  return sizes.size > 1 ? Array.from(sizes).sort((a, b) => a - b) : null;
+}
+
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
   let rows: string[];
 
   if (state.queryType === "trake") {
-    const groups = new Map<number, typeof state.entries>();
-    for (const entry of state.entries) {
-      if (!groups.has(entry.groupIndex)) groups.set(entry.groupIndex, []);
-      groups.get(entry.groupIndex)!.push(entry);
-    }
-    rows = Array.from(groups.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([, entries]) => {
-        const sorted = [...entries].sort((a, b) => a.addedAt - b.addedAt);
-        return csvRow([sorted[0].videoId, ...sorted.map((e) => e.frame)]);
-      });
+    rows = trakeGroups(state).map((entries) => csvRow([entries[0].videoId, ...entries.map((e) => e.frame)]));
   } else if (state.queryType === "qa") {
     rows = state.entries.map((e) => csvRow([e.videoId, e.frame, state.answer]));
   } else {
@@ -138,14 +149,106 @@ export function buildSubmissionCsv(state: SubmissionState): { filename: string; 
   };
 }
 
-export function downloadCsv(filename: string, content: string): void {
-  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+function triggerDownload(filename: string, blob: Blob): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+export function downloadCsv(filename: string, content: string): void {
+  triggerDownload(filename, new Blob([content], { type: "text/csv;charset=utf-8" }));
+}
+
+// ── submission.zip — a `submission/` folder of query CSVs, per the AIC26
+// organizer's required upload shape. Hand-rolled, uncompressed (STORE) ZIP
+// writer: the CSVs are a few KB each, so there's nothing to gain from
+// DEFLATE, and Node/the browser have no built-in ZIP *container* writer to
+// reach for (zlib only does raw compression, not the archive format).
+
+const CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(data: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < data.length; i++) crc = CRC_TABLE[(crc ^ data[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function u16(n: number): number[] { return [n & 0xff, (n >>> 8) & 0xff]; }
+function u32(n: number): number[] { return [n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]; }
+
+function dosDateTime(d: Date): { time: number; date: number } {
+  return {
+    time: ((d.getHours() & 0x1f) << 11) | ((d.getMinutes() & 0x3f) << 5) | ((d.getSeconds() >> 1) & 0x1f),
+    date: ((Math.max(0, d.getFullYear() - 1980) & 0x7f) << 9) | (((d.getMonth() + 1) & 0xf) << 5) | (d.getDate() & 0x1f),
+  };
+}
+
+export function buildSubmissionZip(states: SubmissionState[]): Blob | null {
+  const enc = new TextEncoder();
+  const files = states
+    .filter((s) => s.entries.length > 0)
+    .map((s) => {
+      const { filename, content } = buildSubmissionCsv(s);
+      return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
+    });
+  if (files.length === 0) return null;
+
+  const { time, date } = dosDateTime(new Date());
+  const parts: BlobPart[] = [];
+  const centralParts: BlobPart[] = [];
+  let offset = 0;
+  let centralSize = 0;
+
+  for (const file of files) {
+    const crc = crc32(file.data);
+    const size = file.data.length;
+
+    const local = new Uint8Array([
+      ...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(time), ...u16(date),
+      ...u32(crc), ...u32(size), ...u32(size),
+      ...u16(file.name.length), ...u16(0),
+    ]);
+    parts.push(local, file.name, file.data);
+
+    const central = new Uint8Array([
+      ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0),
+      ...u16(time), ...u16(date),
+      ...u32(crc), ...u32(size), ...u32(size),
+      ...u16(file.name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(offset),
+    ]);
+    centralParts.push(central, file.name);
+    centralSize += central.length + file.name.length;
+
+    offset += local.length + file.name.length + file.data.length;
+  }
+
+  const end = new Uint8Array([
+    ...u32(0x06054b50), ...u16(0), ...u16(0),
+    ...u16(files.length), ...u16(files.length),
+    ...u32(centralSize), ...u32(offset), ...u16(0),
+  ]);
+
+  return new Blob([...parts, ...centralParts, end], { type: "application/zip" });
+}
+
+export function downloadSubmissionZip(states: SubmissionState[], zipName: string = "submission.zip"): boolean {
+  const blob = buildSubmissionZip(states);
+  if (!blob) return false;
+  triggerDownload(zipName, blob);
+  return true;
 }
 
 if (process.env.NODE_ENV !== "production") {

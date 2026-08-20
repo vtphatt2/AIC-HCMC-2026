@@ -145,8 +145,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       current.queryNumber = req.body.queryNumber;
     }
     if (req.body?.answer !== undefined) {
-      if (typeof req.body.answer !== "string" || req.body.answer.length > 200) {
-        return res.status(400).json({ error: "Invalid answer" });
+      // Organizer cap: Q&A answers are compared as an exact string, max 100 chars.
+      if (typeof req.body.answer !== "string" || req.body.answer.length > 100) {
+        return res.status(400).json({ error: "Answer must be 100 characters or fewer" });
       }
       current.answer = req.body.answer;
     }
