@@ -14,3 +14,16 @@ export function sortByRowOrder<T>(items: T[], rowOrder: string[], keyOf: (item: 
   const pos = new Map(rowOrder.map((k, i) => [k, i]));
   return [...items].sort((a, b) => (pos.get(keyOf(a)) ?? Infinity) - (pos.get(keyOf(b)) ?? Infinity));
 }
+
+// Drag-and-drop reorder: move draggedKey to where targetKey currently sits.
+// Direction matters — dragging downward (dragged started above target) must
+// land *after* the target, dragging upward must land *before* it, or a
+// downward drag keeps snapping back above whatever it's dropped on.
+export function reorderKeys(current: string[], draggedKey: string, targetKey: string): string[] {
+  if (draggedKey === targetKey) return current;
+  const draggingDown = current.indexOf(draggedKey) < current.indexOf(targetKey);
+  const filtered = current.filter((k) => k !== draggedKey);
+  const targetIdx = filtered.indexOf(targetKey);
+  filtered.splice(draggingDown ? targetIdx + 1 : targetIdx, 0, draggedKey);
+  return filtered;
+}

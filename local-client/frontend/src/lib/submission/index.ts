@@ -1,5 +1,7 @@
 import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
 import { sortByRowOrder } from "./types";
+
+export { reorderKeys } from "./types";
 import * as kis from "./kis";
 import * as qa from "./qa";
 import * as trake from "./trake";

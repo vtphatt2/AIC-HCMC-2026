@@ -11,6 +11,7 @@ import {
   newSubmissionCandidate,
   orderedEntries,
   removeSubmissionEntry,
+  reorderKeys,
   reorderSubmissionRows,
   resetSubmission,
   setSubmissionMeta,
@@ -129,10 +130,7 @@ export default function SubmissionPanel({ onClose }: Props) {
       const targetKey = trakeGroupKey(targetGroupIndex);
       if (draggedKey === targetKey) return;
       const keys = trakeSortedGroups(state.entries, state.rowOrder).map((es) => trakeGroupKey(es[0].groupIndex));
-      const filtered = keys.filter((k) => k !== draggedKey);
-      const idx = filtered.indexOf(targetKey);
-      filtered.splice(idx, 0, draggedKey);
-      handleReorderRows(filtered);
+      handleReorderRows(reorderKeys(keys, draggedKey, targetKey));
       return;
     }
     const frameId = e.dataTransfer.getData("application/x-frame-id");
@@ -144,11 +142,9 @@ export default function SubmissionPanel({ onClose }: Props) {
     setDragOverEntry(null);
     if (!state) return;
     const draggedId = e.dataTransfer.getData("application/x-entry-id");
-    if (!draggedId || draggedId === targetId) return;
-    const ids = orderedEntries(state).map((entry) => entry.id).filter((id) => id !== draggedId);
-    const idx = ids.indexOf(targetId);
-    ids.splice(idx, 0, draggedId);
-    handleReorderRows(ids);
+    if (!draggedId) return;
+    const ids = orderedEntries(state).map((entry) => entry.id);
+    handleReorderRows(reorderKeys(ids, draggedId, targetId));
   }
 
   async function handleReset() {
