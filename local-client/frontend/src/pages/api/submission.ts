@@ -15,7 +15,11 @@ function fileFor(session: string): string {
 
 function readState(session: string): SubmissionState | null {
   try {
-    return JSON.parse(readFileSync(fileFor(session), "utf8"));
+    const parsed = JSON.parse(readFileSync(fileFor(session), "utf8"));
+    // Backfill for sessions created before rowOrder existed — every reader
+    // (GET responses included, not just the mutating actions that run
+    // syncRowOrder) needs a real array here, never undefined.
+    return { ...parsed, rowOrder: parsed.rowOrder || [] };
   } catch (error: any) {
     if (error?.code === "ENOENT") return null;
     throw error;
