@@ -1,26 +1,29 @@
 import type { SubmissionEntry } from "@/types";
-import type { CandidateGroup } from "./types";
+import { sortByRowOrder, type CandidateGroup } from "./types";
 
+export function groupKey(groupIndex: number): string {
+  return `g${groupIndex}`;
+}
+
+// Groups by groupIndex (arbitrary insertion order — callers sort by rowOrder
+// afterward), frames ascending within each group.
 function byGroupIndex(entries: SubmissionEntry[]): SubmissionEntry[][] {
   const groups = new Map<number, SubmissionEntry[]>();
   for (const e of entries) {
     if (!groups.has(e.groupIndex)) groups.set(e.groupIndex, []);
     groups.get(e.groupIndex)!.push(e);
   }
-  return Array.from(groups.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([, es]) => es);
+  return Array.from(groups.values()).map((es) => [...es].sort((a, b) => a.frame - b.frame));
 }
 
 // TRAKE: <video>,<frame_1>,...,<frame_N> — one row per candidate. Frame
 // order within a candidate is guaranteed ascending by frame id, since one
 // video's events happen in a single forward timeline; that's the correct
-// event order regardless of the order frames were added in.
-export function toGroups(entries: SubmissionEntry[]): CandidateGroup[] {
-  return byGroupIndex(entries).map((es) => ({
-    videoId: es[0].videoId,
-    frameIds: es.map((e) => e.frame).sort((a, b) => a - b),
-  }));
+// event order regardless of the order frames were added in. rowOrder ranks
+// the candidates (row key = groupKey(groupIndex)).
+export function toGroups(entries: SubmissionEntry[], rowOrder: string[]): CandidateGroup[] {
+  const groups = sortByRowOrder(byGroupIndex(entries), rowOrder, (es) => groupKey(es[0].groupIndex));
+  return groups.map((es) => ({ videoId: es[0].videoId, frameIds: es.map((e) => e.frame) }));
 }
 
 export function buildRows(groups: CandidateGroup[]): (string | number)[][] {
@@ -28,10 +31,10 @@ export function buildRows(groups: CandidateGroup[]): (string | number)[][] {
 }
 
 // Full entries, grouped and ordered exactly as the export sees them
-// (candidates by groupIndex, frames ascending within each) — for UI display,
+// (candidates by rowOrder, frames ascending within each) — for UI display,
 // where the thumbnail/imageUrl/id fields toGroups() strips are still needed.
-export function sortedGroups(entries: SubmissionEntry[]): SubmissionEntry[][] {
-  return byGroupIndex(entries).map((es) => [...es].sort((a, b) => a.frame - b.frame));
+export function sortedGroups(entries: SubmissionEntry[], rowOrder: string[]): SubmissionEntry[][] {
+  return sortByRowOrder(byGroupIndex(entries), rowOrder, (es) => groupKey(es[0].groupIndex));
 }
 
 // Organizer rules `toGroups`/`buildRows` can't catch on their own:

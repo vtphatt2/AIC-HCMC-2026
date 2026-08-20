@@ -45,13 +45,36 @@ function listSessions(): SubmissionSessionSummary[] {
       queryType: s.queryType,
       queryNumber: s.queryNumber,
       entryCount: s.entries.length,
+      createdAt: s.createdAt,
       updatedAt: s.updatedAt,
     }))
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+    // Creation order, stable regardless of which session was edited most
+    // recently — an activity-based sort reshuffled the list on every edit,
+    // which was disorienting while actively working across sessions.
+    .sort((a, b) => a.createdAt - b.createdAt);
 }
 
 function isNonNegativeInt(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+// Keeps rowOrder (the ranked row list the CSV export/UI use) valid after any
+// mutation: stale keys (removed entries, emptied-out candidates) drop out,
+// newly-appeared keys append at the end in natural order, everything the
+// user has manually ranked stays exactly where they put it. Called once,
+// unconditionally, right before every write — covers every action without
+// needing bespoke sync logic in each branch. A queryType switch naturally
+// rebuilds rowOrder too, since validKeys is recomputed from the current type.
+function syncRowOrder(state: SubmissionState): void {
+  const validKeys = new Set(
+    state.queryType === "trake"
+      ? state.entries.map((e) => `g${e.groupIndex}`)
+      : state.entries.map((e) => e.id),
+  );
+  const kept = state.rowOrder.filter((k) => validKeys.has(k));
+  const keptSet = new Set(kept);
+  const fresh = Array.from(validKeys).filter((k) => !keptSet.has(k));
+  state.rowOrder = [...kept, ...fresh];
 }
 
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -86,6 +109,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       queryNumber,
       answer: "",
       nextGroupIndex: 0,
+      rowOrder: [],
       entries: [],
       createdAt: now,
       updatedAt: now,
@@ -112,6 +136,17 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       typeof req.body?.youtubeId === "string" && req.body.youtubeId.length <= 32
         ? req.body.youtubeId
         : undefined;
+    // Reviewing an existing candidate from the dashboard and adding another
+    // frame to it should land in *that* candidate, not whatever this
+    // session's nextGroupIndex happens to be — callers with a specific
+    // target (VideoModal opened for review) pass groupIndex explicitly. A
+    // plain add (no override) just consumes the current pointer as-is and
+    // must NOT advance it — nextGroupIndex only moves forward via
+    // "+ New candidate" or an explicit override, otherwise every kis/qa add
+    // (which never overrides) would scatter across ever-increasing
+    // candidate numbers instead of everything staying ungrouped.
+    const hasOverride = isNonNegativeInt(req.body?.groupIndex);
+    const groupIndex = hasOverride ? req.body.groupIndex : current.nextGroupIndex;
     const entry: SubmissionEntry = {
       id: randomUUID(),
       videoId,
@@ -119,10 +154,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       imageUrl,
       fps,
       youtubeId,
-      groupIndex: current.nextGroupIndex,
+      groupIndex,
       addedAt: Date.now(),
     };
     current.entries.push(entry);
+    if (hasOverride) current.nextGroupIndex = Math.max(current.nextGroupIndex, groupIndex + 1);
   } else if (action === "editFrame") {
     const id = typeof req.body?.id === "string" ? req.body.id : "";
     const frame = req.body?.frame;
@@ -165,10 +201,18 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     current.entries = [];
     current.nextGroupIndex = 0;
     current.answer = "";
+    current.rowOrder = [];
+  } else if (action === "reorderRows") {
+    const rowOrder = req.body?.rowOrder;
+    if (!Array.isArray(rowOrder) || rowOrder.length > 200 || rowOrder.some((k) => typeof k !== "string" || k.length > 128)) {
+      return res.status(400).json({ error: "Invalid rowOrder" });
+    }
+    current.rowOrder = rowOrder;
   } else {
     return res.status(400).json({ error: "Unknown action" });
   }
 
+  syncRowOrder(current);
   current.revision += 1;
   current.updatedAt = Date.now();
   writeState(current);

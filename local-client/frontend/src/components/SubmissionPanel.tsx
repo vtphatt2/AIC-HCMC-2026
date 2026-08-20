@@ -9,11 +9,14 @@ import {
   fetchSubmission,
   fetchSubmissionSessions,
   newSubmissionCandidate,
+  orderedEntries,
   removeSubmissionEntry,
+  reorderSubmissionRows,
   resetSubmission,
   setSubmissionMeta,
   trakeCandidateSizeMismatch,
   trakeCandidateVideoMismatch,
+  trakeGroupKey,
   trakeSortedGroups,
 } from "@/lib/submission";
 
@@ -36,6 +39,7 @@ export default function SubmissionPanel({ onClose }: Props) {
   const [state, setState] = useState<SubmissionState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragOverGroup, setDragOverGroup] = useState<number | null>(null);
+  const [dragOverEntry, setDragOverEntry] = useState<string | null>(null);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
@@ -108,11 +112,43 @@ export default function SubmissionPanel({ onClose }: Props) {
     setState(await editSubmissionEntryFrame(session, id, frame));
   }
 
-  function handleDrop(e: React.DragEvent, groupIndex: number) {
+  async function handleReorderRows(rowOrder: string[]) {
+    if (!session) return;
+    setState(await reorderSubmissionRows(session, rowOrder));
+  }
+
+  // A candidate box is a drop target for two different drags — a frame card
+  // (reassigns its candidate, existing behavior) or another candidate's
+  // header (reorders the ranking) — told apart by dataTransfer type.
+  function handleCandidateDrop(e: React.DragEvent, targetGroupIndex: number) {
     e.preventDefault();
     setDragOverGroup(null);
-    const id = e.dataTransfer.getData("text/plain");
-    if (id) handleMoveGroup(id, groupIndex);
+    if (!state) return;
+    if (e.dataTransfer.types.includes("application/x-candidate-key")) {
+      const draggedKey = e.dataTransfer.getData("application/x-candidate-key");
+      const targetKey = trakeGroupKey(targetGroupIndex);
+      if (draggedKey === targetKey) return;
+      const keys = trakeSortedGroups(state.entries, state.rowOrder).map((es) => trakeGroupKey(es[0].groupIndex));
+      const filtered = keys.filter((k) => k !== draggedKey);
+      const idx = filtered.indexOf(targetKey);
+      filtered.splice(idx, 0, draggedKey);
+      handleReorderRows(filtered);
+      return;
+    }
+    const frameId = e.dataTransfer.getData("application/x-frame-id");
+    if (frameId) handleMoveGroup(frameId, targetGroupIndex);
+  }
+
+  function handleEntryDrop(e: React.DragEvent, targetId: string) {
+    e.preventDefault();
+    setDragOverEntry(null);
+    if (!state) return;
+    const draggedId = e.dataTransfer.getData("application/x-entry-id");
+    if (!draggedId || draggedId === targetId) return;
+    const ids = orderedEntries(state).map((entry) => entry.id).filter((id) => id !== draggedId);
+    const idx = ids.indexOf(targetId);
+    ids.splice(idx, 0, draggedId);
+    handleReorderRows(ids);
   }
 
   async function handleReset() {
@@ -255,29 +291,34 @@ export default function SubmissionPanel({ onClose }: Props) {
 
               {state.entries.length > 0 && state.queryType === "trake" && (
                 <div className="space-y-2">
-                  {trakeSortedGroups(state.entries).map((groupEntries) => {
+                  {trakeSortedGroups(state.entries, state.rowOrder).map((groupEntries) => {
                     const gi = groupEntries[0].groupIndex;
                     return (
                       <div
                         key={gi}
                         onDragOver={(e) => { e.preventDefault(); setDragOverGroup(gi); }}
                         onDragLeave={() => setDragOverGroup((g) => (g === gi ? null : g))}
-                        onDrop={(e) => handleDrop(e, gi)}
+                        onDrop={(e) => handleCandidateDrop(e, gi)}
                         className={`border-2 rounded p-2 transition-colors ${
                           dragOverGroup === gi
                             ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30"
                             : "border-stone-400 dark:border-stone-600"
                         }`}
                       >
-                        <p className="text-xs font-bold uppercase text-stone-500 mb-1.5">
-                          Candidate {gi + 1} · {groupEntries.length} frame{groupEntries.length === 1 ? "" : "s"}
+                        <p
+                          draggable
+                          onDragStart={(e) => e.dataTransfer.setData("application/x-candidate-key", trakeGroupKey(gi))}
+                          className="text-xs font-bold uppercase text-stone-500 mb-1.5 cursor-grab active:cursor-grabbing w-fit"
+                          title="Drag to reorder this candidate's rank"
+                        >
+                          ⠿ Candidate {gi + 1} · {groupEntries.length} frame{groupEntries.length === 1 ? "" : "s"}
                         </p>
                         <div className="flex flex-wrap gap-2">
                           {groupEntries.map((entry) => (
                             <div
                               key={entry.id}
                               draggable
-                              onDragStart={(e) => e.dataTransfer.setData("text/plain", entry.id)}
+                              onDragStart={(e) => e.dataTransfer.setData("application/x-frame-id", entry.id)}
                               className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream dark:bg-stone-900"
                             >
                               {entry.imageUrl && (
@@ -306,17 +347,29 @@ export default function SubmissionPanel({ onClose }: Props) {
                       </div>
                     );
                   })}
-                  <p className="text-xs text-stone-500 italic">Drag a frame onto a different candidate box to move it.</p>
+                  <p className="text-xs text-stone-500 italic">
+                    Drag a frame onto a different candidate box to move it; drag a candidate's ⠿ title to rank it.
+                  </p>
                 </div>
               )}
 
               {state.entries.length > 0 && state.queryType !== "trake" && (
                 <div className="space-y-1">
-                  {state.entries.map((entry) => (
+                  {orderedEntries(state).map((entry) => (
                     <div
                       key={entry.id}
-                      className="flex items-center gap-2 border border-stone-300 dark:border-stone-700 rounded px-2 py-1"
+                      draggable
+                      onDragStart={(e) => e.dataTransfer.setData("application/x-entry-id", entry.id)}
+                      onDragOver={(e) => { e.preventDefault(); setDragOverEntry(entry.id); }}
+                      onDragLeave={() => setDragOverEntry((id) => (id === entry.id ? null : id))}
+                      onDrop={(e) => handleEntryDrop(e, entry.id)}
+                      className={`flex items-center gap-2 border rounded px-2 py-1 cursor-grab active:cursor-grabbing transition-colors ${
+                        dragOverEntry === entry.id
+                          ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30"
+                          : "border-stone-300 dark:border-stone-700"
+                      }`}
                     >
+                      <span className="text-stone-400 select-none">⠿</span>
                       {entry.imageUrl && (
                         <img src={entry.imageUrl} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
                       )}
@@ -332,6 +385,7 @@ export default function SubmissionPanel({ onClose }: Props) {
                       </button>
                     </div>
                   ))}
+                  <p className="text-xs text-stone-500 italic">Drag a row to rank it — export order matches this list.</p>
                 </div>
               )}
 

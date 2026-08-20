@@ -105,6 +105,10 @@ export interface SubmissionState {
   queryNumber: number;
   answer: string; // qa only
   nextGroupIndex: number;
+  // Ranked row order for CSV export: entry.id per row for kis/qa, `g${groupIndex}`
+  // per candidate for trake. Server keeps this in sync (pages/api/submission.ts's
+  // syncRowOrder) — stale keys drop out, new ones append at the end.
+  rowOrder: string[];
   entries: SubmissionEntry[];
   createdAt: number;
   updatedAt: number;
@@ -115,6 +119,7 @@ export interface SubmissionSessionSummary {
   queryType: SubmissionQueryType;
   queryNumber: number;
   entryCount: number;
+  createdAt: number;
   updatedAt: number;
 }
 

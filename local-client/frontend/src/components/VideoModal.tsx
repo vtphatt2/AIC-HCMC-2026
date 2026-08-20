@@ -10,6 +10,13 @@ interface Props {
   showTranscript: boolean;
   onToggleTranscript: () => void;
   onOpenSubmissionPanel: () => void;
+  // Set when this modal was opened to review one specific existing entry
+  // (e.g. from the /submissions dashboard) — "Add to submission" then
+  // targets that entry's own session/candidate instead of whatever this
+  // browser has picked in SubmissionPanel (localStorage), which may be a
+  // different session entirely.
+  overrideSession?: string;
+  overrideGroupIndex?: number;
 }
 
 declare global {
@@ -21,7 +28,15 @@ declare global {
 
 const PLAYER_DOM_ID = "yt-player-container";
 
-export default function VideoModal({ result, onClose, showTranscript, onToggleTranscript, onOpenSubmissionPanel }: Props) {
+export default function VideoModal({
+  result,
+  onClose,
+  showTranscript,
+  onToggleTranscript,
+  onOpenSubmissionPanel,
+  overrideSession,
+  overrideGroupIndex,
+}: Props) {
   const playerRef = useRef<any>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
   const youtubeId = result.youtube_id || "";
@@ -68,10 +83,10 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   const [sessionInfo, setSessionInfo] = useState<SubmissionState | null>(null);
 
   const refreshSessionInfo = useCallback(() => {
-    const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
+    const session = overrideSession || window.localStorage.getItem(SUBMISSION_SESSION_KEY);
     if (!session) { setSessionInfo(null); return; }
     fetchSubmission(session).then(setSessionInfo).catch(() => setSessionInfo(null));
-  }, []);
+  }, [overrideSession]);
 
   // Shows which session/candidate "Add to submission" targets *before* the
   // click, not just after — matters most for TRAKE, where the target
@@ -81,7 +96,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   }, [refreshSessionInfo]);
 
   const handleAddToSubmission = useCallback(async () => {
-    const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
+    const session = overrideSession || window.localStorage.getItem(SUBMISSION_SESSION_KEY);
     if (!session) {
       onOpenSubmissionPanel();
       return;
@@ -94,6 +109,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
         sharpUrl || result.frame_image_url,
         fps,
         result.youtube_id,
+        overrideGroupIndex,
       );
       setAddStatus("added");
       refreshSessionInfo();
@@ -102,7 +118,7 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
       setAddStatus("error");
       setTimeout(() => setAddStatus("idle"), 1500);
     }
-  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, refreshSessionInfo]);
+  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, refreshSessionInfo, overrideSession, overrideGroupIndex]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.

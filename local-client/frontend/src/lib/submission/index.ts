@@ -1,7 +1,10 @@
 import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
+import { sortByRowOrder } from "./types";
 import * as kis from "./kis";
 import * as qa from "./qa";
 import * as trake from "./trake";
+
+export { groupKey as trakeGroupKey } from "./trake";
 
 // Talks to pages/api/submission.ts — a same-origin Next.js route, NOT the
 // FastAPI backend, so these calls deliberately do not go through apiUrl().
@@ -58,8 +61,9 @@ export function addSubmissionEntry(
   imageUrl?: string,
   fps?: number,
   youtubeId?: string,
+  groupIndex?: number,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "add", videoId, frame, imageUrl, fps, youtubeId });
+  return postAction(session, { action: "add", videoId, frame, imageUrl, fps, youtubeId, groupIndex });
 }
 
 export function editSubmissionEntryFrame(session: string, id: string, frame: number): Promise<SubmissionState> {
@@ -72,6 +76,10 @@ export function editSubmissionEntryGroup(session: string, id: string, groupIndex
 
 export function removeSubmissionEntry(session: string, id: string): Promise<SubmissionState> {
   return postAction(session, { action: "remove", id });
+}
+
+export function reorderSubmissionRows(session: string, rowOrder: string[]): Promise<SubmissionState> {
+  return postAction(session, { action: "reorderRows", rowOrder });
 }
 
 // Reconstructs the SearchResult shape VideoModal needs from a stored
@@ -124,10 +132,15 @@ export function trakeCandidateSizeMismatch(state: SubmissionState): number[] | n
   return sizeMismatch.length ? sizeMismatch : null;
 }
 
-// Entries grouped by candidate, frames ascending within each — same order
-// the CSV export uses, for UI display.
-export function trakeSortedGroups(entries: SubmissionEntry[]): SubmissionEntry[][] {
-  return trake.sortedGroups(entries);
+// Entries grouped by candidate, frames ascending within each, candidates in
+// rowOrder — same order the CSV export uses, for UI display.
+export function trakeSortedGroups(entries: SubmissionEntry[], rowOrder: string[]): SubmissionEntry[][] {
+  return trake.sortedGroups(entries, rowOrder);
+}
+
+// KIS/QA's flat-list equivalent: entries in rowOrder, for UI display.
+export function orderedEntries(state: SubmissionState): SubmissionEntry[] {
+  return sortByRowOrder(state.entries, state.rowOrder, (e) => e.id);
 }
 
 // ── CSV export, matching Python's csv.QUOTE_MINIMAL ────────────────────────
@@ -143,9 +156,9 @@ function csvRow(fields: (string | number)[]): string {
 
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
   const rows =
-    state.queryType === "trake" ? trake.buildRows(trake.toGroups(state.entries)) :
-    state.queryType === "qa" ? qa.buildRows(qa.toGroups(state.entries), state.answer) :
-    kis.buildRows(kis.toGroups(state.entries));
+    state.queryType === "trake" ? trake.buildRows(trake.toGroups(state.entries, state.rowOrder)) :
+    state.queryType === "qa" ? qa.buildRows(qa.toGroups(state.entries, state.rowOrder), state.answer) :
+    kis.buildRows(kis.toGroups(state.entries, state.rowOrder));
 
   const csvRows = rows.map(csvRow);
   return {
