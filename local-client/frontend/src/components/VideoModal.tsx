@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SearchResult, TranscriptSegment } from "@/types";
+import type { SearchResult, SubmissionState, TranscriptSegment } from "@/types";
 import { apiUrl, fetchTranscript } from "@/lib/api";
-import { addSubmissionEntry } from "@/lib/submission";
+import { addSubmissionEntry, fetchSubmission } from "@/lib/submission";
 import { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
 
 interface Props {
@@ -65,6 +65,21 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
   // in the SubmissionPanel (localStorage.SUBMISSION_SESSION_KEY). No session
   // yet -> open the panel to pick/create one instead of adding blindly.
   const [addStatus, setAddStatus] = useState<"idle" | "added" | "error">("idle");
+  const [sessionInfo, setSessionInfo] = useState<SubmissionState | null>(null);
+
+  const refreshSessionInfo = useCallback(() => {
+    const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
+    if (!session) { setSessionInfo(null); return; }
+    fetchSubmission(session).then(setSessionInfo).catch(() => setSessionInfo(null));
+  }, []);
+
+  // Shows which session/candidate "Add to submission" targets *before* the
+  // click, not just after — matters most for TRAKE, where the target
+  // candidate changes as the session is worked on by any teammate.
+  useEffect(() => {
+    refreshSessionInfo();
+  }, [refreshSessionInfo]);
+
   const handleAddToSubmission = useCallback(async () => {
     const session = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
     if (!session) {
@@ -81,12 +96,13 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
         result.youtube_id,
       );
       setAddStatus("added");
+      refreshSessionInfo();
       setTimeout(() => setAddStatus("idle"), 1500);
     } catch {
       setAddStatus("error");
       setTimeout(() => setAddStatus("idle"), 1500);
     }
-  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel]);
+  }, [result.video_id, result.frame_image_url, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, refreshSessionInfo]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.
@@ -434,13 +450,21 @@ export default function VideoModal({ result, onClose, showTranscript, onToggleTr
             </span>
             <span>·</span>
             <span>{fps} fps</span>
-            <button
-              type="button"
-              onClick={handleAddToSubmission}
-              className="font-retro ml-auto text-xs uppercase tracking-wide border-2 border-stone-500 rounded px-2 py-1 text-stone-300 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition"
-            >
-              {addStatus === "added" ? "✓ Added" : addStatus === "error" ? "✕ Failed" : "＋ Add to submission"}
-            </button>
+            <div className="ml-auto flex items-center gap-2">
+              {sessionInfo && (
+                <span className="text-xs text-stone-500 normal-case">
+                  → {sessionInfo.session}
+                  {sessionInfo.queryType === "trake" && ` · candidate ${sessionInfo.nextGroupIndex + 1}`}
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={handleAddToSubmission}
+                className="font-retro text-xs uppercase tracking-wide border-2 border-stone-500 rounded px-2 py-1 text-stone-300 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition"
+              >
+                {addStatus === "added" ? "✓ Added" : addStatus === "error" ? "✕ Failed" : "＋ Add to submission"}
+              </button>
+            </div>
           </div>
         </div>
 

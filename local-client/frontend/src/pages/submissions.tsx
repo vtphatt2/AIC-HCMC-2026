@@ -7,11 +7,14 @@ import {
   downloadCsv,
   downloadSubmissionZip,
   editSubmissionEntryFrame,
+  editSubmissionEntryGroup,
   fetchSubmission,
   fetchSubmissionSessions,
   removeSubmissionEntry,
   submissionEntryToSearchResult,
   trakeCandidateSizeMismatch,
+  trakeCandidateVideoMismatch,
+  trakeSortedGroups,
 } from "@/lib/submission";
 import VideoModal from "@/components/VideoModal";
 
@@ -63,6 +66,13 @@ export default function SubmissionsDashboard() {
     setStates((prev) => ({ ...prev, [session]: updated }));
   }
 
+  async function handleMoveGroup(session: string, id: string, raw: string) {
+    const groupIndex = (Number.parseInt(raw, 10) || 1) - 1;
+    if (groupIndex < 0) return;
+    const updated = await editSubmissionEntryGroup(session, id, groupIndex);
+    setStates((prev) => ({ ...prev, [session]: updated }));
+  }
+
   function handleDownload(state: SubmissionState) {
     const { filename, content, rows } = buildSubmissionCsv(state);
     if (rows === 0) return window.alert("No entries to export yet.");
@@ -101,6 +111,7 @@ export default function SubmissionsDashboard() {
             if (!state) return null;
             const groupCount = new Set(state.entries.map((e) => e.groupIndex)).size;
             const sizeMismatch = trakeCandidateSizeMismatch(state);
+            const videoMismatch = trakeCandidateVideoMismatch(state);
             return (
               <section
                 key={summary.session}
@@ -122,6 +133,12 @@ export default function SubmissionsDashboard() {
                   <p className="text-sm text-stone-600 dark:text-stone-300">Answer: {state.answer}</p>
                 )}
 
+                {state.queryType === "trake" && (
+                  <p className="text-sm font-bold text-orange-700 dark:text-orange-400">
+                    ▸ Adding to candidate {state.nextGroupIndex + 1}
+                  </p>
+                )}
+
                 {sizeMismatch && (
                   <p className="text-xs text-red-600">
                     ⚠ Candidates have different frame counts ({sizeMismatch.join(", ")}) — organizer scoring
@@ -129,44 +146,114 @@ export default function SubmissionsDashboard() {
                   </p>
                 )}
 
-                <div className="space-y-1">
-                  {state.entries.length === 0 && (
-                    <p className="text-sm text-stone-500 italic">No frames added yet.</p>
-                  )}
-                  {state.entries.map((entry) => (
-                    <div
-                      key={entry.id}
-                      className="flex items-center gap-2 border border-stone-300 dark:border-stone-700 rounded px-2 py-1"
-                    >
-                      {entry.imageUrl && (
-                        <button type="button" onClick={() => setActiveResult(submissionEntryToSearchResult(entry))}>
-                          <img src={entry.imageUrl} alt="" className="w-16 h-9 object-cover rounded shrink-0 hover:ring-2 hover:ring-orange-600 transition" />
-                        </button>
-                      )}
-                      <span className="text-sm font-mono text-stone-800 dark:text-stone-200">{entry.videoId}</span>
-                      <span className="text-xs text-stone-500">frame</span>
-                      <input
-                        key={entry.frame}
-                        type="number"
-                        min={0}
-                        defaultValue={entry.frame}
-                        className={FRAME_INPUT}
-                        onBlur={(e) => handleEditFrame(summary.session, entry.id, e.target.value)}
-                        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                      />
-                      {state.queryType === "trake" && (
-                        <span className="text-xs text-stone-500">candidate {entry.groupIndex + 1}</span>
-                      )}
-                      <button
-                        onClick={() => handleRemove(summary.session, entry.id)}
-                        className="ml-auto text-stone-400 hover:text-red-600 transition"
-                        aria-label="Remove"
+                {videoMismatch && (
+                  <p className="text-xs text-red-600">
+                    ⚠ Candidate{videoMismatch.length === 1 ? "" : "s"} {videoMismatch.join(", ")} mix frames from
+                    different videos — every frame in a TRAKE candidate must come from the same video.
+                  </p>
+                )}
+
+                {state.entries.length === 0 && (
+                  <p className="text-sm text-stone-500 italic">No frames added yet.</p>
+                )}
+
+                {state.entries.length > 0 && state.queryType === "trake" && (
+                  <div className="space-y-2">
+                    {trakeSortedGroups(state.entries).map((groupEntries) => (
+                      <div
+                        key={groupEntries[0].groupIndex}
+                        className="border-2 border-stone-400 dark:border-stone-600 rounded p-2"
                       >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                        <p className="text-xs font-bold uppercase text-stone-500 mb-1.5">
+                          Candidate {groupEntries[0].groupIndex + 1} · {groupEntries.length} frame
+                          {groupEntries.length === 1 ? "" : "s"}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {groupEntries.map((entry) => (
+                            <div
+                              key={entry.id}
+                              className="flex flex-col items-center gap-1 w-24 border border-stone-300 dark:border-stone-700 rounded p-1.5"
+                            >
+                              {entry.imageUrl && (
+                                <button type="button" onClick={() => setActiveResult(submissionEntryToSearchResult(entry))}>
+                                  <img
+                                    src={entry.imageUrl}
+                                    alt=""
+                                    className="w-20 h-11 object-cover rounded hover:ring-2 hover:ring-orange-600 transition"
+                                  />
+                                </button>
+                              )}
+                              <span className="text-[10px] font-mono text-stone-500 truncate max-w-full">{entry.videoId}</span>
+                              <input
+                                key={entry.frame}
+                                type="number"
+                                min={0}
+                                defaultValue={entry.frame}
+                                className={`${FRAME_INPUT} w-20 text-center px-1`}
+                                onBlur={(e) => handleEditFrame(summary.session, entry.id, e.target.value)}
+                                onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                              />
+                              <label className="flex items-center gap-1 text-[10px] text-stone-500">
+                                cand.
+                                <input
+                                  key={entry.groupIndex}
+                                  type="number"
+                                  min={1}
+                                  defaultValue={entry.groupIndex + 1}
+                                  className={`${FRAME_INPUT} w-10 text-center px-1`}
+                                  onBlur={(e) => handleMoveGroup(summary.session, entry.id, e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                                />
+                              </label>
+                              <button
+                                onClick={() => handleRemove(summary.session, entry.id)}
+                                className="text-stone-400 hover:text-red-600 transition text-xs"
+                                aria-label="Remove"
+                              >
+                                ✕ remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {state.entries.length > 0 && state.queryType !== "trake" && (
+                  <div className="space-y-1">
+                    {state.entries.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="flex items-center gap-2 border border-stone-300 dark:border-stone-700 rounded px-2 py-1"
+                      >
+                        {entry.imageUrl && (
+                          <button type="button" onClick={() => setActiveResult(submissionEntryToSearchResult(entry))}>
+                            <img src={entry.imageUrl} alt="" className="w-16 h-9 object-cover rounded shrink-0 hover:ring-2 hover:ring-orange-600 transition" />
+                          </button>
+                        )}
+                        <span className="text-sm font-mono text-stone-800 dark:text-stone-200">{entry.videoId}</span>
+                        <span className="text-xs text-stone-500">frame</span>
+                        <input
+                          key={entry.frame}
+                          type="number"
+                          min={0}
+                          defaultValue={entry.frame}
+                          className={FRAME_INPUT}
+                          onBlur={(e) => handleEditFrame(summary.session, entry.id, e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        />
+                        <button
+                          onClick={() => handleRemove(summary.session, entry.id)}
+                          className="ml-auto text-stone-400 hover:text-red-600 transition"
+                          aria-label="Remove"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </section>
             );
           })}

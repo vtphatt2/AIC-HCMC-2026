@@ -1,4 +1,5 @@
 import type { AppProps } from "next/app";
+import Head from "next/head";
 import { Space_Mono } from "next/font/google";
 import "@/styles/globals.css";
 
@@ -14,6 +15,9 @@ const spaceMono = Space_Mono({
 export default function App({ Component, pageProps }: AppProps) {
   return (
     <div className={spaceMono.variable}>
+      <Head>
+        <link rel="icon" href="/favicon.jpg" type="image/jpeg" />
+      </Head>
       <Component {...pageProps} />
     </div>
   );

@@ -130,6 +130,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const entry = current.entries.find((e) => e.id === id);
     if (!entry) return res.status(404).json({ error: "Entry not found" });
     entry.frame = frame;
+  } else if (action === "editGroup") {
+    const id = typeof req.body?.id === "string" ? req.body.id : "";
+    const groupIndex = req.body?.groupIndex;
+    if (!isNonNegativeInt(groupIndex)) return res.status(400).json({ error: "Invalid groupIndex" });
+    const entry = current.entries.find((e) => e.id === id);
+    if (!entry) return res.status(404).json({ error: "Entry not found" });
+    entry.groupIndex = groupIndex;
+    current.nextGroupIndex = Math.max(current.nextGroupIndex, groupIndex + 1);
   } else if (action === "remove") {
     const id = typeof req.body?.id === "string" ? req.body.id : "";
     current.entries = current.entries.filter((e) => e.id !== id);

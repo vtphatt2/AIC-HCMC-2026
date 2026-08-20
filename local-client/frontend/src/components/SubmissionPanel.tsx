@@ -4,6 +4,7 @@ import {
   buildSubmissionCsv,
   createSubmissionSession,
   downloadCsv,
+  editSubmissionEntryGroup,
   fetchSubmission,
   fetchSubmissionSessions,
   newSubmissionCandidate,
@@ -11,6 +12,7 @@ import {
   resetSubmission,
   setSubmissionMeta,
   trakeCandidateSizeMismatch,
+  trakeCandidateVideoMismatch,
 } from "@/lib/submission";
 
 export const SUBMISSION_SESSION_KEY = "aic2026-submission-session";
@@ -92,6 +94,11 @@ export default function SubmissionPanel({ onClose }: Props) {
     setState(await newSubmissionCandidate(session));
   }
 
+  async function handleMoveGroup(id: string, groupIndex: number) {
+    if (!session || !Number.isFinite(groupIndex) || groupIndex < 0) return;
+    setState(await editSubmissionEntryGroup(session, id, groupIndex));
+  }
+
   async function handleReset() {
     if (!session || !window.confirm("Clear all entries in this session?")) return;
     setState(await resetSubmission(session));
@@ -106,6 +113,7 @@ export default function SubmissionPanel({ onClose }: Props) {
 
   const groupCount = state ? new Set(state.entries.map((e) => e.groupIndex)).size : 0;
   const sizeMismatch = state ? trakeCandidateSizeMismatch(state) : null;
+  const videoMismatch = state ? trakeCandidateVideoMismatch(state) : null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
@@ -199,17 +207,26 @@ export default function SubmissionPanel({ onClose }: Props) {
 
               {state.queryType === "trake" && (
                 <div className="space-y-1">
+                  <p className="text-sm font-bold text-orange-700 dark:text-orange-400">
+                    ▸ Adding to candidate {state.nextGroupIndex + 1}
+                  </p>
                   <div className="flex items-center gap-2">
                     <button className={BTN} onClick={handleNewCandidate}>+ New candidate</button>
                     <span className="text-xs text-stone-500">
-                      {groupCount} candidate{groupCount === 1 ? "" : "s"} so far — "Add to submission" from the
-                      video modal appends to the current one.
+                      {groupCount} candidate{groupCount === 1 ? "" : "s"} total — "Add to submission" from the
+                      video modal appends to the one above.
                     </span>
                   </div>
                   {sizeMismatch && (
                     <p className="text-xs text-red-600">
                       ⚠ Candidates have different frame counts ({sizeMismatch.join(", ")}) — organizer scoring
                       requires every candidate to match the query's event count exactly.
+                    </p>
+                  )}
+                  {videoMismatch && (
+                    <p className="text-xs text-red-600">
+                      ⚠ Candidate{videoMismatch.length === 1 ? "" : "s"} {videoMismatch.join(", ")} mix frames from
+                      different videos — every frame in a TRAKE candidate must come from the same video.
                     </p>
                   )}
                 </div>
@@ -230,8 +247,21 @@ export default function SubmissionPanel({ onClose }: Props) {
                     )}
                     <span className="text-sm font-mono text-stone-800 dark:text-stone-200 truncate">
                       {entry.videoId} · frame {entry.frame}
-                      {state.queryType === "trake" && ` · candidate ${entry.groupIndex + 1}`}
                     </span>
+                    {state.queryType === "trake" && (
+                      <label className="flex items-center gap-1 text-xs text-stone-500 shrink-0">
+                        candidate
+                        <input
+                          key={entry.groupIndex}
+                          type="number"
+                          min={1}
+                          defaultValue={entry.groupIndex + 1}
+                          className={`${INPUT} w-14 py-0.5 px-1.5`}
+                          onBlur={(e) => handleMoveGroup(entry.id, (Number.parseInt(e.target.value, 10) || 1) - 1)}
+                          onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                        />
+                      </label>
+                    )}
                     <button
                       onClick={() => handleRemove(entry.id)}
                       className="ml-auto text-stone-400 hover:text-red-600 transition"

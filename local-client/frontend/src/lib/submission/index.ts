@@ -1,4 +1,7 @@
 import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
+import * as kis from "./kis";
+import * as qa from "./qa";
+import * as trake from "./trake";
 
 // Talks to pages/api/submission.ts — a same-origin Next.js route, NOT the
 // FastAPI backend, so these calls deliberately do not go through apiUrl().
@@ -63,6 +66,10 @@ export function editSubmissionEntryFrame(session: string, id: string, frame: num
   return postAction(session, { action: "editFrame", id, frame });
 }
 
+export function editSubmissionEntryGroup(session: string, id: string, groupIndex: number): Promise<SubmissionState> {
+  return postAction(session, { action: "editGroup", id, groupIndex });
+}
+
 export function removeSubmissionEntry(session: string, id: string): Promise<SubmissionState> {
   return postAction(session, { action: "remove", id });
 }
@@ -99,6 +106,30 @@ export function resetSubmission(session: string): Promise<SubmissionState> {
   return postAction(session, { action: "reset" });
 }
 
+// ── Per-type dispatch ───────────────────────────────────────────────────────
+
+// Organizer rule: every TRAKE candidate must have frames from one video
+// only. `null` when there's nothing to warn about.
+export function trakeCandidateVideoMismatch(state: SubmissionState): number[] | null {
+  if (state.queryType !== "trake") return null;
+  const { videoMismatch } = trake.validate(state.entries);
+  return videoMismatch.length ? videoMismatch : null;
+}
+
+// Organizer rule: every TRAKE candidate must have the same number of frames
+// (matching the query's event count). `null` when consistent.
+export function trakeCandidateSizeMismatch(state: SubmissionState): number[] | null {
+  if (state.queryType !== "trake") return null;
+  const { sizeMismatch } = trake.validate(state.entries);
+  return sizeMismatch.length ? sizeMismatch : null;
+}
+
+// Entries grouped by candidate, frames ascending within each — same order
+// the CSV export uses, for UI display.
+export function trakeSortedGroups(entries: SubmissionEntry[]): SubmissionEntry[][] {
+  return trake.sortedGroups(entries);
+}
+
 // ── CSV export, matching Python's csv.QUOTE_MINIMAL ────────────────────────
 
 function csvField(value: string | number): string {
@@ -110,42 +141,17 @@ function csvRow(fields: (string | number)[]): string {
   return fields.map(csvField).join(",");
 }
 
-function trakeGroups(state: SubmissionState): SubmissionEntry[][] {
-  const groups = new Map<number, SubmissionEntry[]>();
-  for (const entry of state.entries) {
-    if (!groups.has(entry.groupIndex)) groups.set(entry.groupIndex, []);
-    groups.get(entry.groupIndex)!.push(entry);
-  }
-  return Array.from(groups.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([, entries]) => [...entries].sort((a, b) => a.addedAt - b.addedAt));
-}
-
-// Organizer rule: every TRAKE candidate row must have the same number of
-// frames (matching the query's event count). Returns null when consistent,
-// otherwise the set of distinct counts found — for a UI warning, not a hard
-// block (a half-built candidate mid-edit shouldn't be an error).
-export function trakeCandidateSizeMismatch(state: SubmissionState): number[] | null {
-  if (state.queryType !== "trake") return null;
-  const sizes = new Set(trakeGroups(state).map((g) => g.length));
-  return sizes.size > 1 ? Array.from(sizes).sort((a, b) => a - b) : null;
-}
-
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
-  let rows: string[];
+  const rows =
+    state.queryType === "trake" ? trake.buildRows(trake.toGroups(state.entries)) :
+    state.queryType === "qa" ? qa.buildRows(qa.toGroups(state.entries), state.answer) :
+    kis.buildRows(kis.toGroups(state.entries));
 
-  if (state.queryType === "trake") {
-    rows = trakeGroups(state).map((entries) => csvRow([entries[0].videoId, ...entries.map((e) => e.frame)]));
-  } else if (state.queryType === "qa") {
-    rows = state.entries.map((e) => csvRow([e.videoId, e.frame, state.answer]));
-  } else {
-    rows = state.entries.map((e) => csvRow([e.videoId, e.frame]));
-  }
-
+  const csvRows = rows.map(csvRow);
   return {
     filename: `query-${state.queryNumber}-${state.queryType}.csv`,
-    rows: rows.length,
-    content: rows.length ? `${rows.join("\r\n")}\r\n` : "",
+    rows: csvRows.length,
+    content: csvRows.length ? `${csvRows.join("\r\n")}\r\n` : "",
   };
 }
 
