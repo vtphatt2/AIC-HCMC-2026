@@ -53,7 +53,7 @@ def raw_zip_dir() -> Path:
     configured = os.getenv("RAW_ZIP_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return REPO_ROOT / "challenge_resources" / "data" / "raw_zip"
+    return REPO_ROOT / "challenge_resources" / "data" / "raw_zip_videos"
 
 
 def _data_offset(zip_path: Path, header_offset: int) -> int:
@@ -70,7 +70,7 @@ def _data_offset(zip_path: Path, header_offset: int) -> int:
 
 def _scan_archives() -> dict[str, dict]:
     """video_id -> {zip_path, entry_name, data_offset, size} for every archive
-    in raw_zip/. Only central-directory bytes are read, so this stays fast even
+    in raw_zip_videos/. Only central-directory bytes are read, so this stays fast even
     though the archives are tens of GB."""
     directory = raw_zip_dir()
     if not directory.is_dir():
@@ -154,7 +154,7 @@ def results_zip_dir() -> Path:
     configured = os.getenv("RESULTS_ZIP_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return REPO_ROOT / "challenge_resources" / "data" / "zip_file"
+    return REPO_ROOT / "challenge_resources" / "data" / "zip_embeddings"
 
 
 def fps_map_path() -> Path:

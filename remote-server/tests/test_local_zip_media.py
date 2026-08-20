@@ -10,7 +10,7 @@ the wrong moment):
   * the first presented frame's pts is `base_pts`, not 0, whenever there is
     reordering (was a further 1 frame off).
 
-Skips when raw_zip/ has no archive, so it is safe to run anywhere.
+Skips when raw_zip_videos/ has no archive, so it is safe to run anywhere.
 """
 from __future__ import annotations
 

@@ -146,7 +146,7 @@ def export(zip_dir: Path, out_dir: Path) -> int:
 
 
 def main() -> int:
-    default_zip = REPO_ROOT / "challenge_resources" / "data" / "zip_file"
+    default_zip = REPO_ROOT / "challenge_resources" / "data" / "zip_embeddings"
     db_path = os.getenv("MILVUS_LITE_PATH", "").strip()
     default_out = Path(db_path).parent if db_path else REPO_ROOT / "challenge_resources" / "data"
 

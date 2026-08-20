@@ -206,7 +206,7 @@ async def health():
         "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
-        # Scans raw_zip/ on first call — this is the check for whether the
+        # Scans raw_zip_videos/ on first call — this is the check for whether the
         # /api/zip-frame and /api/zip-video routes have anything to serve.
         "local_zip_videos": await local_zip_media.available_video_count(),
         "raw_zip_dir": str(local_zip_media.raw_zip_dir()),
@@ -274,7 +274,7 @@ async def get_transcript(video_id: str):
 
 @app.get("/api/zip-video/{video_id}")
 async def zip_video(video_id: str, request: Request):
-    """Stream playback from a local `Videos_L*.zip` in raw_zip/, translating the
+    """Stream playback from a local `Videos_L*.zip` in raw_zip_videos/, translating the
     browser's Range request into a seek inside the archive. Nothing is unpacked
     and nothing is decoded — the <video> element seeks against this URL exactly
     as it would against a plain MP4.

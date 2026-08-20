@@ -249,10 +249,10 @@ static/frames/
 # data files
 challenge_resources/data/*
 # ...except the ingest/data-org doc — track it, keep everything else in
-# zip_file/ (the heavy *.zip archives) ignored.
-!challenge_resources/data/zip_file/
-challenge_resources/data/zip_file/*
-!challenge_resources/data/zip_file/Readme-Ingest.md
+# zip_embeddings/ (the heavy *.zip archives) ignored.
+!challenge_resources/data/zip_embeddings/
+challenge_resources/data/zip_embeddings/*
+!challenge_resources/data/zip_embeddings/Readme-Ingest.md
 
 # youtube_storyboard thumbnail workaround cache (see docs/youtube-storyboard-thumbnails-workaround.md)
 /cache/

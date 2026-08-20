@@ -10,12 +10,12 @@ Milvus/Postgres schema and the `/api/search` request/response contract, see
 
 ## 1. Dataset
 
-`challenge_resources/data/zip_file/*_results.zip` — one archive per organizer
+`challenge_resources/data/zip_embeddings/*_results.zip` — one archive per organizer
 "lot", holding per-video scene metadata and PE-Core embeddings, no JPGs. This is
 the only dataset the system indexes; ingestion is [§4](#4-ingest-the-lot-archives).
 
 Frames and video playback do not come from here — they are read from the
-*video* archives (`raw_zip/Videos_L*.zip`) at request time, see
+*video* archives (`raw_zip_videos/Videos_L*.zip`) at request time, see
 [../docs/ARCHITECTURE.md § Media](../docs/ARCHITECTURE.md#media-youtube-first-zip-proxy-fallback)
 (full mechanism: [../docs/archive/zip_media.md](../docs/archive/zip_media.md)).
 
@@ -78,7 +78,7 @@ pip install -r requirements-milvus-lite.txt            # optional: dev-only, see
 
 ## 4. Ingest the lot archives
 
-Each `challenge_resources/data/zip_file/*_results.zip` archive is one
+Each `challenge_resources/data/zip_embeddings/*_results.zip` archive is one
 organizer "lot" (e.g. `L26_c_results.zip`, produced from `Videos_L26_c.zip`)
 and contains, per video, `phase1_transnet/video__<id>/{scenes.json,keyframes.json}`
 (fps, selected frame numbers) and `phase2_embeddings/video__<id>/embeddings.npy`
@@ -92,7 +92,7 @@ python scripts/ingest_zip_pipeline_results.py
 
 | Flag | Default | Description |
 |---|---|---|
-| `--zip-dir` | `challenge_resources/data/zip_file` | Directory containing `*_results.zip` archives |
+| `--zip-dir` | `challenge_resources/data/zip_embeddings` | Directory containing `*_results.zip` archives |
 | `--batch-size` | 256 | Vectors per Milvus insert batch |
 | `--vector-index` | `hnsw` | `hnsw`, `flat`, `scann`, or `all` |
 | `--recreate-milvus` | false | Drop collection(s) before inserting |

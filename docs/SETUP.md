@@ -5,6 +5,20 @@ several. Deeper technical writeups (backend internals, DB schema, why a
 given bug happened) moved to [docs/archive/](archive/) — this page stays
 focused on running it.
 
+> **One-time migration:** `challenge_resources/data/zip_file/` and
+> `raw_zip/` were renamed to `zip_embeddings/` and `raw_zip_videos/`. These
+> folders are gitignored — pulling this change does **not** rename the real
+> data on your disk. On every machine that already has this data (including
+> the GPU server), rename them by hand once:
+> ```bash
+> cd challenge_resources/data
+> mv zip_file zip_embeddings   # or: ren zip_file zip_embeddings   (Windows cmd)
+> mv raw_zip raw_zip_videos    # or: ren raw_zip raw_zip_videos
+> ```
+> Alternatively, without touching the folders, set `RESULTS_ZIP_DIR` /
+> `RAW_ZIP_DIR` in your `.env` to the old paths — see
+> [Environment variables](#environment-variables) below.
+
 ## Prerequisites
 
 | Tool | Minimum | Needed for |
@@ -18,7 +32,7 @@ focused on running it.
 
 ## Which scenario am I in?
 
-One dataset — the lot archives in `challenge_resources/data/zip_file/` —
+One dataset — the lot archives in `challenge_resources/data/zip_embeddings/` —
 reached three ways:
 
 | I have… | Run this | Where data comes from |
@@ -39,7 +53,7 @@ pip install -r requirements.txt   # base: no torch, ONNX text encoder by default
 cp .env.example .env
 ```
 
-You need `challenge_resources/data/zip_file/*_results.zip` (the lot
+You need `challenge_resources/data/zip_embeddings/*_results.zip` (the lot
 archives) plus two derived files, both required and cheap to rebuild:
 
 ```bash
@@ -142,7 +156,7 @@ Then add `VECTOR_SEARCH_BACKEND=cagra`, `PECORE_DEVICE=cuda`,
 `VECTOR_SEARCH_BACKEND=milvus`, `PECORE_DEVICE=mps`, `PECORE_PRECISION=fp32`.
 
 **Media**: drop the organizers' `Videos_L*.zip` into
-`challenge_resources/data/raw_zip/` — nothing to build, `/api/health`
+`challenge_resources/data/raw_zip_videos/` — nothing to build, `/api/health`
 reports how many were found. Lots without an archive there fall back to
 YouTube playback.
 

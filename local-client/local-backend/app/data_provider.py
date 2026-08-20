@@ -1,14 +1,14 @@
 """Where the local backend gets its data.
 
-One dataset: the organizers' lot archives under `challenge_resources/data/zip_file/`.
+One dataset: the organizers' lot archives under `challenge_resources/data/zip_embeddings/`.
 Everything downstream of those archives is derived, never a second source of truth:
 
-    zip_file/*_results.zip
+    zip_embeddings/*_results.zip
       ├─ ingest_zip_pipeline_results.py  → Milvus (frame records)
       ├─ export_vectors_npy.py           → vectors.f32.npy   (what search reads)
       └─ export_video_fps.py             → video_fps.json    (frame ↔ timestamp)
 
-    raw_zip/Videos_L*.zip                → the pictures and the video itself
+    raw_zip_videos/Videos_L*.zip         → the pictures and the video itself
 
 The older `AIC2026_sample` layout (keyframes/, metadata/, PECore-features/ — nine
 L01–L03 videos, no overlap with the ~193k indexed vectors) is gone, along with

@@ -22,7 +22,7 @@ Three docs cover everything day to day:
 
 Plus: [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md)
 (ingestion/CAGRA/validation detail) and
-[challenge_resources/data/zip_file/Readme-Ingest.md](challenge_resources/data/zip_file/Readme-Ingest.md)
+[challenge_resources/data/zip_embeddings/Readme-Ingest.md](challenge_resources/data/zip_embeddings/Readme-Ingest.md)
 (what the lot archives contain).
 
 ### Archive
@@ -51,7 +51,7 @@ reference, not actively maintained — see
 ```
 AIC-HCMC-2026/
 ├── challenge_resources/         # All dataset/model/log assets, gitignored except manifests
-│   ├── data/                    # zip_file/ lot archives (the dataset), raw_zip/ video archives,
+│   ├── data/                    # zip_embeddings/ lot archives (the dataset), raw_zip_videos/ video archives,
 │   │                            #   vectors.f32.npy + .meta.npz (search), video_fps.json,
 │   │                            #   milvus_lite.db, postgres_data/, zip_video_index.json,
 │   │                            #   strategy-configs/, transcripts/
@@ -75,7 +75,7 @@ AIC-HCMC-2026/
 │       │   └── postgres_client.py    # DDL, OCR full-text, transcript interval queries
 │       ├── services/
 │       │   ├── text_encoder.py       # PE-Core text encoder + cache
-│       │   ├── local_zip_media.py    # Frames/playback from raw_zip/Videos_L*.zip, no unpacking
+│       │   ├── local_zip_media.py    # Frames/playback from raw_zip_videos/Videos_L*.zip, no unpacking
 │       │   └── translation.py        # VI/mixed → English via free Google Translate (deep-translator)
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/               # Mirrors local-backend/app/strategies/ — same contract

@@ -90,7 +90,7 @@ def staleness_warning() -> str | None:
     if found is None:
         return None
     vectors, _ = found
-    zip_dir = vectors.parent / "zip_file"
+    zip_dir = vectors.parent / "zip_embeddings"
     if not zip_dir.is_dir():
         return None
     newest = max((p.stat().st_mtime for p in zip_dir.glob("*_results.zip")), default=None)

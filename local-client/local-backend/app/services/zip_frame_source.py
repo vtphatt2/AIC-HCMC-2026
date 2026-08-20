@@ -59,7 +59,7 @@ def results_zip_dir() -> Path:
     configured = os.getenv("RESULTS_ZIP_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return REPO_ROOT / "challenge_resources" / "data" / "zip_file"
+    return REPO_ROOT / "challenge_resources" / "data" / "zip_embeddings"
 
 
 def fps_map_path() -> Path:

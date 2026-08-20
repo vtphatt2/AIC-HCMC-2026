@@ -1,4 +1,4 @@
-# zip_file/ — organizer archives and how to ingest them
+# zip_embeddings/ — organizer archives and how to ingest them
 
 This directory holds the raw inputs for `remote-server/scripts/ingest_zip_pipeline_results.py`.
 Everything here is gitignored except this file — the archives are too heavy to push

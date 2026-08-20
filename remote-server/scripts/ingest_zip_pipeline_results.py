@@ -1,6 +1,6 @@
 """
 Ingest PE-Core keyframe embeddings from keyframe_pipeline_global_v9_3
-"*_results.zip" archives (challenge_resources/data/zip_file/) into Milvus +
+"*_results.zip" archives (challenge_resources/data/zip_embeddings/) into Milvus +
 PostgreSQL.
 
 Each archive is one organizer zip "lot" (e.g. L26_c_results.zip, produced from
@@ -101,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--zip-dir",
         type=Path,
-        default=REPO_ROOT / "challenge_resources" / "data" / "zip_file",
+        default=REPO_ROOT / "challenge_resources" / "data" / "zip_embeddings",
         help="Directory containing *_results.zip archives.",
     )
     parser.add_argument("--batch-size", type=int, default=256)
