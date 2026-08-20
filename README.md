@@ -23,6 +23,7 @@ That is the whole onboarding path; everything below is reference.
 | [docs/running.md](docs/running.md) | **Start here** — scenario picker, exact commands, what to re-run after an update |
 | [docs/setup.md](docs/setup.md) | First-time setup, step by step, for local dev and the GPU server |
 | [docs/launch_scripts.md](docs/launch_scripts.md) | One-command local/remote launch (Windows/Mac/Linux/WSL), ngrok sharing |
+| [docs/ngrok.md](docs/ngrok.md) | Ngrok setup + both sharing scenarios: local dev instance, remote server |
 | [docs/USAGE.md](docs/USAGE.md) | Using the search UI: query modes, command bar, results, player |
 | [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md) | remote-server: ingestion, HNSW/CAGRA, validation scripts |
 

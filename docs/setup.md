@@ -384,6 +384,7 @@ ngrok http 8000
 ```
 
 Share the Ngrok URL with the team. They set it as `REMOTE_SERVER_URL` in their local `.env`.
+Full account/domain setup and troubleshooting: [ngrok.md](ngrok.md#exposing-the-remote-server).
 
 ### 4. Ingest the dataset
 

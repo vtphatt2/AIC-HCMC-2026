@@ -58,6 +58,9 @@ venv .venv && .venv/bin/pip install -r requirements.txt`, see
 
 ## Sharing with teammates over ngrok
 
+Full setup (account, authtoken, domain) and troubleshooting:
+[ngrok.md](ngrok.md).
+
 ```powershell
 scripts\start-local.ps1 -Ngrok
 ```
