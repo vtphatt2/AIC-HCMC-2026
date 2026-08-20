@@ -35,6 +35,7 @@ def _find_onnx_model() -> Path | None:
 
 @dataclass(frozen=True)
 class TextEncoderConfig:
+    cached_model: str | None = os.getenv("CACHED_MODEL")
     model_id: str = os.getenv("PECORE_MODEL_ID", "hf-hub:timm/PE-Core-bigG-14-448")
     device: str = os.getenv("PECORE_DEVICE", "cpu")
     precision: str = os.getenv("PECORE_PRECISION", "fp32")
@@ -68,7 +69,8 @@ class PECoreTextEncoder:
     Lazy PECore text encoder for PECore.
 
     Two interchangeable backends behind the same encode() interface:
-      torch — full OpenCLIP model via open_clip.create_model_and_transforms
+      torch — text tower only, built from a local CACHED_MODEL directory
+              (config.json + model.safetensors + bpe vocab). No download.
       onnx  — quantized INT8 text-encoder-only ONNX graph (CPU, no big download)
 
     The model is loaded on the first semantic query so indexing and server
@@ -115,9 +117,10 @@ class PECoreTextEncoder:
 
     def _encode_torch(self, text: str):
         torch = self._torch
-        tokens = self._tokenizer([text], context_length=self._model.context_length).to(self.config.device)
+        tokens = self._tokenizer([text], context_length=self.config.context_length).to(self.config.device)
         with torch.inference_mode():
-            features = self._model.encode_text(tokens, normalize=True)
+            features = self._model(tokens)
+            features = torch.nn.functional.normalize(features, dim=-1)
 
         vector = features.detach().float().cpu().numpy()[0]
         self._validate_dim(vector)
@@ -205,29 +208,55 @@ class PECoreTextEncoder:
 
     def _load_torch(self) -> None:
         try:
-            import open_clip
+            import json
+
             import torch
+            from open_clip.model import _build_text_tower
+            from open_clip.tokenizer import SimpleTokenizer
+            from safetensors.torch import load_file
         except ImportError as exc:
             raise TextEncoderUnavailable(
                 "PECore text encoder dependencies are missing. Install them with: "
-                "python -m pip install open_clip_torch torch"
+                "python -m pip install open_clip_torch torch safetensors"
             ) from exc
 
         _validate_device_config(torch, self.config)
 
-        try:
-            model, _, _ = open_clip.create_model_and_transforms(
-                self.config.model_id,
-                precision=self.config.precision,
-                device=self.config.device,
+        cached_model = self.config.cached_model
+        if not cached_model:
+            raise TextEncoderUnavailable("CACHED_MODEL is not set.")
+
+        model_dir = Path(cached_model)
+        config_path = model_dir / "config.json"
+        weights_path = model_dir / "model.safetensors"
+        bpe_path = model_dir / "bpe_simple_vocab_16e6.txt.gz"
+
+        missing = [p for p in (config_path, weights_path, bpe_path) if not p.is_file()]
+        if missing:
+            raise TextEncoderUnavailable(
+                "Cached PECore text encoder is incomplete. Missing: "
+                + ", ".join(str(path) for path in missing)
             )
-            tokenizer = open_clip.get_tokenizer(self.config.model_id)
+
+        try:
+            with config_path.open("r", encoding="utf-8") as f:
+                cfg = json.load(f)
+
+            # Only the text tower is built — no vision weights, no download.
+            model = _build_text_tower(embed_dim=cfg["embed_dim"], text_cfg=cfg["text_cfg"])
+            weights = load_file(str(weights_path), device="cpu")
+            model.load_state_dict(weights, strict=False)
+
+            tokenizer = SimpleTokenizer(
+                bpe_path=str(bpe_path),
+                context_length=cfg["text_cfg"]["context_length"],
+            )
+
+            model = model.to(self.config.device)
             model.eval()
         except Exception as exc:
             raise TextEncoderUnavailable(
-                "Could not load PECore text encoder model "
-                f"'{self.config.model_id}'. Make sure the model is cached or "
-                "the server can download it from Hugging Face."
+                f"Could not load cached PECore text encoder from '{model_dir}'."
             ) from exc
 
         self._torch = torch
