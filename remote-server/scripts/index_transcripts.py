@@ -1,8 +1,10 @@
 """
 Index transcript chunks into Milvus + PostgreSQL with topic-labelled embeddings.
 
-Processes AIC2026_sample transcript .txt files:
-  1. Parses [HH:MM:SS] format segments
+Processes AIC2026_sample transcripts — .jsonl (current dataset format,
+{"start_time_ms","end_time_ms","text"} per line) preferred per video, older
+.txt [HH:MM:SS] files only for a video with no .jsonl:
+  1. Parses segments
   2. Groups into overlapping chunks (40-60s target, 50% overlap)
   3. Assigns topics via embedding-similarity (multilingual-e5-small)
   4. Inserts vectors into Milvus (transcript_chunks) and metadata into PostgreSQL
@@ -124,6 +126,43 @@ def parse_transcript_file(filepath: Path) -> tuple[str, list[dict]] | None:
     return video_id, segments
 
 
+def parse_transcript_jsonl(filepath: Path) -> tuple[str, list[dict]] | None:
+    """Mirrors app/services/transcript_jsonl_reader.py's line format —
+    {"start_time_ms", "end_time_ms", "text"} per line — but returns the
+    same (video_id, segments) contract as parse_transcript_file above, so
+    chunk_segments() downstream doesn't care which format a video came
+    from."""
+    video_id = derive_video_id(filepath.name)
+    if not video_id:
+        logger.warning("Cannot derive video_id from: %s", filepath.name)
+        return None
+
+    segments = []
+    for line in filepath.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            seg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        segments.append({
+            "start_time_ms": seg["start_time_ms"],
+            "end_time_ms": seg["end_time_ms"],
+            "text": text,
+        })
+
+    if not segments:
+        logger.warning("%s: no valid segments", filepath.name)
+        return None
+
+    logger.info("%s: parsed %d segments", filepath.name, len(segments))
+    return video_id, segments
+
+
 def chunk_segments(segments: list[dict]) -> list[dict]:
     """
     Group segments into overlapping chunks.
@@ -222,16 +261,31 @@ async def main() -> None:
         logger.error("Transcripts directory not found: %s", transcripts_dir)
         sys.exit(1)
 
+    jsonl_files = sorted(transcripts_dir.glob("*.jsonl"))
     txt_files = sorted(transcripts_dir.glob("*.txt"))
-    if not txt_files:
-        logger.error("No .txt files in %s", transcripts_dir)
+    if not jsonl_files and not txt_files:
+        logger.error("No .jsonl or .txt files in %s", transcripts_dir)
         sys.exit(1)
 
-    logger.info("Found %d transcript files in %s", len(txt_files), transcripts_dir)
+    logger.info(
+        "Found %d .jsonl + %d .txt transcript files in %s",
+        len(jsonl_files), len(txt_files), transcripts_dir,
+    )
 
-    # ── Parse all transcripts into segments ────────────────────────────────────
+    # ── Parse all transcripts into segments — .jsonl preferred per video
+    # (current dataset format), .txt only for a video with no .jsonl ───────────
     all_video_segments: dict[str, list[dict]] = {}
+    for filepath in jsonl_files:
+        result = parse_transcript_jsonl(filepath)
+        if result is None:
+            continue
+        video_id, segments = result
+        all_video_segments[video_id] = segments
+
     for filepath in txt_files:
+        video_id = derive_video_id(filepath.name)
+        if video_id in all_video_segments:
+            continue
         result = parse_transcript_file(filepath)
         if result is None:
             continue
