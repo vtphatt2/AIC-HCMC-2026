@@ -194,8 +194,12 @@ export default function SubmissionsDashboard() {
   }
 
   function handleDownloadZip() {
-    const ok = downloadSubmissionZip(Object.values(states));
-    if (!ok) window.alert("No sessions with entries to bundle yet.");
+    try {
+      const ok = downloadSubmissionZip(Object.values(states));
+      if (!ok) window.alert("No sessions with entries to bundle yet.");
+    } catch (err: any) {
+      window.alert(err.message || "Failed to build submission.zip");
+    }
   }
 
   return (

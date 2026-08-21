@@ -232,12 +232,32 @@ function dosDateTime(d: Date): { time: number; date: number } {
 
 export function buildSubmissionZip(states: SubmissionState[]): Blob | null {
   const enc = new TextEncoder();
-  const files = states
-    .filter((s) => s.entries.length > 0)
-    .map((s) => {
-      const { filename, content } = buildSubmissionCsv(s);
-      return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
-    });
+  const withEntries = states.filter((s) => s.entries.length > 0);
+
+  // The organizer's required filename (query-{number}-{type}.csv) doesn't
+  // include the session name, so two sessions left on the same
+  // queryType/queryNumber (e.g. both still the kis/1 default) would
+  // silently collide into one zip entry, dropping one session's rows from
+  // the submission with no error. Fail loudly instead of shipping that.
+  const sessionsByFilename = new Map<string, string[]>();
+  for (const s of withEntries) {
+    const { filename } = buildSubmissionCsv(s);
+    const sessions = sessionsByFilename.get(filename) ?? [];
+    sessions.push(s.session);
+    sessionsByFilename.set(filename, sessions);
+  }
+  const collisions = Array.from(sessionsByFilename.entries()).filter(([, sessions]) => sessions.length > 1);
+  if (collisions.length > 0) {
+    const detail = collisions.map(([filename, sessions]) => `${filename} <- ${sessions.join(", ")}`).join("; ");
+    throw new Error(
+      `These sessions share the same query type/number and would overwrite each other in the zip: ${detail}. Give each a distinct query number.`,
+    );
+  }
+
+  const files = withEntries.map((s) => {
+    const { filename, content } = buildSubmissionCsv(s);
+    return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
+  });
   if (files.length === 0) return null;
 
   const { time, date } = dosDateTime(new Date());
