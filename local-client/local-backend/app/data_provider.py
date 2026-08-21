@@ -311,10 +311,15 @@ class DataProvider:
     async def search_transcript_chunks(
         self, query: str, limit: int = 100, topic_filter: str | None = None
     ) -> list[dict]:
-        """Topic-based transcript chunk search — indexed on remote-server only."""
-        if self.mode != "LOCAL":
-            return []
-        return await self._transcript_chunks_search_remote(query, limit, topic_filter)
+        """LOCAL mode proxies to remote-server's topic-based (vector) search.
+        Otherwise, fuzzy-matches against the transcripts cached under
+        AIC_SAMPLE_ROOT — no topic classification (needs an embedding
+        model), but real local results instead of none."""
+        if self.mode == "LOCAL":
+            return await self._transcript_chunks_search_remote(query, limit, topic_filter)
+        from app.services.transcript_index import search_all_transcripts
+
+        return search_all_transcripts(query, top_k=limit)
 
     async def _transcript_chunks_search_remote(
         self, query: str, limit: int, topic_filter: str | None = None

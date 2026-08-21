@@ -17,6 +17,11 @@ onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10
 
+# Fuzzy transcript search (app/services/transcript_index.py's
+# Transcript.fuzzy_find / search_all_transcripts) — C-optimized partial-ratio
+# matching, no embedding model needed.
+rapidfuzz==3.14.3
+
 # Bundled ffmpeg binary (no system-wide install needed) — used by both
 # FRAME_IMAGE_SOURCE=local_video (app/services/local_video_frame.py) and the
 # /api/zip-frame organizer-ZIP frame proxy (app/services/zip_frame_source.py).

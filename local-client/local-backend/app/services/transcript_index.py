@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 _LINE_RE = re.compile(r"\[(\d{2}):(\d{2}):(\d{2})\]\s*(.*)")
 _LAST_SEGMENT_FALLBACK_MS = 5000
 
+# A handful of this dataset's segments are single-character caption
+# fragments (~1% — see search_all_transcripts). Every fuzzy scorer,
+# WRatio included, treats "is the shorter string fully contained in the
+# longer one" as a strong signal — which a 1-2 char segment satisfies
+# against nearly any query, scoring ~90 regardless of relevance. There's no
+# scorer choice that fixes this (it's inherent to what "fuzzy" match means
+# for a 1-char string); excluding segments too short to be a meaningful
+# phrase match is the actual fix.
+MIN_FUZZY_SEGMENT_LEN = 4
+
 
 @dataclass
 class TranscriptSegment:
@@ -183,14 +193,35 @@ class Transcript:
         return matches
 
     def fuzzy_find(self, query: str, threshold: float = 70.0) -> list[TranscriptMatch]:
-        """NOT YET IMPLEMENTED — documented interface for future search
-        work. Intended behavior: approximate substring matching over
-        full_text (e.g. via rapidfuzz's partial_ratio sliding window), for
-        locating content that doesn't match verbatim. Left as a stub since
-        transcript *search* itself is deferred (see module docstring)."""
-        raise NotImplementedError(
-            "Transcript.fuzzy_find is a documented interface for future search work, not yet implemented."
-        )
+        """Approximate matching, scored per segment via rapidfuzz's WRatio
+        (0-100; tolerant of the query being a reworded or partial match
+        rather than an exact phrase). WRatio, not partial_ratio: plain
+        partial_ratio scores by how well the *shorter* string fits inside
+        the longer one, so a one-word segment (some of this dataset's
+        segments are caption fragments that short) trivially "fully
+        matches" any query containing that word — WRatio blends in the
+        overall length ratio so tiny segments stop winning by default.
+        Segment granularity (each is already a few seconds of speech) is
+        coarser than the char-offset windowing a fuzzy *substring* search
+        would need, but good enough to locate content that doesn't match
+        verbatim, without wiring up sliding windows over full_text."""
+        query = query.strip()
+        if not query or not self.segments:
+            return []
+        from rapidfuzz import fuzz
+
+        lower_query = query.lower()
+        matches = []
+        for seg in self.segments:
+            if len(seg.text.strip()) < MIN_FUZZY_SEGMENT_LEN:
+                continue
+            score = fuzz.WRatio(lower_query, seg.text.lower())
+            if score >= threshold:
+                matches.append(TranscriptMatch(
+                    start_ms=seg.start_ms, end_ms=seg.end_ms, text=seg.text,
+                    char_start=0, char_end=len(seg.text), score=score,
+                ))
+        return matches
 
     def _timestamp_for_char(self, char_offset: int) -> int:
         if not self.time_index:
@@ -232,45 +263,107 @@ def load_or_build_transcript(video_id: str) -> Transcript | None:
     return transcript
 
 
-# ── FUTURE SEARCH INTERFACE (not implemented) ──────────────────────────────
-#
-# This module deliberately stops at timing/lookup primitives. Real
-# transcript *search* — needed to replace DataProvider.search_transcript_chunks's
-# current `return []` in SAMPLE mode — would add, roughly:
-#
-#   @dataclass
-#   class TranscriptChunk:
-#       chunk_id: int
-#       start_ms: int
-#       end_ms: int
-#       text: str
-#       topic: str
-#       embedding: list[float] | None
-#
-#   def build_chunks(transcript: Transcript, target_s=45, overlap=0.5) -> list[TranscriptChunk]:
-#       """Sliding-window chunking over `transcript.segments`, mirroring
-#       remote-server/scripts/index_transcripts.py's chunk_segments
-#       (~40-60s windows, 50% overlap) so local results stay comparable to
-#       production. Each chunk's `topic` = nearest of the same 14 fixed
-#       Vietnamese labels via e5 cosine (port TOPICS + classify_topic from
-#       remote-server/app/db/milvus_client.py)."""
-#
-#   def embed_chunks(chunks: list[TranscriptChunk]) -> None:
-#       """Fills in each chunk's `embedding` using multilingual-e5-small
-#       (already installed; same model remote-server/app/services/
-#       transcript_search.py uses), "passage: " prefixed per the e5
-#       convention. Query-time embedding uses the "query: " prefix."""
-#
-#   def search_all_transcripts(query: str, top_k: int, topic_filter: str | None = None) -> list[dict]:
-#       """Embeds `query`, ranks all cached videos' chunks by cosine
-#       similarity (brute-force numpy — dataset is small enough that no
-#       vector DB is needed locally), shapes hits into the existing
-#       TranscriptChunkResult dict shape, and is meant to be dropped
-#       straight into DataProvider.search_transcript_chunks's SAMPLE-mode
-#       branch. transcript_fusion_strategy.py already prefers real
-#       transcript_chunks over its token-overlap fallback whenever they're
-#       present, so no strategy changes would be needed when this lands."""
-#
-# Transcript.fuzzy_find() above is the one piece of this that already has
-# a defined signature, since rapidfuzz-based approximate matching is a
-# small, self-contained addition whenever this gets picked up.
+# ── Search across every cached transcript ──────────────────────────────────
+# The local (ZIP-mode) equivalent of remote-server's Postgres full-text
+# search over 40-60s chunks — done here via Transcript.fuzzy_find over each
+# video's own segments instead. No embedding model involved (topic
+# classification and true semantic ranking both need one — out of scope
+# locally), so results carry topic="" and are ranked by fuzzy score alone.
+# Good enough to make the Transcripts search tab work locally at all, which
+# it previously didn't (DataProvider.search_transcript_chunks returned []
+# outside ENV_MODE=LOCAL).
+
+_all_transcripts_cache: dict[str, Transcript] = {}
+# (video_id, segment) pairs across every cached transcript, flattened once —
+# ~154k segments over 814 videos. Scored in one batched rapidfuzz.process.extract
+# call rather than Transcript.fuzzy_find's per-segment Python loop: at this
+# count, per-call Python/function-call overhead dominates (a first cut of
+# this feature measured ~30s/query looping fuzzy_find per video), where
+# process.extract's batched C path comes back in well under a second.
+_all_segments_cache: list[tuple[str, TranscriptSegment]] | None = None
+
+
+def _all_video_ids_with_transcripts() -> list[str]:
+    transcripts_dir = data_subdir("transcripts")
+    if not transcripts_dir.is_dir():
+        return []
+    return sorted(p.stem for p in transcripts_dir.glob("*.jsonl"))
+
+
+def _all_segments() -> list[tuple[str, TranscriptSegment]]:
+    global _all_segments_cache
+    if _all_segments_cache is None:
+        pairs: list[tuple[str, TranscriptSegment]] = []
+        for video_id in _all_video_ids_with_transcripts():
+            transcript = _all_transcripts_cache.get(video_id)
+            if transcript is None:
+                transcript = load_or_build_transcript(video_id)
+                if transcript is None:
+                    continue
+                _all_transcripts_cache[video_id] = transcript
+            pairs.extend(
+                (video_id, seg) for seg in transcript.segments
+                if len(seg.text.strip()) >= MIN_FUZZY_SEGMENT_LEN
+            )
+        _all_segments_cache = pairs
+    return _all_segments_cache
+
+
+def search_all_transcripts(query: str, top_k: int = 100, threshold: float = 70.0) -> list[dict]:
+    """Fuzzy-matches `query` against every cached video's transcript
+    segments, ranks by score, and resolves each hit to its nearest indexed
+    keyframe (for a thumbnail + frame_number) via numpy_vector_store.
+    Shaped to match the frontend's TranscriptChunkResult exactly."""
+    query = query.strip()
+    if not query:
+        return []
+    from rapidfuzz import fuzz, process
+
+    pairs = _all_segments()
+    hits = process.extract(
+        query, [seg.text for _, seg in pairs],
+        scorer=fuzz.WRatio, limit=top_k, score_cutoff=threshold,
+    )
+    matches = [(pairs[idx][0], TranscriptMatch(
+        start_ms=pairs[idx][1].start_ms, end_ms=pairs[idx][1].end_ms,
+        text=pairs[idx][1].text, char_start=0, char_end=len(pairs[idx][1].text), score=score,
+    )) for _text, score, idx in hits]
+
+    from app.db import numpy_vector_store
+
+    have_frames = numpy_vector_store.available()
+    results = []
+    for i, (video_id, m) in enumerate(matches):
+        frame_number, timestamp_ms, youtube_id, frame_image_url = 0, None, "", ""
+        if have_frames:
+            mid_ms = (m.start_ms + m.end_ms) // 2
+            # Keyframe sampling is scene-adaptive, not fixed-interval — gaps
+            # of 30s+ are normal in a low-motion stretch (a lecture's static
+            # talking-head shot, say), so a fixed time window around the
+            # match can legitimately come back empty. Pull every keyframe
+            # of the video instead (~a few hundred at most, see
+            # per-video-frame-count check) and pick whichever is nearest —
+            # frames_in_range's own `limit` keeps the *earliest* rows in a
+            # range, not the *nearest* to a target, so limiting to a small
+            # window would silently drop the very hit we're after.
+            nearby = numpy_vector_store.frames_in_range(video_id, 0, 10**12, limit=2000)
+            if nearby:
+                nearest = min(nearby, key=lambda f: abs(f["timestamp_ms"] - mid_ms))
+                frame_number = nearest["frame_number"]
+                timestamp_ms = nearest["timestamp_ms"]
+                youtube_id = nearest["youtube_id"] or ""
+                frame_image_url = f"/api/zip-frame/{video_id}/{timestamp_ms}"
+        results.append({
+            "chunk_id": i,
+            "video_id": video_id,
+            "youtube_id": youtube_id,
+            "topic": "",
+            "start_time_ms": m.start_ms,
+            "end_time_ms": m.end_ms,
+            "text": m.text,
+            "score": m.score / 100.0,
+            "frame_image_url": frame_image_url,
+            "frame_number": frame_number,
+            "nearest_timestamp_ms": timestamp_ms,
+        })
+    return results
