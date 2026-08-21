@@ -102,8 +102,13 @@ Errors become status codes at this boundary only: `TimeoutError` → 408,
 
 In `ENV_MODE=LOCAL` all four channels are the remote-server's, proxied. In `ZIP`
 the two remote-only channels raise a `RuntimeError` naming the reason — an empty
-list would read as "no matches" for data that was never there. Correspondingly,
-`POST /api/search/transcript` returns an empty list locally.
+list would read as "no matches" for data that was never there.
+
+`POST /api/search/transcript` (the Transcripts search tab, a separate
+endpoint from these four retrieval channels) is not affected by that
+`RuntimeError` gap — as of 2026-08-21 it fuzzy-matches locally in `ZIP`
+mode too, via `transcript_index.py`'s `search_all_transcripts` (see
+[gaps.md §4](gaps.md#4-transcriptsemantic-is-remote-only)).
 
 `retrieve()` caches per channel inside one request and pages forward using
 `exclude_frame_ids`, so a second call on the same channel returns *new* hits

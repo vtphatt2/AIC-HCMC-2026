@@ -109,7 +109,10 @@ routes, same response shapes either way. Full mechanism (MP4 box parsing,
 
 - `transcript.semantic` / `subtitled.semantic` only exist in `LOCAL` and
   `SERVER` modes — the local lot archives carry no transcript index, so a
-  strategy assuming all four channels breaks in plain `ZIP` mode.
+  strategy assuming all four channels breaks in plain `ZIP` mode. The
+  dedicated Transcripts search tab (`POST /api/search/transcript`) is a
+  different code path and does work in `ZIP` mode — fuzzy match (rapidfuzz)
+  against cached transcripts, not vector/topic search, no strategy involved.
 - `remote-server` only has `Videos_L30_a.zip` on disk — every other lot
   falls back to YouTube playback there (`local-backend` reaches all lots
   fine, over HTTP Range).

@@ -45,15 +45,22 @@ whether to write the script or leave evaluation to the notebooks
 ## 4. `transcript.semantic` is remote-only
 
 `SearchContext.retrieve(…)` raises a `RuntimeError` for `transcript.semantic`
-*and* `subtitled.semantic` in `ENV_MODE=ZIP`, and `POST /api/search/transcript`
-returns an empty list there. Only `ENV_MODE=LOCAL` (proxying) and `SERVER` have
-them.
+*and* `subtitled.semantic` in `ENV_MODE=ZIP`. Only `ENV_MODE=LOCAL` (proxying)
+and `SERVER` have them.
 
 Both are absent for the same reason: the lot archives carry one embedding set
-per keyframe and no transcript index. The chunk index and its
+per keyframe and no vector transcript index. The chunk index and its
 sentence-transformer live on the server ([search_by_transcript.md](search_by_transcript.md)).
 Worth knowing before writing a strategy that assumes four channels everywhere —
 `multi_source.py` is one, and it runs only in `LOCAL` or on the server.
+
+As of 2026-08-21, `POST /api/search/transcript` (the dedicated Transcripts
+search tab, not a strategy retrieval channel) no longer returns an empty
+list in `ENV_MODE=ZIP` — it fuzzy-matches (rapidfuzz) against the cached
+transcripts under `AIC_SAMPLE_ROOT` instead of vector/topic search. No topic
+classification (needs an embedding model), and it's a separate code path
+from the `transcript.semantic` gap above — see
+`local-backend/app/services/transcript_index.py`'s `search_all_transcripts`.
 
 ---
 

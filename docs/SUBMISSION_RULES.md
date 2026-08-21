@@ -83,6 +83,8 @@ Notepad phải thấy text thuần, không ký tự lạ.
 ## Liên hệ codebase
 
 `local-client/frontend/src/lib/submission/index.ts` (`buildSubmissionCsv`,
-`buildSubmissionZip`) implement đúng format ở trên. `buildSubmissionZip`
-chặn (throw) nếu 2 session cùng `queryType`+`queryNumber` — đúng theo quy
-tắc "mỗi câu truy vấn 1 file" ở trên, không phải bug.
+`buildSubmissionZip`) implement đúng format ở trên. Tên session **là** tên
+file export (`{session}.csv`) — trùng tên bị chặn ngay lúc tạo session
+(409), nên việc 2 file trùng tên trong 1 lần zip là bất khả thi về cấu
+trúc, không cần check riêng lúc build zip nữa. Xem thêm
+[SUBMISSION.md](SUBMISSION.md) cho cách dùng dashboard.
