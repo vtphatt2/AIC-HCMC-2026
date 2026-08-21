@@ -88,13 +88,12 @@ export default function SubmissionPanel({ onClose }: Props) {
   }, [state?.answer]);
 
   async function handleCreate() {
-    const name = window.prompt("Session name (for your own reference only):")?.trim();
+    // The session name IS the exported filename (session.csv) — name it
+    // exactly what BTC's query file is called, e.g. "query-p1-11-kis" for
+    // their query-p1-11-kis.txt (see docs/SUBMISSION_RULES.md).
+    const name = window.prompt("Session name — must exactly match BTC's query filename (e.g. query-p1-11-kis):")?.trim();
     if (!name) return;
 
-    // The exported CSV's filename (query-{number}-{type}.csv) has to match
-    // exactly the query BTC handed out (e.g. their query-3-qa.txt), per
-    // the contest rules (docs/SUBMISSION_RULES.md) — not something this
-    // tool can pick for you.
     const typeRaw = window.prompt("Query type — kis, qa, or trake:", "kis")?.trim().toLowerCase();
     if (!typeRaw) return;
     if (!QUERY_TYPES.includes(typeRaw as SubmissionQueryType)) {
@@ -103,15 +102,8 @@ export default function SubmissionPanel({ onClose }: Props) {
     }
     const queryType = typeRaw as SubmissionQueryType;
 
-    const numberRaw = window.prompt("Query # — must match BTC's file, e.g. query-3-qa -> 3:")?.trim();
-    const queryNumber = Number.parseInt(numberRaw ?? "", 10);
-    if (!Number.isFinite(queryNumber) || queryNumber < 1) {
-      window.alert("Query # must be a positive integer.");
-      return;
-    }
-
     try {
-      await createSubmissionSession(name, queryType, queryNumber);
+      await createSubmissionSession(name, queryType);
       setSession(name);
       refreshSessions();
     } catch (err: any) {

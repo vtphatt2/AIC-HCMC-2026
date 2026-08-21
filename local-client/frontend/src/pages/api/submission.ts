@@ -205,6 +205,15 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
       }
       current.answer = req.body.answer;
     }
+  } else if (action === "rename") {
+    // The session name is now the exported filename itself, so renaming a
+    // session must move its backing file too, not just the in-memory field.
+    const newSession = typeof req.body?.newSession === "string" ? req.body.newSession.trim() : "";
+    if (!ID.test(newSession)) return res.status(400).json({ error: "Invalid session name" });
+    if (newSession !== session && existsSync(fileFor(newSession))) {
+      return res.status(409).json({ error: "A session with that name already exists" });
+    }
+    current.session = newSession;
   } else if (action === "newCandidate") {
     current.nextGroupIndex += 1;
   } else if (action === "reset") {
@@ -226,5 +235,6 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   current.revision += 1;
   current.updatedAt = Date.now();
   writeState(current);
+  if (current.session !== session) unlinkSync(fileFor(session));
   return res.status(200).json(current);
 }

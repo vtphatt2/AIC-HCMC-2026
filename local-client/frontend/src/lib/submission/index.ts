@@ -89,6 +89,12 @@ export function reorderSubmissionRows(session: string, rowOrder: string[]): Prom
   return postAction(session, { action: "reorderRows", rowOrder });
 }
 
+// The session name is the exported filename (session.csv) — this moves
+// the backing .runtime/submissions/*.json file too, not just a label.
+export function renameSubmissionSession(session: string, newSession: string): Promise<SubmissionState> {
+  return postAction(session, { action: "rename", newSession });
+}
+
 // No stored thumbnail — always decode fresh from videoId/frame/fps via the
 // same route VideoModal/ResultCard already use, so editing the frame number
 // (or moving it to a different candidate) never leaves a stale image
@@ -179,7 +185,11 @@ export function buildSubmissionCsv(state: SubmissionState): { filename: string; 
 
   const csvRows = rows.map(csvRow);
   return {
-    filename: `query-${state.queryNumber}-${state.queryType}.csv`,
+    // BTC's actual query filenames don't follow a plain query-{N}-{type}
+    // pattern (e.g. query-p1-11-kis.txt) — the session name IS the exact
+    // filename to match, so name the session exactly what BTC's file is
+    // called (minus extension) and this always matches.
+    filename: `${state.session}.csv`,
     rows: csvRows.length,
     content: csvRows.length ? `${csvRows.join("\r\n")}\r\n` : "",
   };
@@ -232,32 +242,15 @@ function dosDateTime(d: Date): { time: number; date: number } {
 
 export function buildSubmissionZip(states: SubmissionState[]): Blob | null {
   const enc = new TextEncoder();
-  const withEntries = states.filter((s) => s.entries.length > 0);
-
-  // The organizer's required filename (query-{number}-{type}.csv) doesn't
-  // include the session name, so two sessions left on the same
-  // queryType/queryNumber (e.g. both still the kis/1 default) would
-  // silently collide into one zip entry, dropping one session's rows from
-  // the submission with no error. Fail loudly instead of shipping that.
-  const sessionsByFilename = new Map<string, string[]>();
-  for (const s of withEntries) {
-    const { filename } = buildSubmissionCsv(s);
-    const sessions = sessionsByFilename.get(filename) ?? [];
-    sessions.push(s.session);
-    sessionsByFilename.set(filename, sessions);
-  }
-  const collisions = Array.from(sessionsByFilename.entries()).filter(([, sessions]) => sessions.length > 1);
-  if (collisions.length > 0) {
-    const detail = collisions.map(([filename, sessions]) => `${filename} <- ${sessions.join(", ")}`).join("; ");
-    throw new Error(
-      `These sessions share the same query type/number and would overwrite each other in the zip: ${detail}. Give each a distinct query number.`,
-    );
-  }
-
-  const files = withEntries.map((s) => {
-    const { filename, content } = buildSubmissionCsv(s);
-    return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
-  });
+  // Filenames come from the session name (see buildSubmissionCsv), and
+  // session names are already enforced unique at creation time (409 on
+  // duplicate), so two sessions can never collide on the same zip entry.
+  const files = states
+    .filter((s) => s.entries.length > 0)
+    .map((s) => {
+      const { filename, content } = buildSubmissionCsv(s);
+      return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
+    });
   if (files.length === 0) return null;
 
   const { time, date } = dosDateTime(new Date());
