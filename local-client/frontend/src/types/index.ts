@@ -87,31 +87,25 @@ export interface SearchResult {
 
 export type SubmissionQueryType = "kis" | "qa" | "trake";
 
-export interface SubmissionEntry {
-  id: string;
+// A row IS a CSV export row — kis/qa: one frame; trake: every frame of one
+// candidate, all from `videoId`. No id/fps/youtubeId here: nothing is stored
+// that the backend can recompute (fps, youtube_id) or that's implied by the
+// row's own position (rank = array order), so the on-disk file is the
+// literal export CSV, not a separate JSON model of it.
+export interface SubmissionRow {
   videoId: string;
-  frame: number;
-  // No stored thumbnail — always recomputed from videoId/frame/fps via
-  // /api/zip-frame (lib/submission's submissionEntryThumbUrl), so editing
-  // the frame number never leaves a stale image behind.
-  fps: number; // captured at add-time so a later dashboard view can reopen VideoModal
-  youtubeId?: string;
-  groupIndex: number; // TRAKE candidate grouping; always 0 for kis/qa
-  addedAt: number;
+  frames: number[];
+  answer?: string; // qa only
 }
 
 export interface SubmissionState {
   session: string;
-  revision: number;
   queryType: SubmissionQueryType;
-  queryNumber: number;
-  answer: string; // qa only
-  nextGroupIndex: number;
-  // Ranked row order for CSV export: entry.id per row for kis/qa, `g${groupIndex}`
-  // per candidate for trake. Server keeps this in sync (pages/api/submission.ts's
-  // syncRowOrder) — stale keys drop out, new ones append at the end.
-  rowOrder: string[];
-  entries: SubmissionEntry[];
+  // TRAKE only: row index "Add to submission" appends the next frame into.
+  // rows.length once "+ New candidate" has been pressed (nothing to append
+  // to yet — the next add starts a fresh row there).
+  draftRowIndex: number;
+  rows: SubmissionRow[];
   createdAt: number;
   updatedAt: number;
 }
@@ -119,8 +113,7 @@ export interface SubmissionState {
 export interface SubmissionSessionSummary {
   session: string;
   queryType: SubmissionQueryType;
-  queryNumber: number;
-  entryCount: number;
+  rowCount: number;
   createdAt: number;
   updatedAt: number;
 }

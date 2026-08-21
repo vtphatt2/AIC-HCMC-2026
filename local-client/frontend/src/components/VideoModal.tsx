@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, SubmissionState, TranscriptSegment } from "@/types";
 import { apiUrl, fetchTranscript } from "@/lib/api";
-import { addSubmissionEntry, fetchSubmission } from "@/lib/submission";
+import { addSubmissionRowFrame, fetchSubmission } from "@/lib/submission";
 import { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
 
 interface Props {
@@ -16,7 +16,7 @@ interface Props {
   // browser has picked in SubmissionPanel (localStorage), which may be a
   // different session entirely.
   overrideSession?: string;
-  overrideGroupIndex?: number;
+  overrideRowIndex?: number;
 }
 
 declare global {
@@ -35,7 +35,7 @@ export default function VideoModal({
   onToggleTranscript,
   onOpenSubmissionPanel,
   overrideSession,
-  overrideGroupIndex,
+  overrideRowIndex,
 }: Props) {
   const playerRef = useRef<any>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
@@ -104,15 +104,16 @@ export default function VideoModal({
     try {
       // The add response already IS the updated state — no need for a
       // second round trip just to re-fetch what we already have.
-      const updated = await addSubmissionEntry(session, result.video_id, currentFrame, fps, result.youtube_id, overrideGroupIndex);
+      const updated = await addSubmissionRowFrame(session, result.video_id, currentFrame, overrideRowIndex);
       setSessionInfo(updated);
       setAddStatus("added");
       setTimeout(() => setAddStatus("idle"), 1500);
-    } catch {
+    } catch (err: any) {
       setAddStatus("error");
+      window.alert(err.message || "Failed to add to submission");
       setTimeout(() => setAddStatus("idle"), 1500);
     }
-  }, [result.video_id, result.youtube_id, currentFrame, fps, onOpenSubmissionPanel, overrideSession, overrideGroupIndex]);
+  }, [result.video_id, currentFrame, onOpenSubmissionPanel, overrideSession, overrideRowIndex]);
 
   // New result (possibly a different video) — give the zip source a fresh
   // try and reset to the paused-on-frame-image state.
@@ -464,7 +465,7 @@ export default function VideoModal({
               {sessionInfo && (
                 <span className="text-xs text-stone-500 normal-case">
                   → {sessionInfo.session}
-                  {sessionInfo.queryType === "trake" && ` · candidate ${sessionInfo.nextGroupIndex + 1}`}
+                  {sessionInfo.queryType === "trake" && ` · candidate ${sessionInfo.draftRowIndex + 1}`}
                 </span>
               )}
               <button

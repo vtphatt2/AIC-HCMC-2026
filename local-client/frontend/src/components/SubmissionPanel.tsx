@@ -1,25 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
 import {
+  addSubmissionRow,
+  addSubmissionRowFrame,
   buildSubmissionCsv,
   createSubmissionSession,
   downloadCsv,
-  editSubmissionEntryFrame,
-  editSubmissionEntryGroup,
+  editRowFrame,
+  editRowVideoId,
   fetchSubmission,
   fetchSubmissionSessions,
-  newSubmissionCandidate,
-  orderedEntries,
-  removeSubmissionEntry,
-  reorderKeys,
+  moveItem,
+  newTrakeCandidate,
+  removeRow,
+  removeRowFrame,
   reorderSubmissionRows,
   resetSubmission,
-  submissionEntryThumbUrl,
-  setSubmissionMeta,
-  trakeCandidateSizeMismatch,
-  trakeCandidateVideoMismatch,
-  trakeGroupKey,
-  trakeSortedGroups,
+  rowThumbUrl,
+  setQueryType,
+  setRowAnswer,
+  trakeSizeMismatch,
+  useVideoInfo,
 } from "@/lib/submission";
 
 export const SUBMISSION_SESSION_KEY = "aic2026-submission-session";
@@ -32,24 +33,63 @@ const INPUT =
   "bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 text-sm text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
 const BTN =
   "font-retro text-xs uppercase tracking-wide border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition";
+const SMALL_INPUT =
+  "bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-1.5 py-0.5 text-sm font-mono text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
 
 const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
+
+// Local draft while typing, saved on blur — saving on every keystroke (the
+// pattern every other field used to follow) round-trips to the server
+// before React re-renders the controlled value, which stomps on an
+// in-progress Vietnamese IME composition — garbled/dropped characters and
+// visible lag.
+function DraftField({
+  value,
+  onSave,
+  placeholder,
+  className,
+  maxLength,
+  multiline,
+}: {
+  value: string;
+  onSave: (value: string) => void;
+  placeholder?: string;
+  className: string;
+  maxLength?: number;
+  multiline?: boolean;
+}) {
+  const [draft, setDraft] = useState(value);
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(value);
+  }, [value]);
+
+  const shared = {
+    className,
+    value: draft,
+    placeholder,
+    maxLength,
+    onFocus: () => { focused.current = true; },
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setDraft(e.target.value),
+    onBlur: (e: React.FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      focused.current = false;
+      if (e.target.value !== value) onSave(e.target.value);
+    },
+  };
+  return multiline ? <textarea {...shared} rows={2} /> : <input {...shared} />;
+}
 
 export default function SubmissionPanel({ onClose }: Props) {
   const [sessions, setSessions] = useState<SubmissionSessionSummary[]>([]);
   const [session, setSession] = useState<string>("");
   const [state, setState] = useState<SubmissionState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Local draft for the QA answer textarea: saving on every keystroke (the
-  // pattern every other field used to follow) round-trips to the server
-  // before React re-renders the controlled value, which stomps on an
-  // in-progress Vietnamese IME composition — garbled/dropped characters and
-  // visible lag. Typing only touches local state now; the 5s poll (below)
-  // must not clobber it while the field is focused.
-  const [answerDraft, setAnswerDraft] = useState("");
-  const answerFocused = useRef(false);
-  const [dragOverGroup, setDragOverGroup] = useState<number | null>(null);
-  const [dragOverEntry, setDragOverEntry] = useState<string | null>(null);
+  const [dragOverRow, setDragOverRow] = useState<number | null>(null);
+  const [newVideoId, setNewVideoId] = useState("");
+  const [newFrames, setNewFrames] = useState("");
+
+  const videoInfo = useVideoInfo(state?.rows.map((r) => r.videoId) ?? []);
 
   useEffect(() => {
     const saved = window.localStorage.getItem(SUBMISSION_SESSION_KEY);
@@ -83,10 +123,6 @@ export default function SubmissionPanel({ onClose }: Props) {
     return () => clearInterval(interval);
   }, [refreshState]);
 
-  useEffect(() => {
-    if (!answerFocused.current) setAnswerDraft(state?.answer ?? "");
-  }, [state?.answer]);
-
   async function handleCreate() {
     // The session name IS the exported filename (session.csv) — name it
     // exactly what BTC's query file is called, e.g. "query-p1-11-kis" for
@@ -112,64 +148,89 @@ export default function SubmissionPanel({ onClose }: Props) {
     }
   }
 
-  async function handleMeta(patch: Partial<Pick<SubmissionState, "queryType" | "queryNumber" | "answer">>) {
+  async function handleSetQueryType(qt: SubmissionQueryType) {
     if (!session) return;
-    setState(await setSubmissionMeta(session, patch));
+    setState(await setQueryType(session, qt));
   }
 
-  async function handleRemove(id: string) {
+  async function handleAddRow() {
+    if (!session || !state) return;
+    const videoId = newVideoId.trim();
+    if (!videoId) return;
+    const frames = newFrames
+      .split(",")
+      .map((s) => Number.parseInt(s.trim(), 10))
+      .filter((n) => Number.isFinite(n) && n >= 0);
+    if (frames.length === 0) return;
+    if (state.queryType !== "trake" && frames.length > 1) {
+      window.alert("kis/qa rows take exactly one frame.");
+      return;
+    }
+    try {
+      setState(await addSubmissionRow(session, videoId, frames));
+      setNewVideoId("");
+      setNewFrames("");
+    } catch (err: any) {
+      window.alert(err.message || "Failed to add row");
+    }
+  }
+
+  async function handleAddFrameToRow(rowIndex: number, videoId: string) {
     if (!session) return;
-    setState(await removeSubmissionEntry(session, id));
+    const raw = window.prompt("Add frame number to this candidate:");
+    if (!raw) return;
+    const frame = Number.parseInt(raw, 10);
+    if (!Number.isFinite(frame) || frame < 0) return;
+    try {
+      setState(await addSubmissionRowFrame(session, videoId, frame, rowIndex));
+    } catch (err: any) {
+      window.alert(err.message || "Failed to add frame");
+    }
+  }
+
+  async function handleEditVideoId(rowIndex: number, videoId: string) {
+    if (!session || !videoId.trim()) return;
+    try {
+      setState(await editRowVideoId(session, rowIndex, videoId.trim()));
+    } catch (err: any) {
+      window.alert(err.message || "Invalid video id");
+    }
+  }
+
+  async function handleEditFrame(rowIndex: number, frameIndex: number, raw: string) {
+    const frame = Number.parseInt(raw, 10);
+    if (!session || !Number.isFinite(frame) || frame < 0) return;
+    setState(await editRowFrame(session, rowIndex, frameIndex, frame));
+  }
+
+  async function handleRemoveFrame(rowIndex: number, frameIndex: number) {
+    if (!session) return;
+    setState(await removeRowFrame(session, rowIndex, frameIndex));
+  }
+
+  async function handleRemoveRow(rowIndex: number) {
+    if (!session) return;
+    setState(await removeRow(session, rowIndex));
+  }
+
+  async function handleSetAnswer(rowIndex: number, answer: string) {
+    if (!session) return;
+    setState(await setRowAnswer(session, rowIndex, answer));
   }
 
   async function handleNewCandidate() {
     if (!session) return;
-    setState(await newSubmissionCandidate(session));
+    setState(await newTrakeCandidate(session));
   }
 
-  async function handleMoveGroup(id: string, groupIndex: number) {
-    if (!session || !Number.isFinite(groupIndex) || groupIndex < 0) return;
-    setState(await editSubmissionEntryGroup(session, id, groupIndex));
-  }
-
-  async function handleEditFrame(id: string, raw: string) {
-    const frame = Number.parseInt(raw, 10);
-    if (!session || !Number.isFinite(frame) || frame < 0) return;
-    setState(await editSubmissionEntryFrame(session, id, frame));
-  }
-
-  async function handleReorderRows(rowOrder: string[]) {
-    if (!session) return;
-    setState(await reorderSubmissionRows(session, rowOrder));
-  }
-
-  // A candidate box is a drop target for two different drags — a frame card
-  // (reassigns its candidate, existing behavior) or another candidate's
-  // header (reorders the ranking) — told apart by dataTransfer type.
-  function handleCandidateDrop(e: React.DragEvent, targetGroupIndex: number) {
+  function handleRowDrop(e: React.DragEvent, targetIndex: number) {
     e.preventDefault();
-    setDragOverGroup(null);
-    if (!state) return;
-    if (e.dataTransfer.types.includes("application/x-candidate-key")) {
-      const draggedKey = e.dataTransfer.getData("application/x-candidate-key");
-      const targetKey = trakeGroupKey(targetGroupIndex);
-      if (draggedKey === targetKey) return;
-      const keys = trakeSortedGroups(state.entries, state.rowOrder).map((es) => trakeGroupKey(es[0].groupIndex));
-      handleReorderRows(reorderKeys(keys, draggedKey, targetKey));
-      return;
-    }
-    const frameId = e.dataTransfer.getData("application/x-frame-id");
-    if (frameId) handleMoveGroup(frameId, targetGroupIndex);
-  }
-
-  function handleEntryDrop(e: React.DragEvent, targetId: string) {
-    e.preventDefault();
-    setDragOverEntry(null);
-    if (!state) return;
-    const draggedId = e.dataTransfer.getData("application/x-entry-id");
-    if (!draggedId) return;
-    const ids = orderedEntries(state).map((entry) => entry.id);
-    handleReorderRows(reorderKeys(ids, draggedId, targetId));
+    setDragOverRow(null);
+    if (!session || !state) return;
+    const from = Number(e.dataTransfer.getData("application/x-row-index"));
+    if (!Number.isFinite(from) || from === targetIndex) return;
+    const order = state.rows.map((_, i) => i);
+    reorderSubmissionRows(session, moveItem(order, from, targetIndex)).then(setState);
   }
 
   async function handleReset() {
@@ -184,9 +245,7 @@ export default function SubmissionPanel({ onClose }: Props) {
     downloadCsv(filename, content);
   }
 
-  const groupCount = state ? new Set(state.entries.map((e) => e.groupIndex)).size : 0;
-  const sizeMismatch = state ? trakeCandidateSizeMismatch(state) : null;
-  const videoMismatch = state ? trakeCandidateVideoMismatch(state) : null;
+  const sizeMismatch = state ? trakeSizeMismatch(state) : null;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={onClose}>
@@ -224,7 +283,7 @@ export default function SubmissionPanel({ onClose }: Props) {
               <option value="">— Select a session —</option>
               {sessions.map((s) => (
                 <option key={s.session} value={s.session}>
-                  {s.session} ({s.queryType}, {s.entryCount})
+                  {s.session} ({s.queryType}, {s.rowCount})
                 </option>
               ))}
             </select>
@@ -235,184 +294,150 @@ export default function SubmissionPanel({ onClose }: Props) {
 
           {state && (
             <>
-              {/* Query type + number */}
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex border-2 border-stone-800 dark:border-stone-500 rounded overflow-hidden">
-                  {QUERY_TYPES.map((qt) => (
-                    <button
-                      key={qt}
-                      onClick={() => handleMeta({ queryType: qt })}
-                      className={`font-retro text-xs uppercase tracking-wide px-3 py-1.5 transition ${
-                        state.queryType === qt
-                          ? "bg-orange-600 text-white"
-                          : "bg-cream-card dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-orange-100 dark:hover:bg-stone-700"
-                      }`}
-                    >
-                      {qt.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-                <label className="flex items-center gap-1.5 text-sm text-stone-600 dark:text-stone-400">
-                  Query #
-                  <input
-                    type="number"
-                    min={1}
-                    className={`${INPUT} w-20`}
-                    value={state.queryNumber}
-                    onChange={(e) => handleMeta({ queryNumber: Number.parseInt(e.target.value, 10) || 1 })}
-                  />
-                </label>
+              {/* Query type */}
+              <div className="flex border-2 border-stone-800 dark:border-stone-500 rounded overflow-hidden w-fit">
+                {QUERY_TYPES.map((qt) => (
+                  <button
+                    key={qt}
+                    onClick={() => handleSetQueryType(qt)}
+                    className={`font-retro text-xs uppercase tracking-wide px-3 py-1.5 transition ${
+                      state.queryType === qt
+                        ? "bg-orange-600 text-white"
+                        : "bg-cream-card dark:bg-stone-800 text-stone-700 dark:text-stone-300 hover:bg-orange-100 dark:hover:bg-stone-700"
+                    }`}
+                  >
+                    {qt.toUpperCase()}
+                  </button>
+                ))}
               </div>
 
-              {state.queryType === "qa" && (
-                <div className="space-y-1">
-                  <textarea
-                    className={`${INPUT} w-full`}
-                    placeholder="Answer text (applied to every row on export)"
-                    value={answerDraft}
-                    maxLength={100}
-                    onFocus={() => { answerFocused.current = true; }}
-                    onChange={(e) => setAnswerDraft(e.target.value)}
-                    onBlur={(e) => {
-                      answerFocused.current = false;
-                      if (e.target.value !== state.answer) handleMeta({ answer: e.target.value });
-                    }}
-                    rows={2}
-                  />
-                  <p className="text-xs text-stone-500 text-right">{answerDraft.length}/100</p>
-                </div>
-              )}
+              {/* Manual add-row — type a video_id + frame(s) without going through search */}
+              <div className="flex items-center gap-2 flex-wrap border-2 border-dashed border-stone-400 dark:border-stone-600 rounded p-2">
+                <input
+                  className={`${SMALL_INPUT} w-32`}
+                  placeholder="video_id"
+                  value={newVideoId}
+                  onChange={(e) => setNewVideoId(e.target.value)}
+                />
+                <input
+                  className={`${SMALL_INPUT} w-32`}
+                  placeholder={state.queryType === "trake" ? "frame,frame,…" : "frame"}
+                  value={newFrames}
+                  onChange={(e) => setNewFrames(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddRow(); }}
+                />
+                <button className={BTN} onClick={handleAddRow}>+ Add row</button>
+              </div>
 
               {state.queryType === "trake" && (
                 <div className="space-y-1">
                   <p className="text-sm font-bold text-orange-700 dark:text-orange-400">
-                    ▸ Adding to candidate {state.nextGroupIndex + 1}
+                    ▸ Adding to candidate {state.draftRowIndex + 1}
                   </p>
-                  <div className="flex items-center gap-2">
-                    <button className={BTN} onClick={handleNewCandidate}>+ New candidate</button>
-                    <span className="text-xs text-stone-500">
-                      {groupCount} candidate{groupCount === 1 ? "" : "s"} total — "Add to submission" from the
-                      video modal appends to the one above.
-                    </span>
-                  </div>
+                  <button className={BTN} onClick={handleNewCandidate}>+ New candidate</button>
                   {sizeMismatch && (
                     <p className="text-xs text-red-600">
                       ⚠ Candidates have different frame counts ({sizeMismatch.join(", ")}) — organizer scoring
                       requires every candidate to match the query's event count exactly.
                     </p>
                   )}
-                  {videoMismatch && (
-                    <p className="text-xs text-red-600">
-                      ⚠ Candidate{videoMismatch.length === 1 ? "" : "s"} {videoMismatch.join(", ")} mix frames from
-                      different videos — every frame in a TRAKE candidate must come from the same video.
-                    </p>
-                  )}
                 </div>
               )}
 
-              {/* Entries */}
-              {state.entries.length === 0 && (
-                <p className="text-sm text-stone-500 italic">No frames added yet.</p>
+              {/* Rows */}
+              {state.rows.length === 0 && (
+                <p className="text-sm text-stone-500 italic">No rows added yet.</p>
               )}
 
-              {state.entries.length > 0 && state.queryType === "trake" && (
-                <div className="space-y-2">
-                  {trakeSortedGroups(state.entries, state.rowOrder).map((groupEntries) => {
-                    const gi = groupEntries[0].groupIndex;
+              {state.rows.length > 0 && (
+                <div className="space-y-1.5">
+                  {state.rows.map((row, i) => {
+                    const fps = videoInfo[row.videoId]?.fps ?? 25;
                     return (
                       <div
-                        key={gi}
-                        onDragOver={(e) => { e.preventDefault(); setDragOverGroup(gi); }}
-                        onDragLeave={() => setDragOverGroup((g) => (g === gi ? null : g))}
-                        onDrop={(e) => handleCandidateDrop(e, gi)}
-                        className={`border-2 rounded p-2 transition-colors ${
-                          dragOverGroup === gi
+                        key={i}
+                        draggable
+                        onDragStart={(e) => e.dataTransfer.setData("application/x-row-index", String(i))}
+                        onDragOver={(e) => { e.preventDefault(); setDragOverRow(i); }}
+                        onDragLeave={() => setDragOverRow((d) => (d === i ? null : d))}
+                        onDrop={(e) => handleRowDrop(e, i)}
+                        className={`border rounded p-2 space-y-1.5 cursor-grab active:cursor-grabbing transition-colors ${
+                          dragOverRow === i
                             ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30"
-                            : "border-stone-400 dark:border-stone-600"
+                            : "border-stone-300 dark:border-stone-700"
                         }`}
                       >
-                        <p
-                          draggable
-                          onDragStart={(e) => e.dataTransfer.setData("application/x-candidate-key", trakeGroupKey(gi))}
-                          className="text-xs font-bold uppercase text-stone-500 mb-1.5 cursor-grab active:cursor-grabbing w-fit"
-                          title="Drag to reorder this candidate's rank"
-                        >
-                          ⠿ Candidate {gi + 1} · {groupEntries.length} frame{groupEntries.length === 1 ? "" : "s"}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {groupEntries.map((entry) => (
-                            <div
-                              key={entry.id}
-                              draggable
-                              onDragStart={(e) => e.dataTransfer.setData("application/x-frame-id", entry.id)}
-                              className="flex flex-col items-center gap-1 w-28 border border-stone-300 dark:border-stone-700 rounded p-2 cursor-grab active:cursor-grabbing bg-cream dark:bg-stone-900"
+                        <div className="flex items-center gap-2">
+                          <span className="text-stone-400 select-none">⠿</span>
+                          <input
+                            key={row.videoId}
+                            defaultValue={row.videoId}
+                            className={`${SMALL_INPUT} w-32`}
+                            onBlur={(e) => handleEditVideoId(i, e.target.value)}
+                          />
+                          {state.queryType === "trake" && (
+                            <button
+                              className="text-xs text-stone-500 hover:text-orange-700 dark:hover:text-orange-400 transition"
+                              onClick={() => handleAddFrameToRow(i, row.videoId)}
                             >
-                              <img src={submissionEntryThumbUrl(entry)} alt="" className="w-24 h-14 object-cover rounded pointer-events-none" />
-                              <span className="text-xs font-mono text-stone-600 dark:text-stone-400 truncate max-w-full">{entry.videoId}</span>
+                              + frame
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleRemoveRow(i)}
+                            className="ml-auto text-stone-400 hover:text-red-600 transition"
+                            aria-label="Remove row"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 pl-6">
+                          {row.frames.map((frame, fi) => (
+                            <div key={fi} className="flex items-center gap-1 border border-stone-300 dark:border-stone-700 rounded p-1">
+                              <img src={rowThumbUrl(row.videoId, frame, fps)} alt="" className="w-14 h-8 object-cover rounded" />
                               <input
-                                key={entry.frame}
+                                key={frame}
                                 type="number"
                                 min={0}
-                                defaultValue={entry.frame}
-                                className={`${INPUT} w-full text-center py-1 px-1 text-sm`}
-                                onBlur={(e) => handleEditFrame(entry.id, e.target.value)}
+                                defaultValue={frame}
+                                className={`${SMALL_INPUT} w-16 text-center`}
+                                onBlur={(e) => handleEditFrame(i, fi, e.target.value)}
                                 onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                               />
-                              <button
-                                onClick={() => handleRemove(entry.id)}
-                                className="text-xs text-stone-400 hover:text-red-600 transition"
-                                aria-label="Remove"
-                              >
-                                ✕ remove
-                              </button>
+                              {row.frames.length > 1 && (
+                                <button
+                                  onClick={() => handleRemoveFrame(i, fi)}
+                                  className="text-stone-400 hover:text-red-600 transition text-xs"
+                                  aria-label="Remove frame"
+                                >
+                                  ✕
+                                </button>
+                              )}
                             </div>
                           ))}
                         </div>
+                        {state.queryType === "qa" && (
+                          <div className="pl-6 space-y-0.5">
+                            <DraftField
+                              value={row.answer ?? ""}
+                              onSave={(v) => handleSetAnswer(i, v)}
+                              placeholder="Answer for this candidate"
+                              className={`${INPUT} w-full`}
+                              maxLength={100}
+                              multiline
+                            />
+                            <p className="text-xs text-stone-500 text-right">{(row.answer ?? "").length}/100</p>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
-                  <p className="text-xs text-stone-500 italic">
-                    Drag a frame onto a different candidate box to move it; drag a candidate's ⠿ title to rank it.
-                  </p>
-                </div>
-              )}
-
-              {state.entries.length > 0 && state.queryType !== "trake" && (
-                <div className="space-y-1">
-                  {orderedEntries(state).map((entry) => (
-                    <div
-                      key={entry.id}
-                      draggable
-                      onDragStart={(e) => e.dataTransfer.setData("application/x-entry-id", entry.id)}
-                      onDragOver={(e) => { e.preventDefault(); setDragOverEntry(entry.id); }}
-                      onDragLeave={() => setDragOverEntry((id) => (id === entry.id ? null : id))}
-                      onDrop={(e) => handleEntryDrop(e, entry.id)}
-                      className={`flex items-center gap-2 border rounded px-2 py-1 cursor-grab active:cursor-grabbing transition-colors ${
-                        dragOverEntry === entry.id
-                          ? "border-orange-600 bg-orange-50 dark:bg-orange-950/30"
-                          : "border-stone-300 dark:border-stone-700"
-                      }`}
-                    >
-                      <span className="text-stone-400 select-none">⠿</span>
-                      <img src={submissionEntryThumbUrl(entry)} alt="" className="w-14 h-8 object-cover rounded shrink-0" />
-                      <span className="text-sm font-mono text-stone-800 dark:text-stone-200 truncate">
-                        {entry.videoId} · frame {entry.frame}
-                      </span>
-                      <button
-                        onClick={() => handleRemove(entry.id)}
-                        className="ml-auto text-stone-400 hover:text-red-600 transition"
-                        aria-label="Remove"
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
                   <p className="text-xs text-stone-500 italic">Drag a row to rank it — export order matches this list.</p>
                 </div>
               )}
 
               <p className="text-xs text-stone-500">
-                {state.entries.length} row candidate{state.entries.length === 1 ? "" : "s"} added (organizer cap: 100 rows/query).
+                {state.rows.length} row{state.rows.length === 1 ? "" : "s"} (organizer cap: 100 rows/query).
               </p>
             </>
           )}

@@ -219,6 +219,34 @@ async def get_transcript(video_id: str):
     }
 
 
+@app.get("/api/video/{video_id}")
+async def get_video_info(video_id: str):
+    """Look up one video by its exact video_id — for jumping straight to a
+    video (e.g. found via transcript grep) without going through a search
+    box. Returns the fields VideoModal needs (fps, youtube_id, an initial
+    frame/timestamp) built from whatever indexed keyframe comes first."""
+    from app.db import numpy_vector_store
+
+    if not numpy_vector_store.available():
+        raise HTTPException(503, "Video lookup needs ZIP mode with exported vectors (numpy_vector_store).")
+
+    frames = numpy_vector_store.frames_in_range(video_id, 0, 10**12, limit=1)
+    if not frames:
+        raise HTTPException(404, f"No indexed frames found for video_id={video_id}")
+    frame = frames[0]
+
+    from app.services.zip_frame_source import ingest_fps
+
+    return {
+        "video_id": video_id,
+        "youtube_id": frame["youtube_id"] or None,
+        "frame_id": frame["frame_id"],
+        "frame_number": frame["frame_number"],
+        "timestamp_ms": frame["timestamp_ms"],
+        "fps": ingest_fps(video_id) or 25.0,
+    }
+
+
 @app.get("/api/zip-video/{video_id}")
 async def zip_video(video_id: str, request: Request):
     """Proxy video playback straight from the organizer's remote ZIP archive:

@@ -1,13 +1,6 @@
-import type { SearchResult, SubmissionEntry, SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
-import { apiUrl } from "@/lib/api";
-import { sortByRowOrder } from "./types";
-
-export { reorderKeys } from "./types";
-import * as kis from "./kis";
-import * as qa from "./qa";
-import * as trake from "./trake";
-
-export { groupKey as trakeGroupKey } from "./trake";
+import { useEffect, useState } from "react";
+import type { SearchResult, SubmissionQueryType, SubmissionRow, SubmissionSessionSummary, SubmissionState } from "@/types";
+import { apiUrl, fetchVideoById } from "@/lib/api";
 
 // Talks to pages/api/submission.ts — a same-origin Next.js route, NOT the
 // FastAPI backend, so these calls deliberately do not go through apiUrl().
@@ -30,12 +23,11 @@ export async function fetchSubmissionSessions(): Promise<SubmissionSessionSummar
 export async function createSubmissionSession(
   session: string,
   queryType: SubmissionQueryType = "kis",
-  queryNumber: number = 1,
 ): Promise<SubmissionState> {
   const res = await fetch("/api/submission", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action: "create", session, queryType, queryNumber }),
+    body: JSON.stringify({ action: "create", session, queryType }),
   });
   if (!res.ok) return parseError(res, "Failed to create submission session");
   return res.json();
@@ -62,74 +54,55 @@ async function postAction(session: string, body: Record<string, unknown>): Promi
   return res.json();
 }
 
-export function addSubmissionEntry(
+// Quick-add from VideoModal. rowIndex targets a specific existing TRAKE
+// candidate (reviewing it from the dashboard); omitted, it lands wherever
+// the session's own draftRowIndex points.
+export function addSubmissionRowFrame(
   session: string,
   videoId: string,
   frame: number,
-  fps?: number,
-  youtubeId?: string,
-  groupIndex?: number,
+  rowIndex?: number,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "add", videoId, frame, fps, youtubeId, groupIndex });
+  return postAction(session, { action: "add", videoId, frame, rowIndex });
 }
 
-export function editSubmissionEntryFrame(session: string, id: string, frame: number): Promise<SubmissionState> {
-  return postAction(session, { action: "editFrame", id, frame });
-}
-
-export function editSubmissionEntryGroup(session: string, id: string, groupIndex: number): Promise<SubmissionState> {
-  return postAction(session, { action: "editGroup", id, groupIndex });
-}
-
-export function removeSubmissionEntry(session: string, id: string): Promise<SubmissionState> {
-  return postAction(session, { action: "remove", id });
-}
-
-export function reorderSubmissionRows(session: string, rowOrder: string[]): Promise<SubmissionState> {
-  return postAction(session, { action: "reorderRows", rowOrder });
-}
-
-// The session name is the exported filename (session.csv) — this moves
-// the backing .runtime/submissions/*.json file too, not just a label.
-export function renameSubmissionSession(session: string, newSession: string): Promise<SubmissionState> {
-  return postAction(session, { action: "rename", newSession });
-}
-
-// No stored thumbnail — always decode fresh from videoId/frame/fps via the
-// same route VideoModal/ResultCard already use, so editing the frame number
-// (or moving it to a different candidate) never leaves a stale image
-// behind. `|| 25` only covers entries added before fps was captured.
-export function submissionEntryThumbUrl(entry: SubmissionEntry): string {
-  const fps = entry.fps || 25;
-  const timestampMs = Math.round((entry.frame / fps) * 1000);
-  return apiUrl(`/api/zip-frame/${encodeURIComponent(entry.videoId)}/${timestampMs}`);
-}
-
-// Reconstructs the SearchResult shape VideoModal needs from a stored
-// submission entry, so the dashboard can reopen the same modal the search
-// grid uses.
-export function submissionEntryToSearchResult(entry: SubmissionEntry): SearchResult {
-  const fps = entry.fps || 25;
-  return {
-    video_id: entry.videoId,
-    youtube_id: entry.youtubeId,
-    frame_id: entry.id,
-    frame_number: entry.frame,
-    timestamp_ms: (entry.frame / fps) * 1000,
-    confidence: 1,
-    frame_image_url: submissionEntryThumbUrl(entry),
-    fps,
-  };
-}
-
-export function setSubmissionMeta(
+// Manual add: type a video_id + frame(s) directly, no search needed.
+export function addSubmissionRow(
   session: string,
-  patch: Partial<Pick<SubmissionState, "queryType" | "queryNumber" | "answer">>,
+  videoId: string,
+  frames: number[],
+  answer?: string,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "setMeta", ...patch });
+  return postAction(session, { action: "addRow", videoId, frames, answer });
 }
 
-export function newSubmissionCandidate(session: string): Promise<SubmissionState> {
+export function editRowVideoId(session: string, rowIndex: number, videoId: string): Promise<SubmissionState> {
+  return postAction(session, { action: "editVideoId", rowIndex, videoId });
+}
+
+export function editRowFrame(session: string, rowIndex: number, frameIndex: number, frame: number): Promise<SubmissionState> {
+  return postAction(session, { action: "editFrame", rowIndex, frameIndex, frame });
+}
+
+export function removeRowFrame(session: string, rowIndex: number, frameIndex: number): Promise<SubmissionState> {
+  return postAction(session, { action: "removeFrame", rowIndex, frameIndex });
+}
+
+export function removeRow(session: string, rowIndex: number): Promise<SubmissionState> {
+  return postAction(session, { action: "removeRow", rowIndex });
+}
+
+// Per-row QA answer — every candidate gets its own answer text, not one
+// answer shared across the whole session.
+export function setRowAnswer(session: string, rowIndex: number, answer: string): Promise<SubmissionState> {
+  return postAction(session, { action: "setAnswer", rowIndex, answer });
+}
+
+export function setQueryType(session: string, queryType: SubmissionQueryType): Promise<SubmissionState> {
+  return postAction(session, { action: "setQueryType", queryType });
+}
+
+export function newTrakeCandidate(session: string): Promise<SubmissionState> {
   return postAction(session, { action: "newCandidate" });
 }
 
@@ -137,51 +110,120 @@ export function resetSubmission(session: string): Promise<SubmissionState> {
   return postAction(session, { action: "reset" });
 }
 
-// ── Per-type dispatch ───────────────────────────────────────────────────────
+// order[i] = the current-array index that should land at position i — the
+// same shape Array.prototype.map(( _, i) => order[i]) consumes, so callers
+// building it from a drag-and-drop move just splice indices, not row data.
+export function reorderSubmissionRows(session: string, order: number[]): Promise<SubmissionState> {
+  return postAction(session, { action: "reorderRows", order });
+}
 
-// Organizer rule: every TRAKE candidate must have frames from one video
-// only. `null` when there's nothing to warn about.
-export function trakeCandidateVideoMismatch(state: SubmissionState): number[] | null {
-  if (state.queryType !== "trake") return null;
-  const { videoMismatch } = trake.validate(state.entries);
-  return videoMismatch.length ? videoMismatch : null;
+// Raw CSV textarea save — replaces every row at once. Throws with a
+// line-numbered message (from the server's parser) on malformed input, so
+// the editor can show it without discarding what the user typed.
+export function replaceSubmissionCsv(session: string, content: string): Promise<SubmissionState> {
+  return postAction(session, { action: "replaceRaw", content });
+}
+
+// The session name is the exported filename (session.csv) — this moves
+// the backing .runtime/submissions/*.csv/.meta.json files too, not just a label.
+export function renameSubmissionSession(session: string, newSession: string): Promise<SubmissionState> {
+  return postAction(session, { action: "rename", newSession });
+}
+
+// Move an item within an array — the primitive behind drag-and-drop row
+// reordering (source/target are positions in the *displayed* order).
+export function moveItem<T>(items: T[], from: number, to: number): T[] {
+  const copy = [...items];
+  const [moved] = copy.splice(from, 1);
+  copy.splice(to, 0, moved);
+  return copy;
+}
+
+// ── Video info cache ────────────────────────────────────────────────────
+// Rows don't store fps/youtube_id — nothing here is knowledge the row itself
+// carries, it's a property of the video, recomputable via the same
+// /api/video/{id} lookup the "jump to video" feature uses. Cached in memory
+// (per videoId, across the whole session) since a row's thumbnail and
+// several other rows of the same video all want the same answer.
+const videoInfoCache = new Map<string, Promise<{ fps: number; youtubeId?: string }>>();
+
+export function getVideoInfo(videoId: string): Promise<{ fps: number; youtubeId?: string }> {
+  let cached = videoInfoCache.get(videoId);
+  if (!cached) {
+    cached = fetchVideoById(videoId)
+      .then((r) => ({ fps: r.fps, youtubeId: r.youtube_id }))
+      .catch(() => ({ fps: 25, youtubeId: undefined }));
+    videoInfoCache.set(videoId, cached);
+  }
+  return cached;
+}
+
+// One fetch per distinct videoId across however many rows reference it —
+// getVideoInfo's own cache absorbs repeat calls across renders/components,
+// this just turns "the set of videos currently shown" into React state.
+export function useVideoInfo(videoIds: string[]): Record<string, { fps: number; youtubeId?: string }> {
+  const [info, setInfo] = useState<Record<string, { fps: number; youtubeId?: string }>>({});
+  const key = Array.from(new Set(videoIds)).sort().join(",");
+  useEffect(() => {
+    if (!key) return;
+    let cancelled = false;
+    Promise.all(key.split(",").map((id) => getVideoInfo(id).then((v) => [id, v] as const))).then((pairs) => {
+      if (cancelled) return;
+      setInfo((prev) => ({ ...prev, ...Object.fromEntries(pairs) }));
+    });
+    return () => { cancelled = true; };
+  }, [key]);
+  return info;
+}
+
+export function rowThumbUrl(videoId: string, frame: number, fps: number): string {
+  const timestampMs = Math.round((frame / (fps || 25)) * 1000);
+  return apiUrl(`/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`);
+}
+
+// Reconstructs the SearchResult shape VideoModal needs, so the dashboard can
+// reopen the same modal the search grid uses.
+export function rowFrameToSearchResult(
+  videoId: string,
+  frame: number,
+  fps: number,
+  youtubeId?: string,
+): SearchResult {
+  return {
+    video_id: videoId,
+    youtube_id: youtubeId,
+    frame_id: `${videoId}_${String(frame).padStart(6, "0")}`,
+    frame_number: frame,
+    timestamp_ms: (frame / (fps || 25)) * 1000,
+    confidence: 1,
+    frame_image_url: rowThumbUrl(videoId, frame, fps),
+    fps: fps || 25,
+  };
 }
 
 // Organizer rule: every TRAKE candidate must have the same number of frames
-// (matching the query's event count). `null` when consistent.
-export function trakeCandidateSizeMismatch(state: SubmissionState): number[] | null {
+// (matching the query's event count). The "frames from one video" rule is
+// impossible to violate now — a row has exactly one videoId, not one per
+// frame — so there's nothing left to check for that. `null` when consistent.
+export function trakeSizeMismatch(state: SubmissionState): number[] | null {
   if (state.queryType !== "trake") return null;
-  const { sizeMismatch } = trake.validate(state.entries);
-  return sizeMismatch.length ? sizeMismatch : null;
-}
-
-// Entries grouped by candidate, frames ascending within each, candidates in
-// rowOrder — same order the CSV export uses, for UI display.
-export function trakeSortedGroups(entries: SubmissionEntry[], rowOrder: string[]): SubmissionEntry[][] {
-  return trake.sortedGroups(entries, rowOrder);
-}
-
-// KIS/QA's flat-list equivalent: entries in rowOrder, for UI display.
-export function orderedEntries(state: SubmissionState): SubmissionEntry[] {
-  return sortByRowOrder(state.entries, state.rowOrder, (e) => e.id);
+  const sizes = new Set(state.rows.map((r) => r.frames.length));
+  return sizes.size > 1 ? Array.from(sizes).sort((a, b) => a - b) : null;
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────
 // No auto-quoting — fields are written exactly as typed. Quoting a QA
 // answer (e.g. one containing a comma) is the user's own call to make in
-// the answer text itself, not something this tool infers.
-
-function csvRow(fields: (string | number)[]): string {
-  return fields.join(",");
+// the answer text itself, not something this tool infers. This is also
+// exactly the on-disk row format (see pages/api/submission.ts's
+// serializeRow) — the export IS the stored file, not a derived view of it.
+function csvRow(state: SubmissionState, row: SubmissionRow): string {
+  if (state.queryType === "qa") return [row.videoId, row.frames[0], row.answer ?? ""].join(",");
+  return [row.videoId, ...row.frames].join(",");
 }
 
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
-  const rows =
-    state.queryType === "trake" ? trake.buildRows(trake.toGroups(state.entries, state.rowOrder)) :
-    state.queryType === "qa" ? qa.buildRows(qa.toGroups(state.entries, state.rowOrder), state.answer) :
-    kis.buildRows(kis.toGroups(state.entries, state.rowOrder));
-
-  const csvRows = rows.map(csvRow);
+  const csvRows = state.rows.map((r) => csvRow(state, r));
   return {
     // BTC's actual query filenames don't follow a plain query-{N}-{type}
     // pattern (e.g. query-p1-11-kis.txt) — the session name IS the exact
@@ -244,7 +286,7 @@ export function buildSubmissionZip(states: SubmissionState[]): Blob | null {
   // session names are already enforced unique at creation time (409 on
   // duplicate), so two sessions can never collide on the same zip entry.
   const files = states
-    .filter((s) => s.entries.length > 0)
+    .filter((s) => s.rows.length > 0)
     .map((s) => {
       const { filename, content } = buildSubmissionCsv(s);
       return { name: enc.encode(`submission/${filename}`), data: enc.encode(content) };
@@ -299,6 +341,10 @@ export function downloadSubmissionZip(states: SubmissionState[], zipName: string
 }
 
 if (process.env.NODE_ENV !== "production") {
-  console.assert(csvRow(["plain", 1]) === "plain,1", "csvRow: no auto-quoting");
-  console.assert(csvRow(['"a,b"']) === '"a,b"', "csvRow: pre-quoted values pass through untouched");
+  const kis: SubmissionState = { session: "s", queryType: "kis", draftRowIndex: 0, rows: [], createdAt: 0, updatedAt: 0 };
+  console.assert(csvRow(kis, { videoId: "L01_V001", frames: [42] }) === "L01_V001,42", "csvRow: kis, no auto-quoting");
+  const qa: SubmissionState = { ...kis, queryType: "qa" };
+  console.assert(csvRow(qa, { videoId: "L01_V001", frames: [42], answer: 'a,"b"' }) === 'L01_V001,42,a,"b"', "csvRow: qa, pre-quoted values pass through untouched");
+  const trake: SubmissionState = { ...kis, queryType: "trake" };
+  console.assert(csvRow(trake, { videoId: "L01_V001", frames: [1, 2, 3] }) === "L01_V001,1,2,3", "csvRow: trake, multi-frame");
 }

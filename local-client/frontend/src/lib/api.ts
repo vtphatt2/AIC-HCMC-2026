@@ -2,6 +2,7 @@ import type {
   Strategy,
   QueryGroup,
   SearchResponse,
+  SearchResult,
   StrategyConfigDraft,
   StrategyConfigResponse,
   StrategyConfigValue,
@@ -160,4 +161,27 @@ export async function fetchTranscript(videoId: string): Promise<TranscriptRespon
     throw new Error(errorData.detail || "Failed to fetch transcript");
   }
   return res.json();
+}
+
+// Jump straight to a video by its exact video_id (e.g. one found via
+// transcript grep) instead of going through a search box — opens the same
+// VideoModal a search hit would, seeded from whatever indexed keyframe the
+// backend picks as the video's first one.
+export async function fetchVideoById(videoId: string): Promise<SearchResult> {
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}`));
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to look up video");
+  }
+  const info = await res.json();
+  return {
+    video_id: info.video_id,
+    youtube_id: info.youtube_id ?? undefined,
+    frame_id: info.frame_id,
+    frame_number: info.frame_number,
+    timestamp_ms: info.timestamp_ms,
+    confidence: 1,
+    frame_image_url: apiUrl(`/api/zip-frame/${info.video_id}/${info.timestamp_ms}`),
+    fps: info.fps,
+  };
 }
