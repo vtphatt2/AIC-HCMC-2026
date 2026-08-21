@@ -1,5 +1,5 @@
 import Head from "next/head";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { SearchResult, SubmissionEntry, SubmissionSessionSummary, SubmissionState } from "@/types";
 import {
@@ -16,6 +16,7 @@ import {
   removeSubmissionEntry,
   reorderKeys,
   reorderSubmissionRows,
+  setSubmissionMeta,
   submissionEntryThumbUrl,
   submissionEntryToSearchResult,
   trakeCandidateSizeMismatch,
@@ -31,6 +32,39 @@ const DANGER_BTN =
   "font-retro text-xs uppercase tracking-wide border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 hover:bg-red-600 hover:text-white hover:border-red-600 transition";
 const FRAME_INPUT =
   "w-20 bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-1.5 py-0.5 text-sm font-mono text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
+const ANSWER_INPUT =
+  "w-full bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 text-sm text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
+
+// Local draft while typing, saved on blur — see SubmissionPanel.tsx for why
+// (saving on every keystroke round-trips to the server before React
+// re-renders the controlled value, which breaks Vietnamese IME composition).
+function QaAnswerField({ answer, onSave }: { answer: string; onSave: (value: string) => void }) {
+  const [draft, setDraft] = useState(answer);
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(answer);
+  }, [answer]);
+
+  return (
+    <div className="space-y-1">
+      <textarea
+        className={ANSWER_INPUT}
+        placeholder="Answer text (applied to every row on export)"
+        value={draft}
+        maxLength={100}
+        rows={2}
+        onFocus={() => { focused.current = true; }}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={(e) => {
+          focused.current = false;
+          if (e.target.value !== answer) onSave(e.target.value);
+        }}
+      />
+      <p className="text-xs text-stone-500 text-right">{draft.length}/100</p>
+    </div>
+  );
+}
 
 export default function SubmissionsDashboard() {
   const [sessions, setSessions] = useState<SubmissionSessionSummary[]>([]);
@@ -93,6 +127,11 @@ export default function SubmissionsDashboard() {
       if (err.status === 409) window.alert("That session name is already taken — pick another.");
       else window.alert(err.message || "Failed to create session");
     }
+  }
+
+  async function handleSetAnswer(session: string, answer: string) {
+    const updated = await setSubmissionMeta(session, { answer });
+    setStates((prev) => ({ ...prev, [session]: updated }));
   }
 
   async function handleDeleteSession(session: string) {
@@ -210,8 +249,11 @@ export default function SubmissionsDashboard() {
                   </div>
                 </div>
 
-                {state.queryType === "qa" && state.answer && (
-                  <p className="text-sm text-stone-600 dark:text-stone-300">Answer: {state.answer}</p>
+                {state.queryType === "qa" && (
+                  <QaAnswerField
+                    answer={state.answer}
+                    onSave={(answer) => handleSetAnswer(summary.session, answer)}
+                  />
                 )}
 
                 {state.queryType === "trake" && (

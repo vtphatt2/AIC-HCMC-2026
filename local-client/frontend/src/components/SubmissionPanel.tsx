@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
 import {
   buildSubmissionCsv,
@@ -40,6 +40,14 @@ export default function SubmissionPanel({ onClose }: Props) {
   const [session, setSession] = useState<string>("");
   const [state, setState] = useState<SubmissionState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Local draft for the QA answer textarea: saving on every keystroke (the
+  // pattern every other field used to follow) round-trips to the server
+  // before React re-renders the controlled value, which stomps on an
+  // in-progress Vietnamese IME composition — garbled/dropped characters and
+  // visible lag. Typing only touches local state now; the 5s poll (below)
+  // must not clobber it while the field is focused.
+  const [answerDraft, setAnswerDraft] = useState("");
+  const answerFocused = useRef(false);
   const [dragOverGroup, setDragOverGroup] = useState<number | null>(null);
   const [dragOverEntry, setDragOverEntry] = useState<string | null>(null);
 
@@ -74,6 +82,10 @@ export default function SubmissionPanel({ onClose }: Props) {
     const interval = setInterval(refreshState, 5000);
     return () => clearInterval(interval);
   }, [refreshState]);
+
+  useEffect(() => {
+    if (!answerFocused.current) setAnswerDraft(state?.answer ?? "");
+  }, [state?.answer]);
 
   async function handleCreate() {
     const name = window.prompt("Session name (e.g. query-3-kis):")?.trim();
@@ -245,12 +257,17 @@ export default function SubmissionPanel({ onClose }: Props) {
                   <textarea
                     className={`${INPUT} w-full`}
                     placeholder="Answer text (applied to every row on export)"
-                    value={state.answer}
+                    value={answerDraft}
                     maxLength={100}
-                    onChange={(e) => handleMeta({ answer: e.target.value })}
+                    onFocus={() => { answerFocused.current = true; }}
+                    onChange={(e) => setAnswerDraft(e.target.value)}
+                    onBlur={(e) => {
+                      answerFocused.current = false;
+                      if (e.target.value !== state.answer) handleMeta({ answer: e.target.value });
+                    }}
                     rows={2}
                   />
-                  <p className="text-xs text-stone-500 text-right">{state.answer.length}/100</p>
+                  <p className="text-xs text-stone-500 text-right">{answerDraft.length}/100</p>
                 </div>
               )}
 
