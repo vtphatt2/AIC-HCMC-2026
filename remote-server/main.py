@@ -272,6 +272,48 @@ async def get_transcript(video_id: str):
     return payload
 
 
+@app.get("/api/video/{video_id}")
+async def get_video_info(video_id: str):
+    """Look up one video by its exact video_id — for jumping straight to it
+    (e.g. found via transcript search) without a search box, and for the
+    submission dashboard's fps/youtube_id lookup (lib/submission's
+    getVideoInfo). Mirrors local-backend/main.py's endpoint of the same
+    name and response shape; the source here is PostgreSQL's `videos` table
+    (fps/youtube_id) plus Milvus (a seed frame), not numpy_vector_store.
+
+    Was missing entirely on this backend until now — every call 404'd, and
+    the frontend's getVideoInfo() silently caught that into a hardcoded
+    {fps: 25, youtubeId: undefined} fallback, which is what sent videos
+    through the zip-video stream instead of YouTube and showed a wrong fps
+    even for a video with a real YouTube embed (e.g. L21_V023, actually 30
+    fps, DB default 25.0)."""
+    rows = await postgres_client.fetch_video_metadata([video_id])
+    if not rows:
+        raise HTTPException(404, f"No metadata found for video_id={video_id}")
+    video = rows[0]
+
+    frame_id, frame_number, timestamp_ms = None, 0, 0
+    try:
+        collection = milvus_client.get_collection()
+        frames = milvus_client.query_frames_in_time_range(collection, video_id, 0, 10**12, limit=1)
+        if frames:
+            frame = frames[0]
+            frame_id = frame["frame_id"]
+            frame_number = frame["frame_number"]
+            timestamp_ms = frame["timestamp_ms"]
+    except Exception:
+        logger.warning("get_video_info: Milvus frame lookup failed for %s", video_id, exc_info=True)
+
+    return {
+        "video_id": video_id,
+        "youtube_id": video.get("youtube_id") or None,
+        "frame_id": frame_id,
+        "frame_number": frame_number,
+        "timestamp_ms": timestamp_ms,
+        "fps": float(video.get("fps") or 25.0),
+    }
+
+
 @app.get("/api/zip-video/{video_id}")
 async def zip_video(video_id: str, request: Request):
     """Stream playback from a local `Videos_L*.zip` in raw_zip_videos/, translating the
