@@ -21,7 +21,7 @@ from bisect import bisect_right
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from app.data_provider import sample_subdir
+from app.data_provider import data_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,23 @@ class Transcript:
 
         return cls(vid, segments)
 
+    @classmethod
+    def from_jsonl(cls, path: Path, video_id: str | None = None) -> "Transcript":
+        """Parses the pre-processed `{"start_time_ms", "end_time_ms", "text"}`
+        JSONL format (see remote-server/app/services/transcript_jsonl_reader.py,
+        which reads the same challenge_resources/data/transcripts output)."""
+        vid = video_id or path.stem
+        segments: list[TranscriptSegment] = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            seg = json.loads(line)
+            segments.append(TranscriptSegment(
+                start_ms=seg["start_time_ms"], end_ms=seg["end_time_ms"], text=seg["text"],
+            ))
+        return cls(vid, segments)
+
     # ── Serialization ────────────────────────────────────────────────────
     def to_json(self) -> dict:
         return {"video_id": self.video_id, "segments": [s.to_dict() for s in self.segments]}
@@ -185,22 +202,31 @@ class Transcript:
 
 
 def load_or_build_transcript(video_id: str) -> Transcript | None:
-    """Loads the cached JSON if present and newer than the source .txt,
-    otherwise parses the .txt and writes the cache. Returns None if no
-    transcript .txt exists for this video_id."""
-    txt_path = sample_subdir("transcripts") / f"{video_id}_Transcript.txt"
-    if not txt_path.is_file():
+    """Loads the cached JSON if present and newer than the source file,
+    otherwise parses the source and writes the cache. Prefers the
+    pre-processed `{video_id}.jsonl` (current challenge_resources/data/transcripts
+    format); falls back to the older `{video_id}_Transcript.txt` format.
+    Returns None if neither exists for this video_id."""
+    transcripts_dir = data_subdir("transcripts")
+    jsonl_path = transcripts_dir / f"{video_id}.jsonl"
+    txt_path = transcripts_dir / f"{video_id}_Transcript.txt"
+
+    if jsonl_path.is_file():
+        source_path, parse = jsonl_path, Transcript.from_jsonl
+    elif txt_path.is_file():
+        source_path, parse = txt_path, Transcript.from_txt
+    else:
         return None
 
-    cache_path = sample_subdir("transcripts_processed") / f"{video_id}.json"
-    if cache_path.is_file() and cache_path.stat().st_mtime >= txt_path.stat().st_mtime:
+    cache_path = data_subdir("transcripts_processed") / f"{video_id}.json"
+    if cache_path.is_file() and cache_path.stat().st_mtime >= source_path.stat().st_mtime:
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             return Transcript.from_json(data)
         except Exception:
             logger.warning("Failed to load transcript cache for %s, rebuilding", video_id, exc_info=True)
 
-    transcript = Transcript.from_txt(txt_path, video_id=video_id)
+    transcript = parse(source_path, video_id=video_id)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(json.dumps(transcript.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
     return transcript
