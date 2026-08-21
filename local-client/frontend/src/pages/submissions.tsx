@@ -19,6 +19,7 @@ import {
   editRowVideoId,
   fetchSubmission,
   fetchSubmissionSessions,
+  getVideoInfo,
   moveItem,
   newTrakeCandidate,
   removeRow,
@@ -142,9 +143,17 @@ export default function SubmissionsDashboard() {
 
   const videoInfo = useVideoInfo(Object.values(states).flatMap((s) => s.rows.map((r) => r.videoId)));
 
-  function openEntry(session: string, rowIndex: number, videoId: string, frame: number) {
-    const fps = videoInfo[videoId]?.fps ?? 25;
-    setActiveResult(rowFrameToSearchResult(videoId, frame, fps, videoInfo[videoId]?.youtubeId));
+  // Awaits getVideoInfo directly rather than reading the videoInfo state —
+  // that state is populated by useVideoInfo's background prefetch below, and
+  // a click landing before that fetch resolves would otherwise snapshot a
+  // wrong/missing fps and youtubeId into the SearchResult VideoModal opens
+  // with (a static object — it never re-reads videoInfo once set), forcing
+  // the zip-video fallback and a wrong frame counter even for a video with a
+  // real YouTube embed. getVideoInfo's own cache makes this instant once
+  // useVideoInfo has already warmed it, which is the common case.
+  async function openEntry(session: string, rowIndex: number, videoId: string, frame: number) {
+    const info = await getVideoInfo(videoId);
+    setActiveResult(rowFrameToSearchResult(videoId, frame, info.fps, info.youtubeId));
     setActiveContext({ session, rowIndex });
   }
 
