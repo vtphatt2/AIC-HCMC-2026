@@ -285,6 +285,11 @@ export default function SubmissionsDashboard() {
               <button className={BTN} onClick={() => setSortByName((v) => !v)}>
                 Sort: {sortByName ? "Name A-Z" : "Created"}
               </button>
+              <span className="text-xs text-stone-500 dark:text-stone-400">
+                Showing {visibleSessions.length} of {sessions.length} session{sessions.length === 1 ? "" : "s"}
+                {" — "}
+                {QUERY_TYPES.map((t) => `${t}: ${sessions.filter((s) => s.queryType === t).length}`).join(" · ")}
+              </span>
             </div>
           )}
 
