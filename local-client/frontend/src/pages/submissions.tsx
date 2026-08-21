@@ -80,6 +80,7 @@ export default function SubmissionsDashboard() {
   const [states, setStates] = useState<Record<string, SubmissionState>>({});
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [activeContext, setActiveContext] = useState<{ session: string; groupIndex: number } | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
   const [dragOver, setDragOver] = useState<{ session: string; group: number } | null>(null);
   const [dragOverEntry, setDragOverEntry] = useState<string | null>(null);
 
@@ -435,8 +436,8 @@ export default function SubmissionsDashboard() {
         <VideoModal
           result={activeResult}
           onClose={() => { setActiveResult(null); setActiveContext(null); }}
-          showTranscript={false}
-          onToggleTranscript={() => {}}
+          showTranscript={showTranscript}
+          onToggleTranscript={() => setShowTranscript((v) => !v)}
           onOpenSubmissionPanel={() => window.alert("Pick a working session first, from the search page.")}
           overrideSession={activeContext?.session}
           overrideGroupIndex={activeContext?.groupIndex}
