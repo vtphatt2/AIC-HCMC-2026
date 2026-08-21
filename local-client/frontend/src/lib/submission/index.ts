@@ -47,6 +47,11 @@ export async function fetchSubmission(session: string): Promise<SubmissionState>
   return res.json();
 }
 
+export async function deleteSubmissionSession(session: string): Promise<void> {
+  const res = await fetch(`/api/submission?session=${encodeURIComponent(session)}`, { method: "DELETE" });
+  if (!res.ok) return parseError(res, "Failed to delete submission session");
+}
+
 async function postAction(session: string, body: Record<string, unknown>): Promise<SubmissionState> {
   const res = await fetch(`/api/submission?session=${encodeURIComponent(session)}`, {
     method: "POST",

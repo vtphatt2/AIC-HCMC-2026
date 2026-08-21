@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import type { NextApiRequest, NextApiResponse } from "next";
@@ -91,6 +91,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const state = readState(session);
     if (!state) return res.status(404).json({ error: "Session not found" });
     return res.status(200).json(state);
+  }
+
+  if (req.method === "DELETE") {
+    if (!ID.test(session)) return res.status(400).json({ error: "Invalid session name" });
+    const file = fileFor(session);
+    if (!existsSync(file)) return res.status(404).json({ error: "Session not found" });
+    unlinkSync(file);
+    return res.status(200).json({ ok: true });
   }
 
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });

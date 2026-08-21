@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import type { SearchResult, SubmissionEntry, SubmissionSessionSummary, SubmissionState } from "@/types";
 import {
   buildSubmissionCsv,
+  createSubmissionSession,
+  deleteSubmissionSession,
   downloadCsv,
   downloadSubmissionZip,
   editSubmissionEntryFrame,
@@ -25,6 +27,8 @@ import VideoModal from "@/components/VideoModal";
 
 const BTN =
   "font-retro text-xs uppercase tracking-wide border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition";
+const DANGER_BTN =
+  "font-retro text-xs uppercase tracking-wide border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 hover:bg-red-600 hover:text-white hover:border-red-600 transition";
 const FRAME_INPUT =
   "w-20 bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-1.5 py-0.5 text-sm font-mono text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
 
@@ -77,6 +81,29 @@ export default function SubmissionsDashboard() {
   async function handleRemove(session: string, id: string) {
     const updated = await removeSubmissionEntry(session, id);
     setStates((prev) => ({ ...prev, [session]: updated }));
+  }
+
+  async function handleCreateSession() {
+    const name = window.prompt("Session name (e.g. query-3-kis):")?.trim();
+    if (!name) return;
+    try {
+      await createSubmissionSession(name);
+      refreshAll();
+    } catch (err: any) {
+      if (err.status === 409) window.alert("That session name is already taken — pick another.");
+      else window.alert(err.message || "Failed to create session");
+    }
+  }
+
+  async function handleDeleteSession(session: string) {
+    if (!window.confirm(`Delete session "${session}"? This cannot be undone.`)) return;
+    await deleteSubmissionSession(session);
+    setSessions((prev) => prev.filter((s) => s.session !== session));
+    setStates((prev) => {
+      const next = { ...prev };
+      delete next[session];
+      return next;
+    });
   }
 
   async function handleMoveGroup(session: string, id: string, groupIndex: number) {
@@ -145,6 +172,7 @@ export default function SubmissionsDashboard() {
               </p>
             </div>
             <div className="flex items-center gap-3 shrink-0">
+              <button className={BTN} onClick={handleCreateSession}>+ New session</button>
               <button className={BTN} onClick={handleDownloadZip}>⬇ Download submission.zip</button>
               <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
             </div>
@@ -174,7 +202,12 @@ export default function SubmissionsDashboard() {
                       {state.queryType === "trake" && ` · ${groupCount} candidate${groupCount === 1 ? "" : "s"}`}
                     </span>
                   </h2>
-                  <button className={BTN} onClick={() => handleDownload(state)}>⬇ Download CSV</button>
+                  <div className="flex items-center gap-2">
+                    <button className={BTN} onClick={() => handleDownload(state)}>⬇ Download CSV</button>
+                    <button className={DANGER_BTN} onClick={() => handleDeleteSession(summary.session)}>
+                      ✕ Delete
+                    </button>
+                  </div>
                 </div>
 
                 {state.queryType === "qa" && state.answer && (
