@@ -166,15 +166,13 @@ export function orderedEntries(state: SubmissionState): SubmissionEntry[] {
   return sortByRowOrder(state.entries, state.rowOrder, (e) => e.id);
 }
 
-// ── CSV export, matching Python's csv.QUOTE_MINIMAL ────────────────────────
-
-function csvField(value: string | number): string {
-  const s = String(value);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
+// ── CSV export ───────────────────────────────────────────────────────────
+// No auto-quoting — fields are written exactly as typed. Quoting a QA
+// answer (e.g. one containing a comma) is the user's own call to make in
+// the answer text itself, not something this tool infers.
 
 function csvRow(fields: (string | number)[]): string {
-  return fields.map(csvField).join(",");
+  return fields.join(",");
 }
 
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
@@ -301,7 +299,6 @@ export function downloadSubmissionZip(states: SubmissionState[], zipName: string
 }
 
 if (process.env.NODE_ENV !== "production") {
-  console.assert(csvField("plain") === "plain", "csvField: plain passthrough");
-  console.assert(csvField("a,b") === '"a,b"', "csvField: comma quoted");
-  console.assert(csvField('say "hi"') === '"say ""hi"""', "csvField: embedded quote doubled");
+  console.assert(csvRow(["plain", 1]) === "plain,1", "csvRow: no auto-quoting");
+  console.assert(csvRow(['"a,b"']) === '"a,b"', "csvRow: pre-quoted values pass through untouched");
 }
