@@ -1,7 +1,13 @@
 import Head from "next/head";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { SearchResult, SubmissionEntry, SubmissionSessionSummary, SubmissionState } from "@/types";
+import type {
+  SearchResult,
+  SubmissionEntry,
+  SubmissionQueryType,
+  SubmissionSessionSummary,
+  SubmissionState,
+} from "@/types";
 import {
   buildSubmissionCsv,
   createSubmissionSession,
@@ -25,6 +31,8 @@ import {
   trakeSortedGroups,
 } from "@/lib/submission";
 import VideoModal from "@/components/VideoModal";
+
+const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
 
 const BTN =
   "font-retro text-xs uppercase tracking-wide border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 hover:bg-orange-600 hover:text-white hover:border-orange-600 transition";
@@ -118,10 +126,29 @@ export default function SubmissionsDashboard() {
   }
 
   async function handleCreateSession() {
-    const name = window.prompt("Session name (e.g. query-3-kis):")?.trim();
+    const name = window.prompt("Session name (for your own reference only):")?.trim();
     if (!name) return;
+
+    // The exported CSV's filename (query-{number}-{type}.csv) has to match
+    // exactly the query BTC handed out (e.g. their query-3-qa.txt), per
+    // the contest rules — it is not something this tool can pick for you.
+    const typeRaw = window.prompt("Query type — kis, qa, or trake:", "kis")?.trim().toLowerCase();
+    if (!typeRaw) return;
+    if (!QUERY_TYPES.includes(typeRaw as SubmissionQueryType)) {
+      window.alert(`Invalid query type "${typeRaw}" — must be kis, qa, or trake.`);
+      return;
+    }
+    const queryType = typeRaw as SubmissionQueryType;
+
+    const numberRaw = window.prompt("Query # — must match BTC's file, e.g. query-3-qa -> 3:")?.trim();
+    const queryNumber = Number.parseInt(numberRaw ?? "", 10);
+    if (!Number.isFinite(queryNumber) || queryNumber < 1) {
+      window.alert("Query # must be a positive integer.");
+      return;
+    }
+
     try {
-      await createSubmissionSession(name);
+      await createSubmissionSession(name, queryType, queryNumber);
       refreshAll();
     } catch (err: any) {
       if (err.status === 409) window.alert("That session name is already taken — pick another.");
