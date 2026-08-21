@@ -81,6 +81,8 @@ export default function SubmissionsDashboard() {
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [activeContext, setActiveContext] = useState<{ session: string; groupIndex: number } | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [sortByName, setSortByName] = useState(false);
+  const [filterType, setFilterType] = useState<SubmissionQueryType | "all">("all");
   const [dragOver, setDragOver] = useState<{ session: string; group: number } | null>(null);
   const [dragOverEntry, setDragOverEntry] = useState<string | null>(null);
 
@@ -233,6 +235,12 @@ export default function SubmissionsDashboard() {
     if (!ok) window.alert("No sessions with entries to bundle yet.");
   }
 
+  // Array.prototype.sort is stable, so returning 0 when sortByName is off
+  // just preserves the fetch order (createdAt, from the API) unchanged.
+  const visibleSessions = sessions
+    .filter((s) => filterType === "all" || s.queryType === filterType)
+    .sort((a, b) => (sortByName ? a.session.localeCompare(b.session) : 0));
+
   return (
     <>
       <Head><title>Submission Dashboard</title></Head>
@@ -256,7 +264,35 @@ export default function SubmissionsDashboard() {
             <p className="text-sm text-stone-500 italic">No submission sessions yet.</p>
           )}
 
-          {sessions.map((summary) => {
+          {sessions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <span className="font-retro text-xs uppercase tracking-wide text-stone-500">Type:</span>
+                {(["all", ...QUERY_TYPES] as const).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setFilterType(t)}
+                    className={`font-retro text-xs uppercase tracking-wide px-2.5 py-1 rounded border-2 transition ${
+                      filterType === t
+                        ? "bg-orange-600 text-white border-orange-600"
+                        : "border-stone-800 dark:border-stone-500 hover:bg-orange-100 dark:hover:bg-stone-700"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <button className={BTN} onClick={() => setSortByName((v) => !v)}>
+                Sort: {sortByName ? "Name A-Z" : "Created"}
+              </button>
+            </div>
+          )}
+
+          {sessions.length > 0 && visibleSessions.length === 0 && (
+            <p className="text-sm text-stone-500 italic">No sessions match this filter.</p>
+          )}
+
+          {visibleSessions.map((summary) => {
             const state = states[summary.session];
             if (!state) return null;
             const groupCount = new Set(state.entries.map((e) => e.groupIndex)).size;
