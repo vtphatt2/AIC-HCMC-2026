@@ -1171,6 +1171,7 @@ export default function Home() {
                 showTranscript={showTranscript}
                 queryEvents={frameSearchQueryEvents}
                 eventWeights={frameSearchEventWeights}
+                duplicateThreshold={response.duplicate_threshold ?? duplicateThreshold}
               />
             )}
 

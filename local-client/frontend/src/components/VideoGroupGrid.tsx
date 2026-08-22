@@ -15,6 +15,11 @@ interface Props {
   // against. Second-phase display score only; doesn't change ranking/badges.
   queryEvents?: string[];
   eventWeights?: number[];
+  // Same slider the original search's own dedup used — kept in sync so
+  // Video view's second-phase dedup (context frames) doesn't drift onto a
+  // different, stale threshold when the user adjusts it. Defaults to the
+  // backend's own default (0.98) when omitted, same as a plain search.
+  duplicateThreshold?: number;
 }
 
 // ~15s each side of the best frame (≈30s total) — wide enough for context,
@@ -123,9 +128,10 @@ interface VideoGroupSectionProps {
   showTranscript: boolean;
   queryEvents?: string[];
   eventWeights?: number[];
+  duplicateThreshold?: number;
 }
 
-function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, queryEvents, eventWeights }: VideoGroupSectionProps) {
+function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, queryEvents, eventWeights, duplicateThreshold }: VideoGroupSectionProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const bestFrameRef = useRef<HTMLDivElement | null>(null);
@@ -191,11 +197,11 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
     setFrameScores(null);
     if (!isVisible || !queryEvents || queryEvents.length === 0 || !frameIdsKey) return;
     let cancelled = false;
-    fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights)
+    fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights, duplicateThreshold)
       .then((scores) => { if (!cancelled) setFrameScores(scores); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisible, queryEvents, eventWeights, frameIdsKey]);
+  }, [isVisible, queryEvents, eventWeights, duplicateThreshold, frameIdsKey]);
 
   // Duplicate filtering only ever removes *expanded* frames (rankInVideo
   // 0) — a real search match stays visible regardless, so badges/
@@ -459,6 +465,7 @@ export default function VideoGroupGrid({
   showTranscript,
   queryEvents,
   eventWeights,
+  duplicateThreshold,
 }: Props) {
   const videoGroups = useMemo(() => buildVideoGroups(results), [results]);
   const sortedVideoIds = useMemo(
@@ -505,6 +512,7 @@ export default function VideoGroupGrid({
             showTranscript={showTranscript}
             queryEvents={queryEvents}
             eventWeights={eventWeights}
+            duplicateThreshold={duplicateThreshold}
           />
         );
       })}

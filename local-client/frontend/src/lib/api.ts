@@ -185,6 +185,7 @@ export async function fetchFrameScores(
   queryEvents: string[],
   frameIds: string[],
   eventWeights?: number[],
+  duplicateThreshold?: number,
 ): Promise<Record<string, number>> {
   if (queryEvents.length === 0 || frameIds.length === 0) return {};
   try {
@@ -195,6 +196,11 @@ export async function fetchFrameScores(
         query_groups: queryEvents.map((query) => ({ query })),
         event_weights: eventWeights ?? null,
         frame_ids: frameIds,
+        // Same slider that drove the original search's own dedup — the
+        // backend defaults to 0.98 only when this is omitted, so an
+        // omitted value here would silently use a *different* threshold
+        // than the search this view is showing.
+        ...(duplicateThreshold !== undefined ? { duplicate_threshold: duplicateThreshold } : {}),
       }),
     });
     if (!res.ok) return {};
