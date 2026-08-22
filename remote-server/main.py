@@ -329,13 +329,15 @@ _CONTEXT_FRAMES_FETCH_LIMIT = 2000
 
 @app.get("/api/video/{video_id}/context-frames")
 async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
-    """Up to `expand` indexed keyframes immediately before start_ms and
-    after end_ms — lets Video view's per-video strip fill itself out with
-    real neighboring frames when a search only matched a tight handful, so
-    a 3-frame result doesn't read as "that's all there is" when the video
-    actually has far more indexed nearby. Mirrors local-backend's endpoint
-    of the same name/response shape; source here is Milvus + PostgreSQL
-    instead of numpy_vector_store."""
+    """Up to `expand` indexed keyframes immediately before start_ms, up to
+    `expand` after end_ms, and every indexed frame *between* them —
+    matched frames spread out with gaps of tens of seconds are just as
+    poorly served by only expanding the two edges as a tight 3-frame
+    cluster is. Lets Video view's per-video strip fill itself out with
+    real neighboring frames instead of reading as "that's all there is"
+    when the video has far more indexed nearby. Mirrors local-backend's
+    endpoint of the same name/response shape; source here is Milvus +
+    PostgreSQL instead of numpy_vector_store."""
     rows = await postgres_client.fetch_video_metadata([video_id])
     fps = float(rows[0].get("fps") or 25.0) if rows else 25.0
 
@@ -352,6 +354,7 @@ async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: 
     return {
         "fps": fps,
         "before": frames[max(0, lo - expand):lo],
+        "middle": frames[lo:hi],
         "after": frames[hi:hi + expand],
     }
 

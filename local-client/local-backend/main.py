@@ -255,22 +255,24 @@ async def get_video_info(video_id: str):
 
 @app.get("/api/video/{video_id}/context-frames")
 async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
-    """Up to `expand` indexed keyframes immediately before start_ms and
-    after end_ms — lets Video view's per-video strip fill itself out with
-    real neighboring frames when a search only matched a tight handful, so
-    a 3-frame result doesn't read as "that's all there is" when the video
-    actually has far more indexed nearby."""
+    """Up to `expand` indexed keyframes immediately before start_ms, up to
+    `expand` after end_ms, and every indexed frame *between* them —
+    matched frames spread out with gaps of tens of seconds are just as
+    poorly served by only expanding the two edges as a tight 3-frame
+    cluster is. Lets Video view's per-video strip fill itself out with
+    real neighboring frames instead of reading as "that's all there is"
+    when the video has far more indexed nearby."""
     from app.db import numpy_vector_store
 
     if not numpy_vector_store.available():
         raise HTTPException(503, "Context frames need ZIP mode with exported vectors (numpy_vector_store).")
 
-    before, after = numpy_vector_store.context_frames(video_id, start_ms, end_ms, expand=expand)
+    before, middle, after = numpy_vector_store.context_frames(video_id, start_ms, end_ms, expand=expand)
 
     from app.services.zip_frame_source import ingest_fps
 
     fps = ingest_fps(video_id) or 25.0
-    return {"fps": fps, "before": before, "after": after}
+    return {"fps": fps, "before": before, "middle": middle, "after": after}
 
 
 @app.post("/api/frame-scores")

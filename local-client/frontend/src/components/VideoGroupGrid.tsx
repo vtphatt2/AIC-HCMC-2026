@@ -147,17 +147,23 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
   useEffect(() => {
     setContextFrames([]);
     const perSide = contextExpandPerSide(frames.length);
-    if (!isVisible || frames.length === 0 || perSide === 0) return;
+    // Gate on total matched count, not on perSide alone — perSide==0 only
+    // means "the edges don't need widening," but matches spread across a
+    // video with tens-of-seconds gaps between them still need those gaps
+    // filled even when the total is already at/above target.
+    if (!isVisible || frames.length === 0 || frames.length >= CONTEXT_TARGET_TOTAL) return;
     let cancelled = false;
     const startMs = Math.min(...frames.map((f) => f.result.timestamp_ms));
     const endMs = Math.max(...frames.map((f) => f.result.timestamp_ms));
+    const matchedIds = new Set(frames.map((f) => f.result.frame_id));
     fetchContextFrames(videoId, startMs, endMs, perSide)
       .then((res) => {
         if (cancelled) return;
-        setContextFrames([
-          ...res.before.map((f) => contextFrameToDisplay(videoId, res.fps, f)),
-          ...res.after.map((f) => contextFrameToDisplay(videoId, res.fps, f)),
-        ]);
+        const toDisplay = (list: typeof res.before) =>
+          list
+            .filter((f) => !matchedIds.has(f.frame_id))
+            .map((f) => contextFrameToDisplay(videoId, res.fps, f));
+        setContextFrames([...toDisplay(res.before), ...toDisplay(res.middle), ...toDisplay(res.after)]);
       })
       .catch(() => { if (!cancelled) setContextFrames([]); });
     return () => { cancelled = true; };

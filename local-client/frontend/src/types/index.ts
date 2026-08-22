@@ -178,5 +178,11 @@ export interface ContextFrame {
 export interface ContextFramesResponse {
   fps: number;
   before: ContextFrame[];
+  // Every indexed frame between the requested start/end — including
+  // whatever frame(s) sit exactly at those bounds, i.e. the caller's own
+  // matched frames if start/end came from their min/max timestamp. The
+  // caller already knows those frame_ids and dedupes against them; this
+  // response doesn't try to guess which of the in-range frames it is.
+  middle: ContextFrame[];
   after: ContextFrame[];
 }

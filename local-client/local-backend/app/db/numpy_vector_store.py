@@ -157,12 +157,21 @@ def frames_in_range(
 
 def context_frames(
     video_id: str, start_ms: int, end_ms: int, *, expand: int = 20
-) -> tuple[list[dict], list[dict]]:
-    """Up to `expand` indexed keyframes immediately before start_ms and up to
-    `expand` immediately after end_ms — for the Video view strip's "expand
-    a sparse result cluster with neighboring context frames" feature. Not a
-    fixed time window (keyframe spacing varies a lot — see
-    docs/archive/keyframe_selection.md), a fixed *count* either side."""
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Up to `expand` indexed keyframes immediately before start_ms, up to
+    `expand` immediately after end_ms, and *every* indexed frame in between
+    (uncapped — a real gap between two matches is exactly as relevant as
+    the edges, and this dataset's own per-video frame count already bounds
+    it) — for the Video view strip's "expand a sparse result cluster with
+    real neighbors" feature. Not a fixed time window either side (keyframe
+    spacing varies a lot — see docs/archive/keyframe_selection.md), a
+    fixed *count*.
+
+    `middle` includes whatever frames sit exactly at start_ms/end_ms too
+    (i.e. the caller's own matched frames, if start_ms/end_ms came from
+    their min/max timestamp) — callers already know their own frame_ids
+    and should dedupe against them, not this function's job to guess
+    which of the frames in range the caller already has."""
     store = get_store()
     rows = np.flatnonzero(store.video_id == video_id)
     rows = rows[np.argsort(store.timestamp_ms[rows], kind="stable")]
@@ -184,7 +193,11 @@ def context_frames(
             for row in selected_rows.tolist()
         ]
 
-    return to_dicts(rows[max(0, lo - expand):lo]), to_dicts(rows[hi:hi + expand])
+    return (
+        to_dicts(rows[max(0, lo - expand):lo]),
+        to_dicts(rows[lo:hi]),
+        to_dicts(rows[hi:hi + expand]),
+    )
 
 
 def vector_search(
