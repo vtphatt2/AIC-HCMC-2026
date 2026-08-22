@@ -34,10 +34,22 @@ def filter_similar_results(
     for result in results:
         frame_ids = result_frame_ids(result)
         vectors = [normalized.get(frame_id) for frame_id in frame_ids]
-        weights = [
-            float(event_weights[index]) if event_weights and index < len(event_weights) else 1.0
-            for index in range(len(vectors))
-        ]
+        # event_weights means "how important is step i of a multi-step chain"
+        # (temporal/TRAKE) — meaningful only when a result actually has more
+        # than one frame. A single-frame result (raw_visual, or
+        # duy_multi_detail_search's RRF-fused single frame) has no "step"
+        # for event_weights[0] to legitimately refer to; treating it as one
+        # anyway means a strategy's per-detail RANKING weight (RRF) silently
+        # doubles as dedup strictness for every result, which is a bug, not
+        # a feature — hence the len(vectors) > 1 gate.
+        weights = (
+            [
+                float(event_weights[index]) if event_weights and index < len(event_weights) else 1.0
+                for index in range(len(vectors))
+            ]
+            if len(vectors) > 1
+            else [1.0] * len(vectors)
+        )
         duplicate = any(
             len(previous) == len(vectors)
             and all(
