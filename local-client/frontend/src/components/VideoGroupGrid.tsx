@@ -468,19 +468,52 @@ export default function VideoGroupGrid({
   duplicateThreshold,
 }: Props) {
   const videoGroups = useMemo(() => buildVideoGroups(results), [results]);
-  const sortedVideoIds = useMemo(
-    () =>
-      Array.from(videoGroups.keys()).sort((a, b) => {
-        const aMax = Math.max(
-          ...videoGroups.get(a)!.map((f) => f.result.confidence)
-        );
-        const bMax = Math.max(
-          ...videoGroups.get(b)!.map((f) => f.result.confidence)
-        );
-        return bMax - aMax;
-      }),
-    [videoGroups]
+
+  // Sort-by-video-total toggle — a video whose several matched frames each
+  // score decently can beat one whose single best frame barely edges out
+  // everyone else's best, which the default (max confidence) can't
+  // express. Only fetched once actually toggled on: this scores every
+  // *matched* frame across every video group in one request (not the
+  // lazily-expanded context frames each section fetches for itself —
+  // those are still loading for off-screen videos, so summing them here
+  // would be sorting on incomplete data), reusing the exact same
+  // second-phase mechanism (frontend-only; nothing here calls anything
+  // the backend doesn't already expose).
+  const [sortByTotalScore, setSortByTotalScore] = useState(false);
+  const [videoTotalScores, setVideoTotalScores] = useState<Record<string, number> | null>(null);
+  const allMatchedFrameIdsKey = useMemo(
+    () => results.map((r) => r.frame_id).join(","),
+    [results],
   );
+  useEffect(() => {
+    setVideoTotalScores(null);
+    if (!sortByTotalScore || !queryEvents || queryEvents.length === 0 || !allMatchedFrameIdsKey) return;
+    let cancelled = false;
+    fetchFrameScores(queryEvents, allMatchedFrameIdsKey.split(","), eventWeights, duplicateThreshold)
+      .then((scores) => {
+        if (cancelled) return;
+        const totals: Record<string, number> = {};
+        for (const [videoId, frames] of Array.from(videoGroups.entries())) {
+          totals[videoId] = frames.reduce((sum, f) => sum + (scores[f.result.frame_id] ?? 0), 0);
+        }
+        setVideoTotalScores(totals);
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sortByTotalScore, queryEvents, eventWeights, duplicateThreshold, allMatchedFrameIdsKey]);
+
+  const sortedVideoIds = useMemo(() => {
+    if (sortByTotalScore && videoTotalScores) {
+      return Array.from(videoGroups.keys()).sort(
+        (a, b) => (videoTotalScores[b] ?? 0) - (videoTotalScores[a] ?? 0),
+      );
+    }
+    return Array.from(videoGroups.keys()).sort((a, b) => {
+      const aMax = Math.max(...videoGroups.get(a)!.map((f) => f.result.confidence));
+      const bMax = Math.max(...videoGroups.get(b)!.map((f) => f.result.confidence));
+      return bMax - aMax;
+    });
+  }, [videoGroups, sortByTotalScore, videoTotalScores]);
 
   return (
     <div className="space-y-4">
@@ -497,6 +530,26 @@ export default function VideoGroupGrid({
         <span>
           <span className="text-stone-900 dark:text-white font-semibold">{sortedVideoIds.length}</span> videos
         </span>
+        {queryEvents && queryEvents.length > 0 && (
+          <>
+            <span>·</span>
+            <button
+              type="button"
+              onClick={() => setSortByTotalScore((v) => !v)}
+              className={`font-retro rounded border-2 px-2 py-0.5 text-xs font-bold uppercase tracking-wide transition ${
+                sortByTotalScore
+                  ? "border-orange-700 bg-orange-700 text-white"
+                  : "border-stone-500 text-stone-600 dark:text-stone-300 hover:border-orange-700 hover:text-orange-700 dark:hover:text-orange-400"
+              }`}
+              title="Sort videos by the sum of every matched frame's second-phase score, instead of just the single best frame's confidence"
+            >
+              Sort: {sortByTotalScore ? "Video total" : "Best frame"}
+            </button>
+            {sortByTotalScore && !videoTotalScores && (
+              <span className="italic text-stone-400">scoring…</span>
+            )}
+          </>
+        )}
       </div>
 
       {/* Video groups */}
