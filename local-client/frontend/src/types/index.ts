@@ -161,3 +161,22 @@ export interface TranscriptResponse {
   video_id: string;
   segments: TranscriptSegment[];
 }
+
+// ── Video view strip context frames ─────────────────────────────────────
+// Neighboring indexed keyframes around a video's matched-frame cluster —
+// not search hits, just what's available in the system to browse when a
+// video only matched a tight handful. See VideoGroupGrid.tsx.
+
+export interface ContextFrame {
+  frame_id: string;
+  video_id: string;
+  frame_number: number;
+  timestamp_ms: number;
+  youtube_id: string;
+}
+
+export interface ContextFramesResponse {
+  fps: number;
+  before: ContextFrame[];
+  after: ContextFrame[];
+}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { SearchResult, TranscriptSegment } from "@/types";
-import { fetchTranscript } from "@/lib/api";
+import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
+import { apiUrl, fetchContextFrames, fetchTranscript } from "@/lib/api";
 import ResultCard from "./ResultCard";
 
 interface Props {
@@ -15,6 +15,14 @@ interface Props {
 // narrow enough to stay readable and avoid pulling in unrelated content
 // from outlier frames far from the actual match.
 const BEST_FRAME_TRANSCRIPT_RADIUS_MS = 15000;
+
+// A strip this thin (rankInVideo 0 excluded — real matches only) reads as
+// "that's genuinely all this video has," which is often just an artifact of
+// duplicate filtering or a narrow query rather than the video actually
+// being sparse — so fill it out with real neighboring keyframes instead of
+// leaving it looking barer than the video actually is.
+const SPARSE_STRIP_THRESHOLD = 8;
+const CONTEXT_FRAME_EXPAND = 20;
 
 interface DisplayFrame {
   result: SearchResult;
@@ -69,6 +77,25 @@ function frameBadge(rankInVideo: number): string | null {
   return null;
 }
 
+// rankInVideo 0 — frameHighlightClass/frameBadge already render that as
+// unhighlighted/no-badge, exactly the "this is context, not a match" look
+// wanted here, no new styling needed.
+function contextFrameToDisplay(videoId: string, fps: number, frame: ContextFrame): DisplayFrame {
+  return {
+    result: {
+      video_id: videoId,
+      youtube_id: frame.youtube_id || undefined,
+      frame_id: frame.frame_id,
+      frame_number: frame.frame_number,
+      timestamp_ms: frame.timestamp_ms,
+      confidence: 0,
+      frame_image_url: apiUrl(`/api/zip-frame/${videoId}/${frame.timestamp_ms}`),
+      fps,
+    },
+    rankInVideo: 0,
+  };
+}
+
 type BestDirection = "left" | "right" | "visible";
 
 interface VideoGroupSectionProps {
@@ -91,6 +118,38 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const bestScore = Math.max(...frames.map((f) => f.result.confidence));
   const bestFrame = frames.find((f) => f.rankInVideo === 1);
+
+  // Fills out a sparse strip with real neighboring keyframes — not more
+  // search hits, just what the system already has around the matched
+  // cluster, so a 3-frame result doesn't read as "that's genuinely all
+  // there is" when the video has far more indexed nearby.
+  const [contextFrames, setContextFrames] = useState<DisplayFrame[]>([]);
+  useEffect(() => {
+    setContextFrames([]);
+    if (!isVisible || frames.length === 0 || frames.length >= SPARSE_STRIP_THRESHOLD) return;
+    let cancelled = false;
+    const startMs = Math.min(...frames.map((f) => f.result.timestamp_ms));
+    const endMs = Math.max(...frames.map((f) => f.result.timestamp_ms));
+    fetchContextFrames(videoId, startMs, endMs, CONTEXT_FRAME_EXPAND)
+      .then((res) => {
+        if (cancelled) return;
+        setContextFrames([
+          ...res.before.map((f) => contextFrameToDisplay(videoId, res.fps, f)),
+          ...res.after.map((f) => contextFrameToDisplay(videoId, res.fps, f)),
+        ]);
+      })
+      .catch(() => { if (!cancelled) setContextFrames([]); });
+    return () => { cancelled = true; };
+    // frames.length alone (not the frames array itself) — the array
+    // reference changes every render even when its contents don't, which
+    // would refetch on every unrelated re-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisible, videoId, frames.length]);
+
+  const displayFrames = useMemo(() => {
+    if (contextFrames.length === 0) return frames;
+    return [...frames, ...contextFrames].sort((a, b) => a.result.frame_number - b.result.frame_number);
+  }, [frames, contextFrames]);
 
   // Fetch this video's full transcript once (cheap after the first call);
   // rangeSegments below narrows it down to just a window around the best frame.
@@ -206,7 +265,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
       clearTimeout(handle);
       window.removeEventListener("resize", updateBestDirection);
     };
-  }, [frames, isVisible]);
+  }, [frames, displayFrames, isVisible]);
 
   return (
     <div
@@ -221,6 +280,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
           </span>
           <span className="text-xs text-stone-500 dark:text-stone-400">
             {frames.length} matched frame{frames.length !== 1 ? "s" : ""}
+            {contextFrames.length > 0 && ` + ${contextFrames.length} nearby`}
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -253,7 +313,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
             onScroll={updateBestDirection}
             className="flex overflow-x-auto gap-2 p-3 scrollbar-thin"
           >
-            {frames.map((df, i) => {
+            {displayFrames.map((df, i) => {
               const badge = frameBadge(df.rankInVideo);
 
               return (

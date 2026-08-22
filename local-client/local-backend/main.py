@@ -247,6 +247,26 @@ async def get_video_info(video_id: str):
     }
 
 
+@app.get("/api/video/{video_id}/context-frames")
+async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
+    """Up to `expand` indexed keyframes immediately before start_ms and
+    after end_ms — lets Video view's per-video strip fill itself out with
+    real neighboring frames when a search only matched a tight handful, so
+    a 3-frame result doesn't read as "that's all there is" when the video
+    actually has far more indexed nearby."""
+    from app.db import numpy_vector_store
+
+    if not numpy_vector_store.available():
+        raise HTTPException(503, "Context frames need ZIP mode with exported vectors (numpy_vector_store).")
+
+    before, after = numpy_vector_store.context_frames(video_id, start_ms, end_ms, expand=expand)
+
+    from app.services.zip_frame_source import ingest_fps
+
+    fps = ingest_fps(video_id) or 25.0
+    return {"fps": fps, "before": before, "after": after}
+
+
 @app.get("/api/zip-video/{video_id}")
 async def zip_video(video_id: str, request: Request):
     """Proxy video playback straight from the organizer's remote ZIP archive:

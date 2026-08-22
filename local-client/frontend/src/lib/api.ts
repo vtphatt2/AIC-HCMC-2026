@@ -1,4 +1,5 @@
 import type {
+  ContextFramesResponse,
   Strategy,
   QueryGroup,
   SearchResponse,
@@ -151,6 +152,27 @@ export async function searchTranscriptChunks(
     throw new Error(errorData.detail || "Transcript chunk search failed");
   }
 
+  return res.json();
+}
+
+// Neighboring indexed keyframes around [startMs, endMs] — for Video view's
+// "expand a sparse strip with real nearby frames" feature, not a search.
+export async function fetchContextFrames(
+  videoId: string,
+  startMs: number,
+  endMs: number,
+  expand: number = 20,
+): Promise<ContextFramesResponse> {
+  const params = new URLSearchParams({
+    start_ms: String(Math.round(startMs)),
+    end_ms: String(Math.round(endMs)),
+    expand: String(expand),
+  });
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/context-frames?${params}`));
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to load context frames");
+  }
   return res.json();
 }
 

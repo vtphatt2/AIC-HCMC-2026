@@ -4,6 +4,7 @@ import importlib
 import inspect
 import logging
 import asyncio
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -311,6 +312,41 @@ async def get_video_info(video_id: str):
         "frame_number": frame_number,
         "timestamp_ms": timestamp_ms,
         "fps": float(video.get("fps") or 25.0),
+    }
+
+
+# A video's own indexed keyframe count tops out around 784 in this dataset
+# (see keyframe_selection.md's per-scene sampling caps) — generous enough
+# headroom to fetch a whole video's frames in one query and slice locally.
+_CONTEXT_FRAMES_FETCH_LIMIT = 2000
+
+
+@app.get("/api/video/{video_id}/context-frames")
+async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
+    """Up to `expand` indexed keyframes immediately before start_ms and
+    after end_ms — lets Video view's per-video strip fill itself out with
+    real neighboring frames when a search only matched a tight handful, so
+    a 3-frame result doesn't read as "that's all there is" when the video
+    actually has far more indexed nearby. Mirrors local-backend's endpoint
+    of the same name/response shape; source here is Milvus + PostgreSQL
+    instead of numpy_vector_store."""
+    rows = await postgres_client.fetch_video_metadata([video_id])
+    fps = float(rows[0].get("fps") or 25.0) if rows else 25.0
+
+    collection = milvus_client.get_collection()
+    frames = milvus_client.query_frames_in_time_range(
+        collection, video_id, 0, 10**12, limit=_CONTEXT_FRAMES_FETCH_LIMIT
+    )
+    # query_frames_in_time_range already sorts by timestamp_ms.
+    timestamps = [f["timestamp_ms"] for f in frames]
+    lo = bisect_left(timestamps, start_ms)
+    hi = bisect_right(timestamps, end_ms)
+    expand = max(0, int(expand))
+
+    return {
+        "fps": fps,
+        "before": frames[max(0, lo - expand):lo],
+        "after": frames[hi:hi + expand],
     }
 
 

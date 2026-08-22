@@ -155,6 +155,38 @@ def frames_in_range(
     ]
 
 
+def context_frames(
+    video_id: str, start_ms: int, end_ms: int, *, expand: int = 20
+) -> tuple[list[dict], list[dict]]:
+    """Up to `expand` indexed keyframes immediately before start_ms and up to
+    `expand` immediately after end_ms — for the Video view strip's "expand
+    a sparse result cluster with neighboring context frames" feature. Not a
+    fixed time window (keyframe spacing varies a lot — see
+    docs/archive/keyframe_selection.md), a fixed *count* either side."""
+    store = get_store()
+    rows = np.flatnonzero(store.video_id == video_id)
+    rows = rows[np.argsort(store.timestamp_ms[rows], kind="stable")]
+    ts = store.timestamp_ms[rows]
+    lo = int(np.searchsorted(ts, start_ms, side="left"))
+    hi = int(np.searchsorted(ts, end_ms, side="right"))
+    expand = max(0, int(expand))
+
+    def to_dicts(selected_rows) -> list[dict]:
+        return [
+            {
+                "frame_id": str(store.frame_id[row]),
+                "video_id": str(store.video_id[row]),
+                "frame_number": int(store.frame_number[row]),
+                "timestamp_ms": int(store.timestamp_ms[row]),
+                "image_url": "",
+                "youtube_id": str(store.youtube_id[row]),
+            }
+            for row in selected_rows.tolist()
+        ]
+
+    return to_dicts(rows[max(0, lo - expand):lo]), to_dicts(rows[hi:hi + expand])
+
+
 def vector_search(
     query_vector: list[float],
     top_k: int = 100,
