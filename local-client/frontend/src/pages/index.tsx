@@ -96,7 +96,7 @@ export default function Home() {
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
   const [showSubmission, setShowSubmission] = useState(false);
   const [submissionBadge, setSubmissionBadge] = useState<{ session: string; count: number } | null>(null);
@@ -245,9 +245,11 @@ export default function Home() {
     return () => { cancelled = true; };
   }, [queryGroups.length, selectedConfig, selectedStrategy, strategyConfigDraft, strategyConfigs]);
 
-  // ── Video modal transcript panel: load saved on/off preference ────────────
+  // ── Video modal transcript panel: on by default, but a saved explicit
+  // off ("0") is respected — only an unset key falls back to the default.
   useEffect(() => {
-    setShowTranscript(window.localStorage.getItem(SHOW_TRANSCRIPT_KEY) === "1");
+    const saved = window.localStorage.getItem(SHOW_TRANSCRIPT_KEY);
+    if (saved !== null) setShowTranscript(saved === "1");
   }, []);
 
   function setShowTranscriptPersisted(next: boolean) {

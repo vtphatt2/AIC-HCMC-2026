@@ -134,7 +134,7 @@ export default function SubmissionsDashboard() {
   const [states, setStates] = useState<Record<string, SubmissionState>>({});
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [activeContext, setActiveContext] = useState<{ session: string; rowIndex: number } | null>(null);
-  const [showTranscript, setShowTranscript] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(true);
   const [sortByName, setSortByName] = useState(false);
   const [filterType, setFilterType] = useState<SubmissionQueryType | "all">("all");
   const [editMode, setEditMode] = useState<Record<string, "grid" | "raw">>({});
