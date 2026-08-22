@@ -20,9 +20,21 @@ const BEST_FRAME_TRANSCRIPT_RADIUS_MS = 15000;
 // "that's genuinely all this video has," which is often just an artifact of
 // duplicate filtering or a narrow query rather than the video actually
 // being sparse — so fill it out with real neighboring keyframes instead of
-// leaving it looking barer than the video actually is.
-const SPARSE_STRIP_THRESHOLD = 8;
-const CONTEXT_FRAME_EXPAND = 20;
+// leaving it looking barer than the video actually is. Target a total
+// count rather than a fixed expand-by-N: a video with 45 matches needs
+// only a handful of neighbors to stop looking sparse, where one with 2
+// needs a lot more — a flat "+20 each side" either barely helps the first
+// case or wastefully overshoots the second.
+const CONTEXT_TARGET_TOTAL = 50;
+
+// However many neighbors each side needs to bring `matchedCount` up to
+// CONTEXT_TARGET_TOTAL, split evenly. A side that runs out (e.g. matches
+// already sit near the video's start) just returns fewer than asked —
+// no redistribution to the other side's request, so a starved video can
+// land short of the target; acceptable for "about 48-50", not exact.
+function contextExpandPerSide(matchedCount: number): number {
+  return Math.max(0, Math.ceil((CONTEXT_TARGET_TOTAL - matchedCount) / 2));
+}
 
 interface DisplayFrame {
   result: SearchResult;
@@ -126,11 +138,12 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
   const [contextFrames, setContextFrames] = useState<DisplayFrame[]>([]);
   useEffect(() => {
     setContextFrames([]);
-    if (!isVisible || frames.length === 0 || frames.length >= SPARSE_STRIP_THRESHOLD) return;
+    const perSide = contextExpandPerSide(frames.length);
+    if (!isVisible || frames.length === 0 || perSide === 0) return;
     let cancelled = false;
     const startMs = Math.min(...frames.map((f) => f.result.timestamp_ms));
     const endMs = Math.max(...frames.map((f) => f.result.timestamp_ms));
-    fetchContextFrames(videoId, startMs, endMs, CONTEXT_FRAME_EXPAND)
+    fetchContextFrames(videoId, startMs, endMs, perSide)
       .then((res) => {
         if (cancelled) return;
         setContextFrames([
