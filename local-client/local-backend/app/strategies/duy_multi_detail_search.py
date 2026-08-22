@@ -10,6 +10,20 @@ from ._duy_temporal_core import PER_QUERY_LIMIT, TEMPORAL_CONFIG_SCHEMA, resolve
 from ._fusion import rrf
 from .base_strategy import BaseStrategy
 
+# RRF here fuses independent single-frame candidates, not temporal chains —
+# duplicate-filtering collides them much more often than it collides
+# temporal's chains. A chain only counts as a duplicate of another chain
+# when *every* corresponding step is near-identical simultaneously (rare);
+# a single frame collides with any one near-duplicate neighbor directly
+# (common — the true match's own neighboring keyframes, from the same
+# scene, are exactly the kind of near-duplicate this filter is designed to
+# collapse). SearchContext's own OVERSAMPLE_FACTOR (1.5x, first page only)
+# isn't enough headroom for that higher collision rate, so oversample
+# harder specifically here rather than raising it for every strategy that
+# shares base_strategy.py. There's no DP here (unlike temporal) to pay for,
+# so the extra width is comparatively cheap.
+PER_DETAIL_LIMIT = PER_QUERY_LIMIT * 4
+
 
 async def run_multi_detail(context):
     groups = [
@@ -23,7 +37,7 @@ async def run_multi_detail(context):
         context.retrieve(
             "raw.semantic",
             group["query"].strip(),
-            top_k=max(context.top_k, PER_QUERY_LIMIT),
+            top_k=max(context.top_k, PER_DETAIL_LIMIT),
         )
         for group in groups
     ])
