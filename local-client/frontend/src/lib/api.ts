@@ -176,6 +176,34 @@ export async function fetchContextFrames(
   return res.json();
 }
 
+// Second-phase Video-view scoring: re-scores an already-assembled frame
+// set (a search's own matches + context-frames' expanded neighbors)
+// against the query events that produced that search, on one consistent
+// scale. Silently degrades to {} on any failure — this is a display
+// enhancement, never something a missing/failed score should block on.
+export async function fetchFrameScores(
+  queryEvents: string[],
+  frameIds: string[],
+  eventWeights?: number[],
+): Promise<Record<string, number>> {
+  if (queryEvents.length === 0 || frameIds.length === 0) return {};
+  try {
+    const res = await fetch(apiUrl("/api/frame-scores"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        query_groups: queryEvents.map((query) => ({ query })),
+        event_weights: eventWeights ?? null,
+        frame_ids: frameIds,
+      }),
+    });
+    if (!res.ok) return {};
+    return (await res.json()).scores ?? {};
+  } catch {
+    return {};
+  }
+}
+
 export async function fetchTranscript(videoId: string): Promise<TranscriptResponse> {
   const res = await fetch(apiUrl(`/api/transcript/${videoId}`));
   if (!res.ok) {

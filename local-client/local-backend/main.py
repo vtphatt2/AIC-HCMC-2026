@@ -161,6 +161,12 @@ class TranscriptChunkSearchRequest(BaseModel):
     topic_filter: str = ""
 
 
+class FrameScoresRequest(BaseModel):
+    query_groups: list[QueryGroup]
+    event_weights: list[float] | None = None
+    frame_ids: list[str]
+
+
 class TranslationRequest(BaseModel):
     texts: list[str]
 
@@ -265,6 +271,34 @@ async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: 
 
     fps = ingest_fps(video_id) or 25.0
     return {"fps": fps, "before": before, "after": after}
+
+
+@app.post("/api/frame-scores")
+async def get_frame_scores(req: FrameScoresRequest):
+    """Second-phase scoring for Video view: re-scores an already-assembled
+    set of frames (a search's own matches plus context-frames' expanded
+    neighbors) against the same query events that produced that search —
+    one consistent scale for frames that arrived from very different
+    places (a strategy's own ranking vs. never having been ranked at
+    all). See app/strategies/_event_scoring.py."""
+    if _data_provider is None:
+        raise HTTPException(503, "DataProvider is not ready.")
+    if not req.frame_ids:
+        return {"scores": {}}
+
+    queries = [g.query.strip() for g in req.query_groups if g.query.strip()]
+    if not queries:
+        raise HTTPException(400, "query_groups must contain at least one non-empty query")
+
+    from app.db import numpy_vector_store
+    from app.strategies._event_scoring import event_weighted_scores
+
+    if not numpy_vector_store.available():
+        raise HTTPException(503, "Frame scoring needs ZIP mode with exported vectors (numpy_vector_store).")
+
+    query_vectors = [_data_provider._encode_text(q).tolist() for q in queries]
+    frame_vectors = numpy_vector_store.frame_vectors(req.frame_ids)
+    return {"scores": event_weighted_scores(query_vectors, frame_vectors, weights=req.event_weights)}
 
 
 @app.get("/api/zip-video/{video_id}")

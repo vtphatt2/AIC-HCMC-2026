@@ -502,6 +502,22 @@ export default function Home() {
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy);
   const currentVectorAlgorithm = vectorAlgorithms.find((item) => item.id === selectedVectorAlgorithm);
 
+  // Video view's second-phase frame scoring — same query text + event
+  // weights the active search itself used, so expanded neighbor frames
+  // score on the same scale as the search's own matches.
+  const frameSearchQueryEvents = useMemo(
+    () =>
+      queryGroups
+        .map((g) => [g.semanticQuery, g.textQuery].map((v) => v.trim()).filter(Boolean).join(" "))
+        .filter(Boolean),
+    [queryGroups],
+  );
+  const frameSearchEventWeights = useMemo(() => {
+    const config = strategyConfigs.find((item) => item.id === selectedConfig);
+    const weights = strategyConfigDraft?.overrides.event_weights ?? config?.weights.event_weights;
+    return Array.isArray(weights) ? (weights as number[]) : undefined;
+  }, [strategyConfigDraft, strategyConfigs, selectedConfig]);
+
   const transcriptFrameResults = useMemo<SearchResult[]>(() => {
     if (!transcriptResponse) return [];
     return transcriptResponse.results.filter((chunk) => chunk.frame_image_url).map((chunk) => {
@@ -1153,6 +1169,8 @@ export default function Home() {
                 executionTimeMs={totalTimeMs}
                 onCardClick={openResult}
                 showTranscript={showTranscript}
+                queryEvents={frameSearchQueryEvents}
+                eventWeights={frameSearchEventWeights}
               />
             )}
 

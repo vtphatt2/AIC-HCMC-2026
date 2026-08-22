@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
-import { apiUrl, fetchContextFrames, fetchTranscript } from "@/lib/api";
+import { apiUrl, fetchContextFrames, fetchFrameScores, fetchTranscript } from "@/lib/api";
 import ResultCard from "./ResultCard";
 
 interface Props {
@@ -9,6 +9,12 @@ interface Props {
   executionTimeMs: number;
   onCardClick: (result: SearchResult) => void;
   showTranscript: boolean;
+  // The query text(s) that produced `results` and the per-event weight the
+  // active strategy config has (if any) — optional, since not every caller
+  // (transcript search's Video view) has a query-events concept to score
+  // against. Second-phase display score only; doesn't change ranking/badges.
+  queryEvents?: string[];
+  eventWeights?: number[];
 }
 
 // ~15s each side of the best frame (≈30s total) — wide enough for context,
@@ -115,9 +121,11 @@ interface VideoGroupSectionProps {
   frames: DisplayFrame[];
   onCardClick: (result: SearchResult) => void;
   showTranscript: boolean;
+  queryEvents?: string[];
+  eventWeights?: number[];
 }
 
-function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: VideoGroupSectionProps) {
+function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, queryEvents, eventWeights }: VideoGroupSectionProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const bestFrameRef = useRef<HTMLDivElement | null>(null);
@@ -163,6 +171,22 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
     if (contextFrames.length === 0) return frames;
     return [...frames, ...contextFrames].sort((a, b) => a.result.frame_number - b.result.frame_number);
   }, [frames, contextFrames]);
+
+  // Second-phase score, computed the same way for every frame in the strip
+  // — original matches and expanded neighbors alike — so they land on one
+  // directly comparable scale instead of each strategy's own (differently
+  // scaled) result score. Display only: doesn't touch rankInVideo/badges/
+  // best-frame centering.
+  const [frameScores, setFrameScores] = useState<Record<string, number>>({});
+  const frameIdsKey = displayFrames.map((f) => f.result.frame_id).join(",");
+  useEffect(() => {
+    if (!isVisible || !queryEvents || queryEvents.length === 0 || !frameIdsKey) return;
+    let cancelled = false;
+    fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights)
+      .then((scores) => { if (!cancelled) setFrameScores(scores); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isVisible, queryEvents, eventWeights, frameIdsKey]);
 
   // Fetch this video's full transcript once (cheap after the first call);
   // rangeSegments below narrows it down to just a window around the best frame.
@@ -328,6 +352,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
           >
             {displayFrames.map((df, i) => {
               const badge = frameBadge(df.rankInVideo);
+              const eventScore = frameScores[df.result.frame_id];
 
               return (
                 <div
@@ -343,6 +368,14 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript }: Vid
                         }`}
                     >
                       {badge}
+                    </span>
+                  )}
+                  {eventScore !== undefined && (
+                    <span
+                      className="pointer-events-none absolute left-1 bottom-1 z-10 rounded bg-black/70 px-1 py-0.5 font-mono text-[9px] text-white"
+                      title="Second-phase score: weighted sum of cosine similarity across every query event — same scale for matched and expanded frames alike"
+                    >
+                      {eventScore.toFixed(3)}
                     </span>
                   )}
                   <ResultCard
@@ -403,6 +436,8 @@ export default function VideoGroupGrid({
   executionTimeMs,
   onCardClick,
   showTranscript,
+  queryEvents,
+  eventWeights,
 }: Props) {
   const videoGroups = useMemo(() => buildVideoGroups(results), [results]);
   const sortedVideoIds = useMemo(
@@ -447,6 +482,8 @@ export default function VideoGroupGrid({
             frames={frames}
             onCardClick={onCardClick}
             showTranscript={showTranscript}
+            queryEvents={queryEvents}
+            eventWeights={eventWeights}
           />
         );
       })}
