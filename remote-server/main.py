@@ -186,6 +186,7 @@ class FrameScoresRequest(BaseModel):
     query_groups: list[QueryGroup]
     event_weights: list[float] | None = None
     frame_ids: list[str]
+    duplicate_threshold: float = Field(default=0.98, ge=0.0, le=1.0)
 
 
 class TranscriptSearchRequest(BaseModel):
@@ -366,7 +367,16 @@ async def get_frame_scores(req: FrameScoresRequest):
     neighbors) against the same query events that produced that search —
     one consistent scale for frames that arrived from very different
     places (a strategy's own ranking vs. never having been ranked at
-    all). See app/strategies/_event_scoring.py."""
+    all). See app/strategies/_event_scoring.py.
+
+    Also runs the standard near-duplicate filter over that same set, in
+    score-descending order, so the *best*-scoring frame of a near-identical
+    cluster survives — expanding a video's strip with real neighbors
+    inevitably pulls in several near-duplicate keyframes from the same
+    scene (see keyframe_selection.md), and those were never deduped
+    against anything before now (a search's own dedup pass only ever saw
+    its own matches, never context-frames' additions). A frame_id missing
+    from the response was filtered as a duplicate, not unscored."""
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready.")
     if not req.frame_ids:
@@ -377,11 +387,23 @@ async def get_frame_scores(req: FrameScoresRequest):
         raise HTTPException(400, "query_groups must contain at least one non-empty query")
 
     from app.strategies._event_scoring import event_weighted_scores
+    from app.strategies._similarity_filter import filter_similar_results
 
     query_vectors = [(await _data_provider._encode_text(q)).tolist() for q in queries]
     collection = milvus_client.get_collection()
     frame_vectors = milvus_client.query_frame_vectors(collection, req.frame_ids)
-    return {"scores": event_weighted_scores(query_vectors, frame_vectors, weights=req.event_weights)}
+    scores = event_weighted_scores(query_vectors, frame_vectors, weights=req.event_weights)
+
+    candidates = sorted(
+        ({"frame_id": frame_id} for frame_id in frame_vectors),
+        key=lambda c: scores.get(c["frame_id"], 0.0),
+        reverse=True,
+    )
+    kept_ids = {
+        c["frame_id"]
+        for c in filter_similar_results(candidates, frame_vectors, threshold=req.duplicate_threshold)
+    }
+    return {"scores": {frame_id: score for frame_id, score in scores.items() if frame_id in kept_ids}}
 
 
 @app.get("/api/zip-video/{video_id}")

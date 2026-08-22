@@ -181,11 +181,14 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
   // Second-phase score, computed the same way for every frame in the strip
   // — original matches and expanded neighbors alike — so they land on one
   // directly comparable scale instead of each strategy's own (differently
-  // scaled) result score. Display only: doesn't touch rankInVideo/badges/
-  // best-frame centering.
-  const [frameScores, setFrameScores] = useState<Record<string, number>>({});
+  // scaled) result score. The backend also runs the standard near-duplicate
+  // filter over this same set in score order — a frame_id missing from the
+  // response was filtered as a near-duplicate of a better-scoring one, not
+  // left unscored (null below means "not answered yet", distinct from "").
+  const [frameScores, setFrameScores] = useState<Record<string, number> | null>(null);
   const frameIdsKey = displayFrames.map((f) => f.result.frame_id).join(",");
   useEffect(() => {
+    setFrameScores(null);
     if (!isVisible || !queryEvents || queryEvents.length === 0 || !frameIdsKey) return;
     let cancelled = false;
     fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights)
@@ -193,6 +196,18 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isVisible, queryEvents, eventWeights, frameIdsKey]);
+
+  // Duplicate filtering only ever removes *expanded* frames (rankInVideo
+  // 0) — a real search match stays visible regardless, so badges/
+  // bestFrame/centering (all keyed off rankInVideo) never have to deal
+  // with their target disappearing out from under them. Before scores
+  // arrive (frameScores === null), show everything optimistically.
+  const visibleFrames = useMemo(() => {
+    if (frameScores === null) return displayFrames;
+    return displayFrames.filter(
+      (f) => f.rankInVideo > 0 || frameScores[f.result.frame_id] !== undefined,
+    );
+  }, [displayFrames, frameScores]);
 
   // Fetch this video's full transcript once (cheap after the first call);
   // rangeSegments below narrows it down to just a window around the best frame.
@@ -308,7 +323,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
       clearTimeout(handle);
       window.removeEventListener("resize", updateBestDirection);
     };
-  }, [frames, displayFrames, isVisible]);
+  }, [frames, visibleFrames, isVisible]);
 
   return (
     <div
@@ -323,7 +338,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
           </span>
           <span className="text-xs text-stone-500 dark:text-stone-400">
             {frames.length} matched frame{frames.length !== 1 ? "s" : ""}
-            {contextFrames.length > 0 && ` + ${contextFrames.length} nearby`}
+            {visibleFrames.length > frames.length && ` + ${visibleFrames.length - frames.length} nearby`}
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -356,9 +371,9 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
             onScroll={updateBestDirection}
             className="flex overflow-x-auto gap-2 p-3 scrollbar-thin"
           >
-            {displayFrames.map((df, i) => {
+            {visibleFrames.map((df, i) => {
               const badge = frameBadge(df.rankInVideo);
-              const eventScore = frameScores[df.result.frame_id];
+              const eventScore = frameScores?.[df.result.frame_id];
 
               return (
                 <div
