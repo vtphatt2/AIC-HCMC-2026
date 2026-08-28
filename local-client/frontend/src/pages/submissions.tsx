@@ -34,6 +34,7 @@ import {
   trakeSizeMismatch,
   useVideoInfo,
 } from "@/lib/submission";
+import { mergeFetchedSubmissionStates } from "@/lib/submission/mergeStates";
 import VideoModal from "@/components/VideoModal";
 
 const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
@@ -141,7 +142,10 @@ export default function SubmissionsDashboard() {
   const [newRowDraft, setNewRowDraft] = useState<Record<string, { videoId: string; frames: string }>>({});
   const [dragOverRow, setDragOverRow] = useState<{ session: string; row: number } | null>(null);
 
-  const videoInfo = useVideoInfo(Object.values(states).flatMap((s) => s.rows.map((r) => r.videoId)));
+  const loadedStates = Object.values(states).filter(
+    (state): state is SubmissionState => Boolean(state && Array.isArray(state.rows)),
+  );
+  const videoInfo = useVideoInfo(loadedStates.flatMap((state) => state.rows.map((row) => row.videoId)));
 
   // Awaits getVideoInfo directly rather than reading the videoInfo state —
   // that state is populated by useVideoInfo's background prefetch below, and
@@ -168,13 +172,7 @@ export default function SubmissionsDashboard() {
     const list = await fetchSubmissionSessions().catch(() => []);
     setSessions(list);
     const fetched = await Promise.all(list.map((s) => fetchSubmission(s.session).catch(() => null)));
-    setStates((prev) => {
-      const next: Record<string, SubmissionState> = {};
-      list.forEach((s, i) => {
-        next[s.session] = fetched[i] || prev[s.session];
-      });
-      return next;
-    });
+    setStates((prev) => mergeFetchedSubmissionStates(list, fetched, prev));
   }, []);
 
   useEffect(() => {
@@ -321,7 +319,7 @@ export default function SubmissionsDashboard() {
   }
 
   function handleDownloadZip() {
-    const ok = downloadSubmissionZip(Object.values(states));
+    const ok = downloadSubmissionZip(loadedStates);
     if (!ok) window.alert("No sessions with entries to bundle yet.");
   }
 
