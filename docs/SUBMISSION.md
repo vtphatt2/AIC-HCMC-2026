@@ -60,17 +60,16 @@ anything already saved.
 ## Find and jump to a video
 
 The `Title or video ID…` box in the main search page header (next to 🗳)
-searches the indexed video catalog by organizer title, exact `video_id`, or
-an ID prefix. ID separators are ignored for prefix matching, so `L0_` finds
+opens the highest-ranked indexed video by organizer title, exact `video_id`,
+or ID prefix. ID separators are ignored for prefix matching, so `L0_` finds
 the `L01_…`–`L09_…` groups; title matching is case- and accent-insensitive.
-Choose a suggestion to open the video. An exact ID, or a search with only one
-result, opens directly when Enter is pressed.
 
-Autocomplete is backed by `GET /api/videos?query=…`; the selected canonical
-ID is then resolved through `GET /api/video/{video_id}`, which returns that
-video's `fps`/`youtube_id` and first indexed keyframe. Local-backend needs
-ZIP-mode exported vectors (`numpy_vector_store`), the same as regular search;
-its titles come from the organizer's `media-info*.zip` archive.
+The request and response stay on the old `GET /api/video/{lookup}` contract:
+exact IDs use the original fast path, while a non-exact lookup is resolved to
+the first ranked canonical ID before the backend returns that video's
+`fps`/`youtube_id` and first indexed keyframe. Local-backend needs ZIP-mode
+exported vectors (`numpy_vector_store`), the same as regular search; its titles
+come from the organizer's `media-info*.zip` archive.
 
 ## Migrating older sessions
 

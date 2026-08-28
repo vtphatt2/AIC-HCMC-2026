@@ -230,18 +230,28 @@ async def get_transcript(video_id: str):
 
 @app.get("/api/video/{video_id}")
 async def get_video_info(video_id: str):
-    """Look up one video by its exact video_id — for jumping straight to a
-    video (e.g. found via transcript grep) without going through a search
-    box. Returns the fields VideoModal needs (fps, youtube_id, an initial
-    frame/timestamp) built from whatever indexed keyframe comes first."""
+    """Resolve an exact ID, compact ID prefix, or title to one video.
+
+    Returns the same VideoModal response as the old exact-ID endpoint; exact
+    IDs stay on the fast path and only misses scan the cached local catalog.
+    """
     from app.db import numpy_vector_store
 
     if not numpy_vector_store.available():
         raise HTTPException(503, "Video lookup needs ZIP mode with exported vectors (numpy_vector_store).")
 
-    frames = numpy_vector_store.frames_in_range(video_id, 0, 10**12, limit=1)
+    lookup = video_id
+    frames = numpy_vector_store.frames_in_range(lookup, 0, 10**12, limit=1)
     if not frames:
-        raise HTTPException(404, f"No indexed frames found for video_id={video_id}")
+        matches = search_video_catalog(indexed_video_catalog(), lookup, limit=1)
+        if not matches:
+            raise HTTPException(404, f"No video matched lookup={lookup}")
+        video_id = matches[0]["video_id"]
+        frames = numpy_vector_store.frames_in_range(video_id, 0, 10**12, limit=1)
+        if not frames:
+            raise HTTPException(404, f"No indexed frames found for video_id={video_id}")
+    else:
+        video_id = frames[0]["video_id"]
     frame = frames[0]
 
     from app.services.zip_frame_source import ingest_fps
@@ -253,20 +263,6 @@ async def get_video_info(video_id: str):
         "frame_number": frame["frame_number"],
         "timestamp_ms": frame["timestamp_ms"],
         "fps": ingest_fps(video_id) or 25.0,
-    }
-
-
-@app.get("/api/videos")
-async def search_videos(query: str, limit: int = 12):
-    """Find locally indexed videos by compact ID prefix or organizer title."""
-    from app.db import numpy_vector_store
-
-    if not query.strip():
-        return {"results": []}
-    if not numpy_vector_store.available():
-        raise HTTPException(503, "Video search needs ZIP mode with exported vectors.")
-    return {
-        "results": search_video_catalog(indexed_video_catalog(), query, limit)
     }
 
 

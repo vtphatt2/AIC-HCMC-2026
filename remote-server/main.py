@@ -284,8 +284,9 @@ async def get_transcript(video_id: str):
 
 @app.get("/api/video/{video_id}")
 async def get_video_info(video_id: str):
-    """Look up one video by its exact video_id — for jumping straight to it
-    (e.g. found via transcript search) without a search box, and for the
+    """Resolve an exact ID, compact ID prefix, or title to one video — for
+    jumping straight to it without changing the frontend's old response
+    contract. Exact IDs remain the fast path. Also used by the
     submission dashboard's fps/youtube_id lookup (lib/submission's
     getVideoInfo). Mirrors local-backend/main.py's endpoint of the same
     name and response shape; the source here is PostgreSQL's `videos` table
@@ -297,9 +298,19 @@ async def get_video_info(video_id: str):
     through the zip-video stream instead of YouTube and showed a wrong fps
     even for a video with a real YouTube embed (e.g. L21_V023, actually 30
     fps, DB default 25.0)."""
-    rows = await postgres_client.fetch_video_metadata([video_id])
+    lookup = video_id
+    rows = await postgres_client.fetch_video_metadata([lookup])
     if not rows:
-        raise HTTPException(404, f"No metadata found for video_id={video_id}")
+        catalog = await postgres_client.fetch_all_video_metadata()
+        matches = search_video_catalog(catalog, lookup, limit=1)
+        if not matches:
+            raise HTTPException(404, f"No video matched lookup={lookup}")
+        video_id = matches[0]["video_id"]
+        rows = await postgres_client.fetch_video_metadata([video_id])
+        if not rows:
+            raise HTTPException(404, f"No metadata found for video_id={video_id}")
+    else:
+        video_id = rows[0]["video_id"]
     video = rows[0]
 
     frame_id, frame_number, timestamp_ms = None, 0, 0
@@ -322,15 +333,6 @@ async def get_video_info(video_id: str):
         "timestamp_ms": timestamp_ms,
         "fps": float(video.get("fps") or 25.0),
     }
-
-
-@app.get("/api/videos")
-async def search_videos(query: str, limit: int = 12):
-    """Find indexed videos by compact ID prefix or organizer title."""
-    if not query.strip():
-        return {"results": []}
-    videos = await postgres_client.fetch_all_video_metadata()
-    return {"results": search_video_catalog(videos, query, limit)}
 
 
 # A video's own indexed keyframe count tops out around 784 in this dataset
