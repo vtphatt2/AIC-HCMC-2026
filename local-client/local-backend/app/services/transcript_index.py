@@ -329,6 +329,41 @@ def search_all_transcripts(query: str, top_k: int = 100, threshold: float = 70.0
         text=pairs[idx][1].text, char_start=0, char_end=len(pairs[idx][1].text), score=score,
     )) for _text, score, idx in hits]
 
+    return _transcript_matches_to_results(matches)
+
+
+def search_all_transcripts_lexical(query: str, top_k: int = 100) -> list[dict]:
+    """Rank local transcript segments by exact query-token coverage."""
+    tokens = set(re.findall(r"\w+", query.casefold()))
+    if not tokens:
+        return []
+
+    scored = []
+    for video_id, segment in _all_segments():
+        text_tokens = set(re.findall(r"\w+", segment.text.casefold()))
+        score = len(tokens & text_tokens) / len(tokens)
+        if score:
+            scored.append((score, video_id, segment))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    matches = [
+        (video_id, TranscriptMatch(
+            start_ms=segment.start_ms,
+            end_ms=segment.end_ms,
+            text=segment.text,
+            char_start=0,
+            char_end=len(segment.text),
+            score=score * 100.0,
+        ))
+        for score, video_id, segment in scored[:top_k]
+    ]
+    return _transcript_matches_to_results(matches)
+
+
+def _transcript_matches_to_results(
+    matches: list[tuple[str, TranscriptMatch]],
+) -> list[dict]:
+    """Hydrate ranked local transcript matches for the dedicated UI."""
+
     from app.db import numpy_vector_store
 
     have_frames = numpy_vector_store.available()

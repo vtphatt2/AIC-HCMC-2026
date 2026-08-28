@@ -148,6 +148,22 @@ export interface TranscriptChunkSearchResponse {
   results: TranscriptChunkResult[];
   total: number;
   execution_time_ms: number;
+  algorithm: TranscriptSearchAlgorithmId;
+}
+
+export type TranscriptSearchAlgorithmId = "semantic" | "lexical" | "fuzzy";
+
+export interface TranscriptSearchAlgorithm {
+  id: TranscriptSearchAlgorithmId;
+  name: string;
+  available: boolean;
+  supports_topic_filter: boolean;
+  description: string;
+}
+
+export interface TranscriptSearchAlgorithmResponse {
+  default: TranscriptSearchAlgorithmId;
+  algorithms: TranscriptSearchAlgorithm[];
 }
 
 export interface TranscriptSegment {

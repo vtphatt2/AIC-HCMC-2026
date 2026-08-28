@@ -8,6 +8,8 @@ import type {
   SearchResponse,
   TranscriptChunkResult,
   TranscriptChunkSearchResponse,
+  TranscriptSearchAlgorithm,
+  TranscriptSearchAlgorithmId,
   VectorSearchAlgorithm,
   StrategyConfigPreset,
   StrategyConfigDraft,
@@ -15,6 +17,7 @@ import type {
 } from "@/types";
 import {
   fetchVectorSearchAlgorithms,
+  fetchTranscriptSearchAlgorithms,
   fetchStrategies,
   fetchStrategyConfigs,
   fetchStrategyConfigDraft,
@@ -115,6 +118,8 @@ export default function Home() {
   const [transcriptLoading, setTranscriptLoading] = useState(false);
   const [transcriptTimeMs, setTranscriptTimeMs] = useState(0);
   const [transcriptGenre, setTranscriptGenre] = useState("");
+  const [transcriptAlgorithms, setTranscriptAlgorithms] = useState<TranscriptSearchAlgorithm[]>([]);
+  const [selectedTranscriptAlgorithm, setSelectedTranscriptAlgorithm] = useState<TranscriptSearchAlgorithmId | "">("");
   const [transcriptViewMode, setTranscriptViewMode] = useState<"score" | "video">("score");
 
   const mainRef = useRef<HTMLDivElement>(null);
@@ -327,6 +332,17 @@ export default function Home() {
       })
       .catch(() => undefined);
 
+    fetchTranscriptSearchAlgorithms()
+      .then((payload) => {
+        setTranscriptAlgorithms(payload.algorithms);
+        const fallback = payload.algorithms.find((item) => item.available)?.id || "";
+        const defaultIsAvailable = payload.algorithms.some(
+          (item) => item.id === payload.default && item.available
+        );
+        setSelectedTranscriptAlgorithm(defaultIsAvailable ? payload.default : fallback);
+      })
+      .catch(() => undefined);
+
     // Hide GPU wake-up work while the user prepares the first query.
     warmupTextEncoder().catch(() => undefined);
   }, []);
@@ -441,6 +457,10 @@ export default function Home() {
       setError("Enter a transcript search query.");
       return;
     }
+    if (!selectedTranscriptAlgorithm) {
+      setError("No transcript search algorithm is available.");
+      return;
+    }
     setError(null);
     setTranscriptLoading(true);
     const topK = normalizeTopK(transcriptTopK);
@@ -449,7 +469,8 @@ export default function Home() {
     try {
       const res = await searchTranscriptChunks(
         transcriptQuery.trim(), topK,
-        transcriptGenre || undefined,
+        selectedTranscriptAlgorithm,
+        currentTranscriptAlgorithm?.supports_topic_filter ? transcriptGenre || undefined : undefined,
       );
       setTranscriptTimeMs(Math.round(performance.now() - started));
       setTranscriptResponse(res);
@@ -459,6 +480,10 @@ export default function Home() {
       setTranscriptLoading(false);
     }
   }
+
+  const currentTranscriptAlgorithm = transcriptAlgorithms.find(
+    (item) => item.id === selectedTranscriptAlgorithm,
+  );
 
   function handleChunkCardClick(chunk: TranscriptChunkResult) {
     const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
@@ -1063,11 +1088,34 @@ export default function Home() {
                       </div>
 
                       <div className="flex items-center gap-2">
+                        <label className="text-xs text-stone-500 dark:text-stone-400 shrink-0">Algorithm</label>
+                        <select
+                          value={selectedTranscriptAlgorithm}
+                          onChange={(e) => setSelectedTranscriptAlgorithm(e.target.value as TranscriptSearchAlgorithmId)}
+                          className={`${RETRO_INPUT} focus:ring-teal-600`}
+                          disabled={transcriptAlgorithms.every((item) => !item.available)}
+                          title={currentTranscriptAlgorithm?.description}
+                        >
+                          {transcriptAlgorithms.map((algorithm) => (
+                            <option
+                              key={algorithm.id}
+                              value={algorithm.id}
+                              disabled={!algorithm.available}
+                            >
+                              {algorithm.name}{algorithm.available ? "" : " (unavailable)"}
+                            </option>
+                          ))}
+                        </select>
+
                         <label className="text-xs text-stone-500 dark:text-stone-400 shrink-0">Topic</label>
                         <select
                           value={transcriptGenre}
                           onChange={(e) => setTranscriptGenre(e.target.value)}
                           className={`${RETRO_INPUT} focus:ring-teal-600`}
+                          disabled={!currentTranscriptAlgorithm?.supports_topic_filter}
+                          title={currentTranscriptAlgorithm?.supports_topic_filter
+                            ? "Filter transcript chunks by topic"
+                            : "This algorithm has no topic metadata on the current host"}
                         >
                           <option value="">Auto</option>
                           {ALL_GENRES.filter(g => g !== "All").map((g) => (
@@ -1079,7 +1127,7 @@ export default function Home() {
 
                     <button
                       onClick={handleTranscriptSearch}
-                      disabled={transcriptLoading}
+                      disabled={transcriptLoading || !selectedTranscriptAlgorithm}
                       className={`${RETRO_STAMP_BTN} w-full py-2 bg-teal-700 hover:bg-teal-600 disabled:bg-stone-300 dark:disabled:bg-stone-700 disabled:text-stone-500 disabled:shadow-none disabled:translate-x-0 disabled:translate-y-0 text-white text-sm rounded`}
                     >
                       {transcriptLoading ? "Searching…" : "▶ Search Transcripts"}

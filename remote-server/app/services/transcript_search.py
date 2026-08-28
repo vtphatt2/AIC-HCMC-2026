@@ -20,6 +20,8 @@ NEAREST_FRAME_WINDOW_MS = int(os.getenv("TRANSCRIPT_NEAREST_FRAME_WINDOW_MS", "3
 NEAREST_FRAME_QUERY_LIMIT = int(os.getenv("TRANSCRIPT_NEAREST_FRAME_QUERY_LIMIT", "256"))
 
 TOPICS = milvus_client.TOPICS
+TRANSCRIPT_SEARCH_ALGORITHMS = {"semantic", "lexical", "fuzzy"}
+FUZZY_SCORE_CUTOFF = 70.0
 
 
 class TranscriptSearchService:
@@ -171,9 +173,12 @@ class TranscriptSearchService:
         query: str,
         top_k: int = 100,
         topic_filter: str | None = None,
+        algorithm: str = "semantic",
     ) -> list[dict]:
         """Legacy UI response; V2 strategies use search_chunks()."""
-        chunk_hits = await self.search_chunks(query, top_k, topic_filter)
+        chunk_hits = await self.search_algorithm_chunks(
+            query, top_k, topic_filter, algorithm
+        )
         if not chunk_hits:
             return []
         self._ensure_frames_collection()
@@ -205,6 +210,58 @@ class TranscriptSearchService:
             })
 
         results.sort(key=lambda x: x["score"], reverse=True)
+        return results
+
+    async def search_algorithm_chunks(
+        self,
+        query: str,
+        top_k: int = 100,
+        topic_filter: str | None = None,
+        algorithm: str = "semantic",
+    ) -> list[dict]:
+        selected = algorithm.strip().lower()
+        if selected not in TRANSCRIPT_SEARCH_ALGORITHMS:
+            raise ValueError(
+                "transcript search algorithm must be 'semantic', 'lexical', or 'fuzzy'"
+            )
+        if selected == "semantic":
+            return await self.search_chunks(query, top_k, topic_filter)
+        if selected == "lexical":
+            rows = await postgres_client.search_transcript_chunks_text(
+                query,
+                top_k,
+                video_genre="All",
+                topic_filter=topic_filter or "",
+            )
+            return [
+                {**row, "channel": "transcript.lexical", "rank": rank}
+                for rank, row in enumerate(rows, start=1)
+            ]
+
+        from rapidfuzz import fuzz, process
+
+        rows = await postgres_client.fetch_all_transcript_chunks(topic_filter)
+        hits = process.extract(
+            query,
+            [str(row["raw_text"]) for row in rows],
+            scorer=fuzz.WRatio,
+            limit=top_k,
+            score_cutoff=FUZZY_SCORE_CUTOFF,
+        )
+        results = []
+        for rank, (_text, score, index) in enumerate(hits, start=1):
+            row = rows[index]
+            results.append({
+                "channel": "transcript.fuzzy",
+                "chunk_id": row["chunk_id"],
+                "video_id": row["video_id"],
+                "topic": row["topic"],
+                "start_time_ms": row["start_time_ms"],
+                "end_time_ms": row["end_time_ms"],
+                "text": row["raw_text"],
+                "rank": rank,
+                "score": float(score) / 100.0,
+            })
         return results
 
     def encode_batch_passages(self, texts: list[str]) -> np.ndarray:

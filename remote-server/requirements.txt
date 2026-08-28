@@ -27,6 +27,7 @@ deep-translator==1.11.4
 onnxruntime==1.23.2
 ftfy==6.3.1
 regex==2026.7.10
+rapidfuzz==3.14.3
 setuptools==81.0.0
 
 # ffmpeg binary for decoding frames out of raw_zip_videos/ archives

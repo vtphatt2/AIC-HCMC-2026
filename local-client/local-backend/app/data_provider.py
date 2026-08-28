@@ -45,6 +45,7 @@ CHANNELS = {
 # strategy written against all four still runs there — it just says so plainly
 # here instead of returning an empty list that looks like "no matches".
 REMOTE_ONLY_CHANNELS = {"subtitled.semantic", "transcript.semantic"}
+TRANSCRIPT_SEARCH_ALGORITHMS = {"semantic", "lexical", "fuzzy"}
 
 
 def data_subdir(name: str) -> Path:
@@ -309,25 +310,47 @@ class DataProvider:
         return output
 
     async def search_transcript_chunks(
-        self, query: str, limit: int = 100, topic_filter: str | None = None
+        self,
+        query: str,
+        limit: int = 100,
+        topic_filter: str | None = None,
+        algorithm: str | None = None,
     ) -> list[dict]:
-        """LOCAL mode proxies to remote-server's topic-based (vector) search.
-        Otherwise, fuzzy-matches against the transcripts cached under
-        AIC_SAMPLE_ROOT — no topic classification (needs an embedding
-        model), but real local results instead of none."""
+        """Run the explicitly selected transcript search implementation."""
+        selected = (algorithm or ("semantic" if self.mode == "LOCAL" else "fuzzy")).strip().lower()
+        if selected not in TRANSCRIPT_SEARCH_ALGORITHMS:
+            raise ValueError(
+                "transcript search algorithm must be 'semantic', 'lexical', or 'fuzzy'"
+            )
         if self.mode == "LOCAL":
-            return await self._transcript_chunks_search_remote(query, limit, topic_filter)
-        from app.services.transcript_index import search_all_transcripts
+            return await self._transcript_chunks_search_remote(
+                query, limit, topic_filter, selected
+            )
 
+        if selected == "semantic":
+            raise RuntimeError(
+                "semantic transcript search is not available in ZIP mode; "
+                "select fuzzy or lexical"
+            )
+        if selected == "lexical":
+            from app.services.transcript_index import search_all_transcripts_lexical
+
+            return search_all_transcripts_lexical(query, top_k=limit)
+
+        from app.services.transcript_index import search_all_transcripts
         return search_all_transcripts(query, top_k=limit)
 
     async def _transcript_chunks_search_remote(
-        self, query: str, limit: int, topic_filter: str | None = None
+        self,
+        query: str,
+        limit: int,
+        topic_filter: str | None = None,
+        algorithm: str = "semantic",
     ) -> list[dict]:
         if not REMOTE_SERVER_URL:
             logger.warning("LOCAL mode but REMOTE_SERVER_URL not set. Returning empty results.")
             return []
-        payload: dict = {"query": query, "top_k": limit}
+        payload: dict = {"query": query, "top_k": limit, "algorithm": algorithm}
         if topic_filter:
             payload["topic_filter"] = topic_filter
         try:

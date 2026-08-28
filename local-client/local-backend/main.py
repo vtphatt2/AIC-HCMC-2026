@@ -159,6 +159,7 @@ class TranscriptChunkSearchRequest(BaseModel):
     query: str
     top_k: int = 100
     topic_filter: str = ""
+    algorithm: str = ""
 
 
 class FrameScoresRequest(BaseModel):
@@ -595,6 +596,49 @@ async def list_vector_search_algorithms():
     }
 
 
+@app.get("/api/transcript-search-algorithms")
+async def list_transcript_search_algorithms():
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL":
+        remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+        if remote_base:
+            async with httpx.AsyncClient(base_url=remote_base, timeout=10.0) as client:
+                try:
+                    response = await client.get(
+                        "/api/transcript-search-algorithms",
+                        headers={"ngrok-skip-browser-warning": "1"},
+                    )
+                    response.raise_for_status()
+                    return response.json()
+                except httpx.HTTPError:
+                    pass
+    return {
+        "default": "fuzzy",
+        "algorithms": [
+            {
+                "id": "fuzzy",
+                "name": "Fuzzy",
+                "available": True,
+                "supports_topic_filter": False,
+                "description": "RapidFuzz WRatio over local transcript segments.",
+            },
+            {
+                "id": "lexical",
+                "name": "Lexical",
+                "available": True,
+                "supports_topic_filter": False,
+                "description": "Exact token-overlap ranking over local transcript segments.",
+            },
+            {
+                "id": "semantic",
+                "name": "Semantic",
+                "available": False,
+                "supports_topic_filter": True,
+                "description": "Requires the remote E5 + Milvus transcript index.",
+            },
+        ],
+    }
+
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     try:
@@ -681,11 +725,20 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
 
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
+    algorithm = (
+        req.algorithm.strip().lower()
+        or ("semantic" if _data_provider.mode == "LOCAL" else "fuzzy")
+    )
 
     try:
         results = await _data_provider.search_transcript_chunks(
-            req.query.strip(), limit=top_k, topic_filter=req.topic_filter or None,
+            req.query.strip(),
+            limit=top_k,
+            topic_filter=req.topic_filter or None,
+            algorithm=algorithm,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
@@ -695,4 +748,5 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
         "results":           results,
         "total":             min(len(results), top_k),
         "execution_time_ms": int((time.monotonic() - t0) * 1000),
+        "algorithm": algorithm,
     }

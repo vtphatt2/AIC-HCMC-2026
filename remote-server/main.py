@@ -193,6 +193,7 @@ class TranscriptSearchRequest(BaseModel):
     query: str
     top_k: int = 100
     topic_filter: str = ""
+    algorithm: str = "semantic"
 
 
 class StrategyConfigUpdate(BaseModel):
@@ -530,6 +531,37 @@ async def list_vector_search_algorithms():
     }
 
 
+@app.get("/api/transcript-search-algorithms")
+async def list_transcript_search_algorithms():
+    available = _transcript_search_service is not None
+    return {
+        "default": "semantic",
+        "algorithms": [
+            {
+                "id": "semantic",
+                "name": "Semantic",
+                "available": available,
+                "supports_topic_filter": True,
+                "description": "E5 embeddings with Milvus HNSW vector search.",
+            },
+            {
+                "id": "lexical",
+                "name": "Lexical",
+                "available": available,
+                "supports_topic_filter": True,
+                "description": "PostgreSQL full-text ranking over transcript chunks.",
+            },
+            {
+                "id": "fuzzy",
+                "name": "Fuzzy",
+                "available": available,
+                "supports_topic_filter": True,
+                "description": "RapidFuzz WRatio typo-tolerant matching over transcript chunks.",
+            },
+        ],
+    }
+
+
 @app.post("/api/translate")
 async def translate(req: TranslationRequest):
     try:
@@ -683,13 +715,17 @@ async def search_transcript(req: TranscriptSearchRequest):
 
     t0 = time.monotonic()
     top_k = min(max(req.top_k, 1), FETCH_CAP)
+    algorithm = req.algorithm.strip().lower()
 
     try:
         results = await _transcript_search_service.search(
             req.query.strip(),
             top_k=top_k,
             topic_filter=req.topic_filter.strip() or None,
+            algorithm=algorithm,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     except Exception as exc:
         logger.exception("Transcript chunk search error")
         raise HTTPException(500, f"Transcript search error: {exc}")
@@ -705,6 +741,7 @@ async def search_transcript(req: TranscriptSearchRequest):
         "results":           results[:top_k],
         "total":             min(len(results), top_k),
         "execution_time_ms": int(total_ms),
+        "algorithm": algorithm,
     }
 
 

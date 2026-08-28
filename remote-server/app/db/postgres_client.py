@@ -195,6 +195,7 @@ async def search_transcript_chunks_text(
     query: str,
     limit: int = 100,
     video_genre: str = "All",
+    topic_filter: str = "",
 ) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(
@@ -206,12 +207,28 @@ async def search_transcript_chunks_text(
         LEFT JOIN videos v ON v.video_id = c.video_id
         WHERE to_tsvector('simple', c.raw_text) @@ plainto_tsquery('simple', $1)
           AND ($3 = 'All' OR $3 = '' OR v.genre = $3)
+          AND ($4 = '' OR c.topic = $4)
         ORDER BY score DESC
         LIMIT $2
         """,
         query,
         limit,
         video_genre,
+        topic_filter,
+    )
+    return [dict(row) for row in rows]
+
+
+async def fetch_all_transcript_chunks(topic_filter: str | None = None) -> list[dict]:
+    pool = await get_pool()
+    rows = await pool.fetch(
+        """
+        SELECT chunk_id, video_id, topic, start_time_ms, end_time_ms, raw_text
+        FROM transcript_chunks_metadata
+        WHERE ($1 = '' OR topic = $1)
+        ORDER BY chunk_id
+        """,
+        topic_filter or "",
     )
     return [dict(row) for row in rows]
 

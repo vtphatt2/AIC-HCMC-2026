@@ -9,9 +9,12 @@ import type {
   StrategyConfigValue,
   TranslationResponse,
   TranscriptChunkSearchResponse,
+  TranscriptSearchAlgorithmId,
+  TranscriptSearchAlgorithmResponse,
   TranscriptResponse,
   VectorSearchAlgorithmResponse,
 } from "@/types";
+import { buildTranscriptSearchPayload } from "@/lib/transcriptSearch";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -65,6 +68,12 @@ export async function saveStrategyConfigDraft(
 export async function fetchVectorSearchAlgorithms(): Promise<VectorSearchAlgorithmResponse> {
   const res = await fetch(apiUrl("/api/vector-search-algorithms"));
   if (!res.ok) throw new Error("Failed to fetch vector search algorithms");
+  return res.json();
+}
+
+export async function fetchTranscriptSearchAlgorithms(): Promise<TranscriptSearchAlgorithmResponse> {
+  const res = await fetch(apiUrl("/api/transcript-search-algorithms"));
+  if (!res.ok) throw new Error("Failed to fetch transcript search algorithms");
   return res.json();
 }
 
@@ -136,10 +145,10 @@ export async function runSearch(
 export async function searchTranscriptChunks(
   query: string,
   topK: number,
+  algorithm: TranscriptSearchAlgorithmId,
   topicFilter?: string,
 ): Promise<TranscriptChunkSearchResponse> {
-  const payload: Record<string, unknown> = { query, top_k: topK };
-  if (topicFilter) payload.topic_filter = topicFilter;
+  const payload = buildTranscriptSearchPayload(query, topK, topicFilter, algorithm);
 
   const res = await fetch(apiUrl("/api/search/transcript"), {
     method: "POST",
