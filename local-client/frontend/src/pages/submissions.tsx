@@ -35,6 +35,7 @@ import {
   useVideoInfo,
 } from "@/lib/submission";
 import { mergeFetchedSubmissionStates } from "@/lib/submission/mergeStates";
+import SessionManagerModal from "@/components/SessionManagerModal";
 import VideoModal from "@/components/VideoModal";
 
 const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
@@ -141,6 +142,7 @@ export default function SubmissionsDashboard() {
   const [editMode, setEditMode] = useState<Record<string, "grid" | "raw">>({});
   const [newRowDraft, setNewRowDraft] = useState<Record<string, { videoId: string; frames: string }>>({});
   const [dragOverRow, setDragOverRow] = useState<{ session: string; row: number } | null>(null);
+  const [showSessionManager, setShowSessionManager] = useState(false);
 
   const loadedStates = Object.values(states).filter(
     (state): state is SubmissionState => Boolean(state && Array.isArray(state.rows)),
@@ -341,8 +343,9 @@ export default function SubmissionsDashboard() {
                 Every session, live — click a frame to review it, edit inline, or switch to raw CSV.
               </p>
             </div>
-            <div className="flex items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center justify-end gap-3 shrink-0">
               <button className={BTN} onClick={handleCreateSession}>+ New session</button>
+              <button className={BTN} onClick={() => setShowSessionManager(true)}>☷ Manage sessions</button>
               <button className={BTN} onClick={handleDownloadZip}>⬇ Download submission.zip</button>
               <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
             </div>
@@ -574,6 +577,14 @@ export default function SubmissionsDashboard() {
           })}
         </div>
       </main>
+
+      {showSessionManager && (
+        <SessionManagerModal
+          sessions={sessions}
+          onChanged={refreshAll}
+          onClose={() => setShowSessionManager(false)}
+        />
+      )}
 
       {activeResult && (
         <VideoModal
