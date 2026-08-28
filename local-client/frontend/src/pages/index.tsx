@@ -28,6 +28,7 @@ import {
   searchTranscriptChunks,
 } from "@/lib/api";
 import { onTuningDraftPing } from "@/lib/tuningPing";
+import { transcriptChunksToFrameResults } from "@/lib/transcriptSearch";
 import QueryGroupComponent from "@/components/QueryGroup";
 import CommandPanel, { type CommandPanelHandle } from "@/components/CommandPanel";
 import ResultGrid, { type ResultGridHandle } from "@/components/ResultGrid";
@@ -113,6 +114,7 @@ export default function Home() {
   // ── Transcript search state ────────────────────────────────────────────────
   const [searchMode, setSearchMode] = useState<"frames" | "transcripts">("frames");
   const [transcriptQuery, setTranscriptQuery] = useState("");
+  const [transcriptResultQuery, setTranscriptResultQuery] = useState("");
   const [transcriptTopK, setTranscriptTopK] = useState("20");
   const [transcriptResponse, setTranscriptResponse] = useState<TranscriptChunkSearchResponse | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
@@ -465,14 +467,16 @@ export default function Home() {
     setTranscriptLoading(true);
     const topK = normalizeTopK(transcriptTopK);
     setTranscriptTopK(String(topK));
+    const submittedQuery = transcriptQuery.trim();
     const started = performance.now();
     try {
       const res = await searchTranscriptChunks(
-        transcriptQuery.trim(), topK,
+        submittedQuery, topK,
         selectedTranscriptAlgorithm,
         currentTranscriptAlgorithm?.supports_topic_filter ? transcriptGenre || undefined : undefined,
       );
       setTranscriptTimeMs(Math.round(performance.now() - started));
+      setTranscriptResultQuery(submittedQuery);
       setTranscriptResponse(res);
     } catch (err: any) {
       setError(err.message || "Transcript search failed.");
@@ -545,24 +549,7 @@ export default function Home() {
 
   const transcriptFrameResults = useMemo<SearchResult[]>(() => {
     if (!transcriptResponse) return [];
-    return transcriptResponse.results.filter((chunk) => chunk.frame_image_url).map((chunk) => {
-      const midMs = (chunk.start_time_ms + chunk.end_time_ms) / 2;
-      const computedFrameNumber = Math.floor((midMs / 1000) * 25);
-      const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
-      const timestampMs = chunk.nearest_timestamp_ms ?? Math.round((frameNumber / 25) * 1000);
-
-      return {
-        video_id: chunk.video_id,
-        youtube_id: chunk.youtube_id,
-        frame_id: `${chunk.video_id}_${String(frameNumber).padStart(6, "0")}`,
-        frame_number: frameNumber,
-        timestamp_ms: timestampMs,
-        confidence: chunk.score,
-        frame_image_url: chunk.frame_image_url,
-        frame_preview_url: chunk.frame_preview_url,
-        fps: 25,
-      };
-    });
+    return transcriptChunksToFrameResults(transcriptResponse.results);
   }, [transcriptResponse]);
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -1243,6 +1230,7 @@ export default function Home() {
                         key={chunk.chunk_id}
                         result={chunk}
                         rank={i + 1}
+                        query={transcriptResultQuery}
                         onClick={handleChunkCardClick}
                         onFrameClick={handleTranscriptFrameClick}
                       />

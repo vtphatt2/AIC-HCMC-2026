@@ -1,9 +1,11 @@
 import type { TranscriptChunkResult } from "@/types";
 import { apiUrl } from "@/lib/api";
+import { highlightTranscriptText } from "@/lib/transcriptSearch";
 
 interface Props {
   result: TranscriptChunkResult;
   rank: number;
+  query: string;
   onClick: (result: TranscriptChunkResult) => void;
   onFrameClick?: (
     videoId: string,
@@ -61,12 +63,13 @@ function topicColor(topic: string): string {
   return TOPIC_COLORS[topic] ?? "bg-stone-700 text-stone-300";
 }
 
-export default function TranscriptChunkCard({ result, rank, onClick, onFrameClick }: Props) {
+export default function TranscriptChunkCard({ result, rank, query, onClick, onFrameClick }: Props) {
   const imageUrl = result.frame_image_url
     ? result.frame_image_url.startsWith("http")
       ? result.frame_image_url
       : apiUrl(result.frame_image_url)
     : "";
+  const highlightedText = highlightTranscriptText(result.text, query);
 
   function handleImageError(e: React.SyntheticEvent<HTMLImageElement>) {
     (e.target as HTMLImageElement).style.display = "none";
@@ -144,7 +147,14 @@ export default function TranscriptChunkCard({ result, rank, onClick, onFrameClic
         className="w-full text-left p-3.5 flex-1 flex flex-col justify-between gap-3 hover:bg-stone-100 dark:hover:bg-stone-800/35 transition"
       >
         <p className="text-sm text-stone-700 dark:text-stone-200 leading-relaxed font-sans font-normal line-clamp-4">
-          {result.text}
+          {highlightedText.map((part, index) => part.highlighted ? (
+            <mark
+              key={index}
+              className="rounded-sm bg-amber-300 px-0.5 text-stone-950 dark:bg-amber-500/80 dark:text-stone-950"
+            >
+              {part.text}
+            </mark>
+          ) : part.text)}
         </p>
         <div className="flex items-center gap-1 text-[11px] text-stone-500 font-mono select-none">
           <svg className="w-3.5 h-3.5 text-stone-500" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
