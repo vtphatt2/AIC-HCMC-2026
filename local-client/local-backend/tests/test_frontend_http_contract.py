@@ -38,6 +38,5 @@ class FrontendHttpContractTests(unittest.TestCase):
         self.assertEqual(response.json(), {"translations": ["hello"]})
         translate.assert_called_once_with(["xin chào"])
 
-
 if __name__ == "__main__":
     unittest.main()

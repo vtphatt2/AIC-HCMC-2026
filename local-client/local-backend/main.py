@@ -34,6 +34,7 @@ from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
 from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
 from app.services import local_zip_media
+from app.services.video_catalog import indexed_video_catalog, search_video_catalog
 
 logger = logging.getLogger(__name__)
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
@@ -252,6 +253,20 @@ async def get_video_info(video_id: str):
         "frame_number": frame["frame_number"],
         "timestamp_ms": frame["timestamp_ms"],
         "fps": ingest_fps(video_id) or 25.0,
+    }
+
+
+@app.get("/api/videos")
+async def search_videos(query: str, limit: int = 12):
+    """Find locally indexed videos by compact ID prefix or organizer title."""
+    from app.db import numpy_vector_store
+
+    if not query.strip():
+        return {"results": []}
+    if not numpy_vector_store.available():
+        raise HTTPException(503, "Video search needs ZIP mode with exported vectors.")
+    return {
+        "results": search_video_catalog(indexed_video_catalog(), query, limit)
     }
 
 

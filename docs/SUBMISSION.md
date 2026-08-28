@@ -57,15 +57,20 @@ hand.
 Both modes hit the same backend actions, so switching mid-edit never loses
 anything already saved.
 
-## Jump to a video by ID
+## Find and jump to a video
 
-The `video_id…` box in the main search page header (next to 🗳) opens a
-video directly by its exact `video_id` — for when you already know which
-video you want (found it via transcript search, a teammate named it, etc.)
-and don't want to route through a search query to reach it. Backed by
-`GET /api/video/{video_id}` (local-backend), which returns that video's
-`fps`/`youtube_id` off its first indexed keyframe — needs ZIP-mode exported
-vectors (`numpy_vector_store`), same as regular search.
+The `Title or video ID…` box in the main search page header (next to 🗳)
+searches the indexed video catalog by organizer title, exact `video_id`, or
+an ID prefix. ID separators are ignored for prefix matching, so `L0_` finds
+the `L01_…`–`L09_…` groups; title matching is case- and accent-insensitive.
+Choose a suggestion to open the video. An exact ID, or a search with only one
+result, opens directly when Enter is pressed.
+
+Autocomplete is backed by `GET /api/videos?query=…`; the selected canonical
+ID is then resolved through `GET /api/video/{video_id}`, which returns that
+video's `fps`/`youtube_id` and first indexed keyframe. Local-backend needs
+ZIP-mode exported vectors (`numpy_vector_store`), the same as regular search;
+its titles come from the organizer's `media-info*.zip` archive.
 
 ## Migrating older sessions
 

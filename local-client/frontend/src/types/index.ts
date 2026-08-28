@@ -202,3 +202,12 @@ export interface ContextFramesResponse {
   middle: ContextFrame[];
   after: ContextFrame[];
 }
+
+export interface VideoCatalogMatch {
+  video_id: string;
+  title: string;
+}
+
+export interface VideoCatalogSearchResponse {
+  results: VideoCatalogMatch[];
+}

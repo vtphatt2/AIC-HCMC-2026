@@ -82,6 +82,11 @@ def available() -> bool:
     return paths() is not None
 
 
+def video_ids() -> list[str]:
+    """All indexed video IDs, sorted once by NumPy without copying frame rows."""
+    return [str(video_id) for video_id in np.unique(get_store().video_id).tolist()]
+
+
 def staleness_warning() -> str | None:
     """Ingesting without re-exporting leaves search running on the previous
     vectors, and nothing else would notice — the file is still valid, just

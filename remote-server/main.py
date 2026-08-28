@@ -26,6 +26,7 @@ from app.services.translation import TranslationService
 from app.services.strategy_config import StrategyConfigStore
 from app.services.transcript_search import TranscriptSearchService
 from app.services.transcript_jsonl_reader import transcript_response
+from app.services.video_catalog import search_video_catalog
 from app.services.query_parser import QueryParser
 from app.services import local_zip_media
 
@@ -321,6 +322,15 @@ async def get_video_info(video_id: str):
         "timestamp_ms": timestamp_ms,
         "fps": float(video.get("fps") or 25.0),
     }
+
+
+@app.get("/api/videos")
+async def search_videos(query: str, limit: int = 12):
+    """Find indexed videos by compact ID prefix or organizer title."""
+    if not query.strip():
+        return {"results": []}
+    videos = await postgres_client.fetch_all_video_metadata()
+    return {"results": search_video_catalog(videos, query, limit)}
 
 
 # A video's own indexed keyframe count tops out around 784 in this dataset

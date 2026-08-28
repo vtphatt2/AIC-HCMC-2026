@@ -13,6 +13,8 @@ import type {
   TranscriptSearchAlgorithmResponse,
   TranscriptResponse,
   VectorSearchAlgorithmResponse,
+  VideoCatalogMatch,
+  VideoCatalogSearchResponse,
 } from "@/types";
 import { buildTranscriptSearchPayload } from "@/lib/transcriptSearch";
 
@@ -249,4 +251,19 @@ export async function fetchVideoById(videoId: string): Promise<SearchResult> {
     frame_image_url: apiUrl(`/api/zip-frame/${info.video_id}/${info.timestamp_ms}`),
     fps: info.fps,
   };
+}
+
+export async function searchVideos(
+  query: string,
+  limit = 12,
+  signal?: AbortSignal,
+): Promise<VideoCatalogMatch[]> {
+  const params = new URLSearchParams({ query, limit: String(limit) });
+  const res = await fetch(apiUrl(`/api/videos?${params}`), { signal });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to search videos");
+  }
+  const payload = (await res.json()) as VideoCatalogSearchResponse;
+  return payload.results ?? [];
 }

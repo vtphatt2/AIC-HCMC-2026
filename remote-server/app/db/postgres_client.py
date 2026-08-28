@@ -97,6 +97,15 @@ async def fetch_video_metadata(video_ids: list[str]) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def fetch_all_video_metadata() -> list[dict]:
+    """Small catalog used by the title/ID autocomplete (one row per video)."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT video_id, title FROM videos ORDER BY video_id"
+    )
+    return [dict(r) for r in rows]
+
+
 async def fetch_ocr_by_frame_ids(frame_ids: list[str]) -> list[dict]:
     pool = await get_pool()
     rows = await pool.fetch(

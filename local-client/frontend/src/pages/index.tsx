@@ -21,7 +21,6 @@ import {
   fetchStrategies,
   fetchStrategyConfigs,
   fetchStrategyConfigDraft,
-  fetchVideoById,
   saveStrategyConfigDraft,
   runSearch,
   warmupTextEncoder,
@@ -35,6 +34,7 @@ import ResultGrid, { type ResultGridHandle } from "@/components/ResultGrid";
 import VideoGroupGrid from "@/components/VideoGroupGrid";
 import TranscriptChunkCard from "@/components/TranscriptChunkCard";
 import VideoModal from "@/components/VideoModal";
+import VideoLookup from "@/components/VideoLookup";
 import HelpModal from "@/components/HelpModal";
 import SubmissionPanel, { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
 import { fetchSubmissionSessions } from "@/lib/submission";
@@ -131,23 +131,6 @@ export default function Home() {
 
   function openResult(r: SearchResult) {
     setActiveResult(r);
-  }
-
-  const [jumpVideoId, setJumpVideoId] = useState("");
-  const [jumpLoading, setJumpLoading] = useState(false);
-
-  async function handleJumpToVideo() {
-    const videoId = jumpVideoId.trim();
-    if (!videoId) return;
-    setJumpLoading(true);
-    try {
-      openResult(await fetchVideoById(videoId));
-      setJumpVideoId("");
-    } catch (err: any) {
-      window.alert(err.message || `Video "${videoId}" not found`);
-    } finally {
-      setJumpLoading(false);
-    }
   }
 
   // ── Theme: load saved preference, reflect onto <html class="dark"> ────────
@@ -607,23 +590,7 @@ export default function Home() {
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
-                  <input
-                    value={jumpVideoId}
-                    onChange={(e) => setJumpVideoId(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Enter") handleJumpToVideo(); }}
-                    placeholder="video_id…"
-                    disabled={jumpLoading}
-                    title="Jump straight to a video by its exact video_id"
-                    className="h-7 w-28 rounded border-2 border-stone-800 dark:border-stone-500 px-2 text-xs font-mono bg-cream-card dark:bg-stone-800 text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600"
-                  />
-                  <button
-                    onClick={handleJumpToVideo}
-                    disabled={jumpLoading || !jumpVideoId.trim()}
-                    className="h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 px-2 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition disabled:opacity-40"
-                    title="Jump to video_id"
-                  >
-                    <span className="text-xs font-bold">{jumpLoading ? "…" : "↗"}</span>
-                  </button>
+                  <VideoLookup onOpen={openResult} />
                   <button
                     onClick={() => setShowSubmission(true)}
                     className="h-7 flex items-center justify-center rounded border-2 border-stone-800 dark:border-stone-500 px-2 text-stone-600 dark:text-stone-300 hover:text-orange-700 dark:hover:text-orange-400 hover:border-orange-700 dark:hover:border-orange-400 transition"
