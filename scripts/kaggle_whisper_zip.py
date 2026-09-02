@@ -101,7 +101,7 @@ for idx, url in enumerate(ZIP_URLS, 1):
         for name in z.namelist():
             vid = Path(name).stem
             if vid in NEEDED:
-                dest = video_dir / Path(name).name
+                dest = video_dir / name  # giữ prefix 'video/…' — lot ZIP lưu video trong thư mục con
                 if not dest.exists():
                     z.extract(name, video_dir)
                     extracted.append(dest)
