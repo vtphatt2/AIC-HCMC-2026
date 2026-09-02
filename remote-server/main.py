@@ -331,7 +331,10 @@ async def get_video_info(video_id: str):
         "frame_id": frame_id,
         "frame_number": frame_number,
         "timestamp_ms": timestamp_ms,
-        "fps": float(video.get("fps") or 25.0),
+        # The frame/timestamp mapping was created from scenes.json at ingest.
+        # Prefer that same value over a possibly stale PostgreSQL default so
+        # the playback modal can refresh an incorrect result fps reliably.
+        "fps": float(local_zip_media.ingest_fps(video_id) or video.get("fps") or 25.0),
     }
 
 

@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, SubmissionState, TranscriptSegment } from "@/types";
-import { apiUrl, fetchTranscript } from "@/lib/api";
+import { apiUrl, fetchTranscript, fetchVideoById } from "@/lib/api";
 import { addSubmissionRowFrame, fetchSubmission } from "@/lib/submission";
+import {
+  choosePlaybackSource,
+  frameAtPlaybackTime,
+  normalizePlaybackFps,
+  otherPlaybackSource,
+  type PlaybackSource,
+} from "@/lib/playback";
 import { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
 
 interface Props {
@@ -39,9 +46,12 @@ export default function VideoModal({
 }: Props) {
   const playerRef = useRef<any>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
-  const youtubeId = result.youtube_id || "";
+  const resultYoutubeId = result.youtube_id || "";
   const startSeconds = result.timestamp_ms / 1000;
-  const fps = result.fps;
+  const [metadataFps, setMetadataFps] = useState<number | null>(null);
+  const [metadataYoutubeId, setMetadataYoutubeId] = useState("");
+  const youtubeId = metadataYoutubeId || resultYoutubeId;
+  const fps = normalizePlaybackFps(metadataFps, result.fps);
 
   // YouTube is tried first whenever a video has a known youtube_id — but
   // "known youtube_id" doesn't guarantee a *working* embed: the uploader may
@@ -54,8 +64,14 @@ export default function VideoModal({
   const zipVideoUrl = result.video_id ? apiUrl(`/api/zip-video/${encodeURIComponent(result.video_id)}`) : "";
   const [zipVideoFailed, setZipVideoFailed] = useState(false);
   const [youtubeFailed, setYoutubeFailed] = useState(false);
-  const useYoutube = Boolean(youtubeId) && !youtubeFailed;
-  const useZipVideo = !useYoutube && Boolean(zipVideoUrl) && !zipVideoFailed;
+  const [preferredSource, setPreferredSource] = useState<PlaybackSource>(resultYoutubeId ? "youtube" : "mp4");
+  const activeSource = choosePlaybackSource(
+    preferredSource,
+    Boolean(youtubeId) && !youtubeFailed,
+    Boolean(zipVideoUrl) && !zipVideoFailed,
+  );
+  const useYoutube = activeSource === "youtube";
+  const useZipVideo = activeSource === "mp4";
   // Show the SHARP frame (same one the results grid shows), with the fast
   // low-res preview as a blurred stand-in underneath until it loads — a
   // blur-up, same as ResultCard. The grid already loaded the sharp image
@@ -74,7 +90,28 @@ export default function VideoModal({
   // visible layer: opening the modal shows the frame, paused, on purpose.
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const wantsPlayRef = useRef(false);
-  const currentFrame = Math.floor(currentTimeSec * fps);
+  const desiredTimeRef = useRef(startSeconds);
+  const currentFrame = frameAtPlaybackTime(currentTimeSec, fps);
+
+  // Search hits can carry stale/default fps (notably transcript results used
+  // to hard-code 25). Refresh from the canonical per-video metadata so both
+  // players use the frame mapping that was recorded at ingest.
+  useEffect(() => {
+    let cancelled = false;
+    setMetadataFps(null);
+    setMetadataYoutubeId("");
+    fetchVideoById(result.video_id)
+      .then((video) => {
+        if (cancelled) return;
+        if (Number.isFinite(video.fps) && video.fps > 0) setMetadataFps(video.fps);
+        if (video.youtube_id) setMetadataYoutubeId(video.youtube_id);
+      })
+      .catch(() => {
+        // Keep result.fps as a graceful fallback. Playback must remain usable
+        // when metadata storage is temporarily unavailable.
+      });
+    return () => { cancelled = true; };
+  }, [result.video_id]);
 
   // "Add to submission" — targets whichever session this browser last picked
   // in the SubmissionPanel (localStorage.SUBMISSION_SESSION_KEY). No session
@@ -120,20 +157,53 @@ export default function VideoModal({
   useEffect(() => {
     setZipVideoFailed(false);
     setYoutubeFailed(false);
+    setPreferredSource(resultYoutubeId ? "youtube" : "mp4");
     setHasStartedPlaying(false);
+    desiredTimeRef.current = startSeconds;
+    setCurrentTimeSec(startSeconds);
     wantsPlayRef.current = false;
   }, [result.video_id]);
+
+  const readActiveTime = useCallback((): number => {
+    if (activeSource === "mp4" && videoElRef.current?.currentTime != null) {
+      return videoElRef.current.currentTime;
+    }
+    if (activeSource === "youtube" && typeof playerRef.current?.getCurrentTime === "function") {
+      return playerRef.current.getCurrentTime();
+    }
+    return currentTimeSec;
+  }, [activeSource, currentTimeSec]);
+
+  const handleSourceToggle = useCallback(() => {
+    if (!activeSource) return;
+    const target = otherPlaybackSource(
+      activeSource,
+      Boolean(youtubeId),
+      Boolean(zipVideoUrl),
+    );
+    if (!target) return;
+
+    const sourceTime = readActiveTime();
+    const nextTime = Number.isFinite(sourceTime) ? Math.max(0, sourceTime) : currentTimeSec;
+    desiredTimeRef.current = nextTime;
+    setCurrentTimeSec(nextTime);
+    setHasStartedPlaying(false);
+    wantsPlayRef.current = false;
+    if (target === "youtube") setYoutubeFailed(false);
+    if (target === "mp4") setZipVideoFailed(false);
+    setPreferredSource(target);
+  }, [activeSource, currentTimeSec, readActiveTime, youtubeId, zipVideoUrl]);
 
   const toggleNativeVideoPlayback = useCallback(() => {
     const el = videoElRef.current;
     if (!el) return;
     if (el.paused) {
-      if (!hasStartedPlaying) el.currentTime = startSeconds;
+      if (!hasStartedPlaying) el.currentTime = desiredTimeRef.current;
       el.play();
     } else {
       el.pause();
     }
-  }, [hasStartedPlaying, startSeconds]);
+  }, [hasStartedPlaying]);
 
   const togglePlayback = useCallback(() => {
     const player = playerRef.current;
@@ -145,14 +215,14 @@ export default function VideoModal({
     const state = typeof player.getPlayerState === "function" ? player.getPlayerState() : -1;
     const neverStarted = !YT || state === YT.PlayerState.UNSTARTED || state === YT.PlayerState.CUED;
     if (neverStarted) {
-      if (typeof player.seekTo === "function") player.seekTo(startSeconds, true);
+      if (typeof player.seekTo === "function") player.seekTo(desiredTimeRef.current, true);
       player.playVideo();
     } else if (state === YT.PlayerState.PLAYING) {
       player.pauseVideo();
     } else {
       player.playVideo();
     }
-  }, [startSeconds]);
+  }, []);
 
   const handleTogglePlayback = useCallback(() => {
     if (useZipVideo) {
@@ -209,7 +279,7 @@ export default function VideoModal({
         const player = playerRef.current;
         const ready = player && typeof player.playVideo === "function";
         if (!ready || typeof player.seekTo !== "function") return;
-        const now = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : startSeconds;
+        const now = typeof player.getCurrentTime === "function" ? player.getCurrentTime() : desiredTimeRef.current;
         player.seekTo(Math.max(0, now + delta), true);
       }
     }
@@ -282,12 +352,12 @@ export default function VideoModal({
               return;
             }
             playerRef.current = event.target;
-            event.target.seekTo(startSeconds, true);
+            event.target.seekTo(desiredTimeRef.current, true);
             event.target.pauseVideo();
             if (wantsPlayRef.current) {
               // Re-seek in case the first seekTo landed before the video
               // was buffered enough for it to stick.
-              event.target.seekTo(startSeconds, true);
+              event.target.seekTo(desiredTimeRef.current, true);
               event.target.playVideo();
             }
           },
@@ -327,9 +397,11 @@ export default function VideoModal({
     };
   }, [youtubeId, useYoutube]);
 
-  // Seek without rebuilding the player when only the target timestamp
-  // changes — stays paused (a newly-shown frame should also start paused).
+  // A different result frame in the same video seeks the active source. Source
+  // toggles do not enter here: handleSourceToggle stores the live player time
+  // in desiredTimeRef, and the newly-mounted player consumes that value.
   useEffect(() => {
+    desiredTimeRef.current = startSeconds;
     if (useZipVideo) {
       if (videoElRef.current) videoElRef.current.currentTime = startSeconds;
     } else if (playerRef.current && typeof playerRef.current.seekTo === "function") {
@@ -338,16 +410,21 @@ export default function VideoModal({
     }
     setCurrentTimeSec(startSeconds);
     setHasStartedPlaying(false);
-  }, [startSeconds, useZipVideo]);
+  }, [startSeconds]);
 
   // Poll the player every 100ms to get the live playback position.
   // This updates frame number and timestamp whenever the video plays or the user scrubs.
   useEffect(() => {
     const interval = setInterval(() => {
       if (useZipVideo) {
-        if (videoElRef.current) setCurrentTimeSec(videoElRef.current.currentTime);
+        if (videoElRef.current) {
+          desiredTimeRef.current = videoElRef.current.currentTime;
+          setCurrentTimeSec(videoElRef.current.currentTime);
+        }
       } else if (playerRef.current && typeof playerRef.current.getCurrentTime === "function") {
-        setCurrentTimeSec(playerRef.current.getCurrentTime());
+        const time = playerRef.current.getCurrentTime();
+        desiredTimeRef.current = time;
+        setCurrentTimeSec(time);
       }
     }, 100);
     return () => clearInterval(interval);
@@ -434,7 +511,7 @@ export default function VideoModal({
                   preload="metadata"
                   className="w-full h-full"
                   onLoadedMetadata={() => {
-                    if (videoElRef.current) videoElRef.current.currentTime = startSeconds;
+                    if (videoElRef.current) videoElRef.current.currentTime = desiredTimeRef.current;
                   }}
                   onPlay={() => setHasStartedPlaying(true)}
                   onError={() => setZipVideoFailed(true)}
@@ -449,7 +526,7 @@ export default function VideoModal({
           </div>
 
           {/* Live info bar — updates as the video plays */}
-          <div className="mt-2 flex items-center gap-4 text-sm text-stone-400 font-mono">
+          <div className="mt-2 flex flex-wrap items-center gap-4 text-sm text-stone-400 font-mono">
             <span>{result.video_id}</span>
             <span>·</span>
             <span>
@@ -460,7 +537,7 @@ export default function VideoModal({
               <span className="text-white font-bold">{currentTimeSec.toFixed(2)}</span>s
             </span>
             <span>·</span>
-            <span>{fps} fps</span>
+            <span>{Number(fps.toFixed(3))} fps</span>
             <div className="ml-auto flex items-center gap-2">
               {sessionInfo && (
                 <span className="text-xs text-stone-500 normal-case">
@@ -468,6 +545,19 @@ export default function VideoModal({
                   {sessionInfo.queryType === "trake" && ` · candidate ${sessionInfo.draftRowIndex + 1}`}
                 </span>
               )}
+              <button
+                type="button"
+                onClick={handleSourceToggle}
+                disabled={!activeSource || !otherPlaybackSource(activeSource, Boolean(youtubeId), Boolean(zipVideoUrl))}
+                title={
+                  youtubeId && zipVideoUrl
+                    ? `Switch to ${activeSource === "youtube" ? "MP4" : "YouTube"} playback`
+                    : "No alternate playback source is available"
+                }
+                className="font-retro text-xs uppercase tracking-wide border-2 border-stone-500 rounded px-2 py-1 text-stone-300 hover:bg-teal-700 hover:text-white hover:border-teal-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-stone-300 disabled:hover:border-stone-500 transition"
+              >
+                ⇄ Source: {activeSource === "youtube" ? "YouTube" : activeSource === "mp4" ? "MP4" : "Unavailable"}
+              </button>
               <button
                 type="button"
                 onClick={handleAddToSubmission}
