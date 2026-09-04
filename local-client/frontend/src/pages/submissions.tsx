@@ -36,6 +36,10 @@ import {
   useVideoInfo,
 } from "@/lib/submission";
 import { mergeFetchedSubmissionStates } from "@/lib/submission/mergeStates";
+import {
+  COLLAPSED_CANDIDATE_LIMIT,
+  visibleCandidateRows,
+} from "@/lib/submission/candidateVisibility";
 import SessionManagerModal from "@/components/SessionManagerModal";
 import VideoModal from "@/components/VideoModal";
 
@@ -144,6 +148,7 @@ export default function SubmissionsDashboard() {
   const [newRowDraft, setNewRowDraft] = useState<Record<string, { videoId: string; frames: string }>>({});
   const [dragOverRow, setDragOverRow] = useState<{ session: string; row: number } | null>(null);
   const [showSessionManager, setShowSessionManager] = useState(false);
+  const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
 
   const loadedStates = Object.values(states).filter(
     (state): state is SubmissionState => Boolean(state && Array.isArray(state.rows)),
@@ -413,6 +418,8 @@ export default function SubmissionsDashboard() {
             const mode = editMode[summary.session] ?? "grid";
             const draft = newRowDraft[summary.session] || { videoId: "", frames: "" };
             const sizeMismatch = trakeSizeMismatch(state);
+            const isExpanded = Boolean(expandedSessions[summary.session]);
+            const displayedRows = visibleCandidateRows(state.rows, isExpanded);
             return (
               <section
                 key={summary.session}
@@ -426,6 +433,20 @@ export default function SubmissionsDashboard() {
                     </span>
                   </h2>
                   <div className="flex flex-wrap items-center justify-end gap-2">
+                    {mode === "grid" && state.rows.length > COLLAPSED_CANDIDATE_LIMIT && (
+                      <button
+                        className={BTN}
+                        aria-expanded={isExpanded}
+                        onClick={() => setExpandedSessions((prev) => ({
+                          ...prev,
+                          [summary.session]: !isExpanded,
+                        }))}
+                      >
+                        {isExpanded
+                          ? `▴ Collapse to ${COLLAPSED_CANDIDATE_LIMIT}`
+                          : `▾ Show all ${state.rows.length}`}
+                      </button>
+                    )}
                     {state.queryType === "kis" && (
                       <button
                         className={`${BTN} disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-inherit disabled:hover:border-stone-800`}
@@ -527,7 +548,7 @@ export default function SubmissionsDashboard() {
 
                     {state.rows.length > 0 && (
                       <div className="space-y-1.5">
-                        {state.rows.map((row, i) => {
+                        {displayedRows.map((row, i) => {
                           const fps = videoInfo[row.videoId]?.fps ?? 25;
                           const isOver = dragOverRow?.session === summary.session && dragOverRow.row === i;
                           return (
@@ -608,7 +629,12 @@ export default function SubmissionsDashboard() {
                             </div>
                           );
                         })}
-                        <p className="text-xs text-stone-500 italic">Drag a row to rank it — export order matches this list.</p>
+                        <p className="text-xs text-stone-500 italic">
+                          {!isExpanded && state.rows.length > COLLAPSED_CANDIDATE_LIMIT
+                            ? `Showing the first ${COLLAPSED_CANDIDATE_LIMIT} ranked candidates; ${state.rows.length - COLLAPSED_CANDIDATE_LIMIT} hidden. `
+                            : ""}
+                          Drag a row to rank it — export order matches this list.
+                        </p>
                       </div>
                     )}
                   </>

@@ -73,6 +73,12 @@ every CSV frame as a responsive thumbnail grid in CSV rank order. It works
 for all query types and refreshes from the stored session every five seconds,
 so it can remain open while teammates continue editing the submission.
 
+To keep a filled session manageable, the dashboard shows only its first five
+ranked candidates by default whenever it contains more than five rows. Use
+**Show all N** to expand that session and **Collapse to 5** to reduce it again.
+This is display-only: Raw CSV, Review grid, exports, and the stored submission
+always retain every candidate.
+
 ## Find and jump to a video
 
 The `Title or video ID…` box in the main search page header (next to 🗳)
