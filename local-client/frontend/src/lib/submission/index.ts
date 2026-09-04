@@ -124,6 +124,10 @@ export function replaceSubmissionCsv(session: string, content: string): Promise<
   return postAction(session, { action: "replaceRaw", content });
 }
 
+export function fillSubmissionNeighbors(session: string): Promise<SubmissionState> {
+  return postAction(session, { action: "fillNeighbors" });
+}
+
 // The session name is the exported filename (session.csv) — this moves
 // the backing .runtime/submissions/*.csv/.meta.json files too, not just a label.
 export function renameSubmissionSession(session: string, newSession: string): Promise<SubmissionState> {
