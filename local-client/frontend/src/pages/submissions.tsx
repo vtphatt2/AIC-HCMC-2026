@@ -19,6 +19,7 @@ import {
   editRowVideoId,
   fetchSubmission,
   fetchSubmissionSessions,
+  fillSubmissionNeighbors,
   getVideoInfo,
   moveItem,
   newTrakeCandidate,
@@ -325,6 +326,24 @@ export default function SubmissionsDashboard() {
     if (!ok) window.alert("No sessions with entries to bundle yet.");
   }
 
+  async function handleFillNeighbors(state: SubmissionState) {
+    const remaining = Math.max(0, 100 - state.rows.length);
+    if (remaining === 0) return window.alert("This KIS session already has 100 rows.");
+    if (state.rows.length === 0) return window.alert("Add at least one KIS candidate first.");
+    if (!window.confirm(
+      `Append ${remaining} nearby KIS candidates to reach 100 rows?\n\n` +
+      "Candidates are distributed evenly across the current rows at -15, +15, -30, +30… frames. Existing ranks stay unchanged.",
+    )) return;
+
+    try {
+      const updated = await fillSubmissionNeighbors(state.session);
+      updateState(state.session, updated);
+      window.alert(`Added ${updated.rows.length - state.rows.length} neighboring candidates. ${updated.rows.length}/100 rows ready.`);
+    } catch (err: any) {
+      window.alert(err.message || "Failed to fill neighboring candidates");
+    }
+  }
+
   // Array.prototype.sort is stable, so returning 0 when sortByName is off
   // just preserves the fetch order (createdAt, from the API) unchanged.
   const visibleSessions = sessions
@@ -406,7 +425,29 @@ export default function SubmissionsDashboard() {
                       {state.queryType.toUpperCase()} · {state.rows.length} row{state.rows.length === 1 ? "" : "s"}
                     </span>
                   </h2>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {state.queryType === "kis" && (
+                      <button
+                        className={`${BTN} disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-inherit disabled:hover:border-stone-800`}
+                        disabled={state.rows.length === 0 || state.rows.length >= 100}
+                        title={state.rows.length === 0
+                          ? "Add at least one candidate first"
+                          : state.rows.length >= 100
+                            ? "This session already has 100 rows"
+                            : "Fill to 100 rows using nearby frames at 15-frame steps"}
+                        onClick={() => handleFillNeighbors(state)}
+                      >
+                        ✦ Filler to 100
+                      </button>
+                    )}
+                    <a
+                      className={BTN}
+                      href={`/submission-grid?session=${encodeURIComponent(state.session)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      ▦ Review grid ↗
+                    </a>
                     <button
                       className={BTN}
                       onClick={() => setEditMode((prev) => ({ ...prev, [summary.session]: mode === "grid" ? "raw" : "grid" }))}

@@ -3,6 +3,7 @@ import path from "path";
 import type { NextApiRequest, NextApiResponse } from "next";
 
 import type { SubmissionQueryType, SubmissionRow, SubmissionSessionSummary, SubmissionState } from "@/types";
+import { fillKisRows } from "@/lib/submission/fillFrames";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
@@ -299,6 +300,14 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     }
     current.rows = rows;
     current.draftRowIndex = Math.min(current.draftRowIndex, rows.length);
+  } else if (action === "fillNeighbors") {
+    if (current.queryType !== "kis") {
+      return res.status(400).json({ error: "Neighbor filler is only valid for KIS sessions" });
+    }
+    if (current.rows.length === 0) {
+      return res.status(400).json({ error: "Add at least one KIS candidate before using filler" });
+    }
+    current.rows = fillKisRows(current.rows, 100, 15);
   } else {
     return res.status(400).json({ error: "Unknown action" });
   }

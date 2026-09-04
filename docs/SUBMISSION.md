@@ -57,6 +57,22 @@ hand.
 Both modes hit the same backend actions, so switching mid-edit never loses
 anything already saved.
 
+## KIS neighbor filler and grid review
+
+For a KIS session with at least one manually ranked candidate, **Filler to
+100** preserves all existing rows and appends nearby frames until the
+organizer's 100-row limit is reached. It walks each original candidate in
+round-robin order using offsets `-15, +15, -30, +30, ...`, skips negative
+frames and duplicate `video_id,frame` pairs, and never changes the original
+rank order. The operation is deliberately unavailable for QA and TRAKE:
+duplicating a QA answer is not necessarily valid, while TRAKE requires an
+exact event/frame count per candidate.
+
+**Review grid ↗** opens that session in a separate browser tab and displays
+every CSV frame as a responsive thumbnail grid in CSV rank order. It works
+for all query types and refreshes from the stored session every five seconds,
+so it can remain open while teammates continue editing the submission.
+
 ## Find and jump to a video
 
 The `Title or video ID…` box in the main search page header (next to 🗳)
