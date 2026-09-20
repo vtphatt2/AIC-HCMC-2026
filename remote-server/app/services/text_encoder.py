@@ -50,6 +50,8 @@ class TextEncoderConfig:
         object.__setattr__(self, "device", self.device.strip().lower())
         object.__setattr__(self, "precision", self.precision.strip().lower())
         object.__setattr__(self, "backend", self.backend.strip().lower())
+        if self.precision not in {"fp32", "fp16"}:
+            raise ValueError("PECORE_PRECISION must be fp32 or fp16")
 
 
 def _validate_device_config(torch, config: TextEncoderConfig) -> None:
@@ -62,6 +64,8 @@ def _validate_device_config(torch, config: TextEncoderConfig) -> None:
             raise TextEncoderUnavailable("PECORE_DEVICE=mps requires PECORE_PRECISION=fp32.")
     if config.device not in {"cpu", "cuda", "mps"}:
         raise TextEncoderUnavailable("PECORE_DEVICE must be one of: cpu, cuda, mps.")
+    if config.precision == "fp16" and config.device != "cuda":
+        raise TextEncoderUnavailable("PECORE_PRECISION=fp16 requires CUDA.")
 
 
 class PECoreTextEncoder:
@@ -252,7 +256,8 @@ class PECoreTextEncoder:
                 context_length=cfg["text_cfg"]["context_length"],
             )
 
-            model = model.to(self.config.device)
+            dtype = torch.float16 if self.config.precision == "fp16" else torch.float32
+            model = model.to(device=self.config.device, dtype=dtype)
             model.eval()
         except Exception as exc:
             raise TextEncoderUnavailable(

@@ -33,11 +33,18 @@ async def run_multi_detail(context):
     if not groups:
         raise ValueError("Multi-detail search requires at least one query")
 
+    # Keep the full candidate rankings; only defer the vectors used by dedup.
+    # Larger outputs/genre filters keep the original path (benchmarked slower
+    # or sensitive to retrieval ordering when vectors were fetched separately).
+    vector_options = {"include_vector": False} if (
+        context.top_k <= 100 and context.video_genre in {"", "All"}
+    ) else {}
     rankings = await asyncio.gather(*[
         context.retrieve(
             "raw.semantic",
             group["query"].strip(),
             top_k=max(context.top_k, PER_DETAIL_LIMIT),
+            **vector_options,
         )
         for group in groups
     ])

@@ -7,7 +7,8 @@ organizers' host, this one seeks in a file on this machine. Everything that
 module carries to survive the network — retry/backoff, the on-disk `moov`
 cache, the GOP region cache, single-flight — is dropped here, because a seek
 into a local file costs nothing to repeat. What stays is the parsed sample
-index per video, which is CPU work, not I/O.
+index per video, which is CPU work, not I/O. A bounded JPEG cache avoids
+repeating ffmpeg work when several viewers request the same immutable frame.
 
 Entries inside the archives are stored uncompressed (`ZIP_STORED`), so byte N of
 a video is byte `data_offset + N` of the archive and any range is one seek away.
@@ -15,6 +16,7 @@ a video is byte `data_offset + N` of the archive and any range is one seek away.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -23,10 +25,12 @@ import struct
 import subprocess
 import zipfile
 from bisect import bisect_right
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.services import mp4_box_parser as box
+from app.services.jpeg_disk_cache import JpegDiskCache
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,74 @@ REORDER_LOOKAHEAD = 32
 
 # ffmpeg is the only real cost on this path; reading the bytes is a local seek.
 _decode_semaphore = asyncio.Semaphore(int(os.getenv("ZIP_FRAME_DECODE_CONCURRENCY", "6")))
+# Resizing a ready JPEG must not wait behind a burst of queued video decodes.
+_resize_semaphore = asyncio.Semaphore(2)
+FFMPEG_THREADS = max(0, int(os.getenv("ZIP_FFMPEG_THREADS", "0")))
+JPEG_CACHE_MAX_BYTES = max(0, int(os.getenv("ZIP_JPEG_CACHE_MB", "0"))) * 1024 * 1024
+_jpeg_cache: OrderedDict[tuple[str, int, int | None, str], bytes] = OrderedDict()
+_jpeg_cache_bytes = 0
+_jpeg_inflight: dict[tuple[str, int, int | None, str], asyncio.Task] = {}
+_disk_cache_dir = os.getenv("ZIP_JPEG_DISK_CACHE_DIR", "").strip()
+_disk_cache = JpegDiskCache(
+    _disk_cache_dir, max(0, int(os.getenv("ZIP_JPEG_DISK_CACHE_MB", "512"))) * 1024 * 1024
+) if _disk_cache_dir else None
+
+
+def _resize_jpeg(original: bytes, width: int, format: str = "jpeg") -> bytes:
+    from PIL import Image
+
+    with Image.open(io.BytesIO(original)) as source:
+        if source.width <= width and format == "jpeg":
+            return original
+        width = min(width, source.width)
+        size = (width, max(1, round(source.height * width / source.width)))
+        image = source.resize(size, Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        if format == "webp":
+            image.save(output, "WEBP", quality=85, method=4)
+        else:
+            image.save(output, "JPEG", quality=88, subsampling=2, optimize=True)
+        return output.getvalue()
+
+
+async def _cached_decode(video_id, timestamp_ms, timeout_sec, width=None, format="jpeg"):
+    cache, key = _disk_cache, None
+    if cache is not None:
+        index = await _get_index(video_id)
+        source = index.zip_path.stat()
+        # Keep the original key stable; resized images have a separate version.
+        version = "jpeg-v1-q4" if width is None else f"jpeg-card-v1-q88-w{width}"
+        if format == "webp":
+            version = f"webp-card-v1-q85-w{width}"
+        key = json.dumps([version, str(index.zip_path.resolve()), source.st_size,
+                          source.st_mtime_ns, index.data_offset, index.fps, video_id, timestamp_ms])
+        if width is not None:
+            try:
+                cached = await cache.read(key)
+                if cached is not None:
+                    return cached
+            except OSError:
+                logger.warning("JPEG disk cache unavailable; resizing without it", exc_info=True)
+                cache = None
+
+    # Resolve the original BEFORE taking a thumbnail shard lock. Otherwise two
+    # variants hashing to the same shard could deadlock. Reuse the existing
+    # original cache/decoder so both sizes depict exactly the same frame.
+    original = await get_frame_jpeg(video_id, timestamp_ms, timeout_sec) if width else None
+
+    async def decode():
+        if original is not None:
+            async with _resize_semaphore:
+                return await asyncio.to_thread(_resize_jpeg, original, width, format)
+        return await _decode_frame_jpeg(video_id, timestamp_ms, timeout_sec)
+    if cache is None:
+        return await decode()
+    try:
+        return await cache.get(key, decode)
+    except OSError:
+        logger.warning("JPEG disk cache unavailable; decoding without it", exc_info=True)
+        return await decode()
+
 
 
 class LocalZipUnavailable(RuntimeError):
@@ -479,12 +551,15 @@ def _decode_jpeg(annexb_stream: bytes, target_index: int, timeout_sec: float) ->
         _ffmpeg_path(),
         "-loglevel", "error",
         "-f", "h264",
+        "-threads", str(FFMPEG_THREADS),
         "-i", "pipe:0",
         "-vf", f"select=eq(n\\,{target_index})",
         "-vsync", "0",
         "-frames:v", "1",
         "-q:v", "4",
         "-f", "image2pipe",
+        "-threads", "1",
+        "-filter_threads", "1",
         "-vcodec", "mjpeg",
         "pipe:1",
     ]
@@ -504,7 +579,46 @@ def _decode_jpeg(annexb_stream: bytes, target_index: int, timeout_sec: float) ->
     return result.stdout
 
 
-async def get_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: float = 20.0) -> bytes:
+async def get_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: float = 20.0,
+                         *, width: int | None = None, format: str = "jpeg") -> bytes:
+    """Share in-flight decodes and retain JPEGs within a per-process byte budget.
+
+    Archive contents are immutable, matching the HTTP cache contract. Shielding
+    the shared task lets another viewer finish even when the first disconnects.
+    Only successful results are retained; failures can be retried immediately.
+    """
+    if width not in (None, 640):
+        raise ValueError("Only the 640-pixel card variant is supported")
+    if format not in ("jpeg", "webp") or (format == "webp" and width is None):
+        raise ValueError("WebP is supported only for card previews")
+    key = (video_id, max(0, int(timestamp_ms)), width, format)
+    if key in _jpeg_cache:
+        _jpeg_cache.move_to_end(key)
+        return _jpeg_cache[key]
+    task = _jpeg_inflight.get(key)
+    if task is None:
+        async def produce():
+            global _jpeg_cache_bytes
+            try:
+                data = await _cached_decode(key[0], key[1], timeout_sec, width=width, format=format)
+                if len(data) <= JPEG_CACHE_MAX_BYTES:
+                    while _jpeg_cache and _jpeg_cache_bytes + len(data) > JPEG_CACHE_MAX_BYTES:
+                        _, old = _jpeg_cache.popitem(last=False)
+                        _jpeg_cache_bytes -= len(old)
+                    _jpeg_cache[key] = data
+                    _jpeg_cache_bytes += len(data)
+                return data
+            finally:
+                _jpeg_inflight.pop(key, None)
+
+        task = asyncio.create_task(produce())
+        _jpeg_inflight[key] = task
+        # Retrieve exceptions even if every viewer has disconnected.
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    return await asyncio.shield(task)
+
+
+async def _decode_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: float = 20.0) -> bytes:
     """JPEG bytes for the frame at `timestamp_ms`, or `LocalZipUnavailable` —
     every failure on this path funnels through that one type so the route never
     has to guess at a raw parse/subprocess error."""
@@ -517,9 +631,7 @@ async def get_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: float = 
         region_start = min(s["o"] for s in region)
         region_end = max(s["o"] + s["s"] for s in region)
 
-        # ponytail: no region/JPEG cache — a local seek is ~free where the
-        # HTTP version needed one. Add an LRU here if repeated frames in one
-        # grid measurably cost ffmpeg time.
+        # Cache final JPEGs above; local reads need no additional region cache.
         fetched = await asyncio.to_thread(
             _read, index.zip_path, index.data_offset + region_start, region_end - region_start,
         )

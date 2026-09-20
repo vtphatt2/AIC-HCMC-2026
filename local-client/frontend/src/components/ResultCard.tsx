@@ -1,7 +1,8 @@
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import type { SearchResult } from "@/types";
 import { apiUrl } from "@/lib/api";
 import { useFrameImage } from "@/lib/useFrameImage";
+import { cardImageUrl, isConstrainedConnection, prefetchOriginalFrame, rememberCardImage } from "@/lib/frameImages";
 
 interface Props {
   result: SearchResult;
@@ -11,6 +12,8 @@ interface Props {
   compact?: boolean;
   badgeLabel?: string;
   focused?: boolean;
+  imageLoading?: "eager" | "lazy";
+  imagePriority?: "high" | "auto";
 }
 
 function formatTimestamp(ms: number): string {
@@ -27,7 +30,8 @@ function confidenceColor(score: number): string {
 }
 
 const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
-  { result, rank, onClick, hideBadge, compact, badgeLabel, focused },
+  { result, rank, onClick, hideBadge, compact, badgeLabel, focused, imageLoading,
+    imagePriority },
   ref,
 ) {
   const serverImageUrl = result.frame_image_url.startsWith("http")
@@ -36,16 +40,32 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
   // Decodes here instead of on the backend when NEXT_PUBLIC_FRAME_DECODE=client
   // and the browser has WebCodecs; otherwise this is serverImageUrl unchanged.
   const imageUrl = useFrameImage(serverImageUrl, result.frame_image_url);
+  const cardUrl = imageUrl === serverImageUrl ? cardImageUrl(imageUrl) : null;
+  const [failedCardUrl, setFailedCardUrl] = useState<string | null>(null);
+  const useCard = Boolean(cardUrl && failedCardUrl !== cardUrl);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function cancelPrefetch() {
+    if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
+    hoverTimer.current = null;
+  }
+  useEffect(() => cancelPrefetch, [serverImageUrl]);
+  function prefetch() {
+    if (useCard) prefetchOriginalFrame(serverImageUrl);
+  }
   const previewUrl = result.frame_preview_url
     ? (result.frame_preview_url.startsWith("http") ? result.frame_preview_url : apiUrl(result.frame_preview_url))
     : null;
-  const [loaded, setLoaded] = useState(false);
-  const showPreview = previewUrl && !loaded;
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  const showPreview = previewUrl && loadedUrl !== imageUrl;
+  const loading = imageLoading ?? (rank >= 0 && rank <= 12 ? "eager" : "lazy");
 
   return (
     <button
       ref={ref}
       onClick={() => onClick(result)}
+      onMouseEnter={() => { cancelPrefetch(); hoverTimer.current = setTimeout(prefetch, 150); }}
+      onMouseLeave={cancelPrefetch}
+      onFocus={prefetch}
       className={`group bg-cream-card dark:bg-stone-800 border-2 rounded overflow-hidden transition-all text-left w-full ${
         focused
           ? "border-orange-700 dark:border-orange-500 ring-2 ring-orange-600 ring-offset-2 ring-offset-cream dark:ring-offset-stone-900"
@@ -60,20 +80,39 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
             src={previewUrl}
             alt=""
             aria-hidden="true"
+            loading={loading}
             className="absolute inset-0 w-full h-full object-cover scale-110 blur-sm"
           />
         )}
-        <img
-          src={imageUrl}
-          alt={`Frame ${result.frame_number} of ${result.video_id}`}
-          onLoad={() => setLoaded(true)}
-          className={`relative w-full h-full object-cover group-hover:scale-105 transition-all duration-300 ${
-            showPreview ? "opacity-0" : "opacity-100"
-          }`}
-          loading={rank >= 0 && rank <= 12 ? "eager" : "lazy"}
-          fetchPriority={rank >= 0 && rank <= 6 ? "high" : "auto"}
-          decoding="async"
-        />
+        <picture>
+          {useCard && (
+            <source
+              // Use the original whenever the card could exceed 640 device pixels.
+              media={compact ? "(min-resolution: 3.5dppx)" :
+                "(min-resolution: 2.01dppx), (min-width: 1281px) and (min-resolution: 1.01dppx), (min-width: 2561px)"}
+              srcSet={imageUrl}
+            />
+          )}
+          {useCard && isConstrainedConnection() && (
+            <source type="image/webp" srcSet={cardImageUrl(imageUrl, "webp")!} />
+          )}
+          <img
+            key={imageUrl}
+            src={useCard ? cardUrl! : imageUrl}
+            alt={`Frame ${result.frame_number} of ${result.video_id}`}
+            onLoad={(event) => {
+              setLoadedUrl(imageUrl);
+              rememberCardImage(serverImageUrl, event.currentTarget.currentSrc || event.currentTarget.src);
+            }}
+            onError={() => { if (useCard) setFailedCardUrl(cardUrl); }}
+            className={`relative w-full h-full object-cover group-hover:scale-105 transition-all duration-300 ${
+              showPreview ? "opacity-0" : "opacity-100"
+            }`}
+            loading={loading}
+            fetchPriority={imagePriority ?? (loading === "eager" && rank >= 0 && rank <= 6 ? "high" : "auto")}
+            decoding="async"
+          />
+        </picture>
         {/* Rank / step badge */}
         {!hideBadge && (
           <span className="font-retro absolute top-1 left-1 bg-stone-900/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">

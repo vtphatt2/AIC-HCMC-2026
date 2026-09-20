@@ -27,6 +27,10 @@ def filter_similar_results(
         if norm:
             normalized[str(frame_id)] = vector / norm
 
+    frame_ids = [result_frame_ids(result) for result in results]
+    if results and all(len(ids) == 1 for ids in frame_ids):
+        return _filter_single_frames(results, frame_ids, normalized, float(threshold))
+
     kept = []
     kept_vectors = []
     for result in results:
@@ -60,4 +64,39 @@ def filter_similar_results(
         if not duplicate:
             kept.append(result)
             kept_vectors.append(vectors)
+    return kept
+
+
+def _filter_single_frames(results, frame_ids, normalized, threshold):
+    """Use a BLAS prefilter, preserving the scalar rule near its boundary.
+
+    Most candidate pairs are clearly different. A matrix multiply discards
+    those pairs together; possible duplicates still use the original np.dot
+    comparison so rounding at the threshold cannot change the decision.
+    Missing/zero vectors are retained, just as in the temporal path.
+    """
+    valid = [i for i, ids in enumerate(frame_ids) if ids[0] in normalized]
+    if not valid:
+        return list(results)
+    vectors = np.stack([normalized[frame_ids[i][0]] for i in valid])
+    similarities = vectors @ vectors.T
+    # Conservative float32 dot-product roundoff bound for normalized vectors.
+    guard = 4 * np.finfo(np.float32).eps * vectors.shape[1]
+    positions = {result_index: vector_index for vector_index, result_index in enumerate(valid)}
+    kept, kept_positions = [], []
+    cutoff = threshold + 1e-6
+    for i, result in enumerate(results):
+        position = positions.get(i)
+        duplicate = False
+        if position is not None and kept_positions:
+            candidates = np.asarray(kept_positions)
+            candidates = candidates[similarities[position, candidates] > cutoff - guard]
+            duplicate = any(
+                1.0 - (1.0 - float(np.dot(vectors[position], vectors[previous]))) > cutoff
+                for previous in candidates
+            )
+        if not duplicate:
+            kept.append(result)
+            if position is not None:
+                kept_positions.append(position)
     return kept

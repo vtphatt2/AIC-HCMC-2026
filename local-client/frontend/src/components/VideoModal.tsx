@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, SubmissionState, TranscriptSegment } from "@/types";
 import { apiUrl, fetchTranscript, fetchVideoById } from "@/lib/api";
+import { loadedCardImage } from "@/lib/frameImages";
 import { addSubmissionRowFrame, fetchSubmission } from "@/lib/submission";
 import {
   choosePlaybackSource,
@@ -72,16 +73,13 @@ export default function VideoModal({
   );
   const useYoutube = activeSource === "youtube";
   const useZipVideo = activeSource === "mp4";
-  // Show the SHARP frame (same one the results grid shows), with the fast
-  // low-res preview as a blurred stand-in underneath until it loads — a
-  // blur-up, same as ResultCard. The grid already loaded the sharp image
-  // for this frame, so it's usually browser-cached and appears instantly;
-  // the blurred preview only covers the rare cache-miss so there's never a
-  // black screen while it (or the player) loads.
+  // Reuse the already-loaded card while the original arrives.
   const resolve = (u?: string) => (u ? (u.startsWith("http") ? u : apiUrl(u)) : "");
   const sharpUrl = resolve(result.frame_image_url);
-  const previewUrl = resolve(result.frame_preview_url);
-  const [sharpLoaded, setSharpLoaded] = useState(false);
+  const cardPreview = loadedCardImage(sharpUrl);
+  const previewUrl = cardPreview || resolve(result.frame_preview_url);
+  const [sharpLoadedUrl, setSharpLoadedUrl] = useState<string | null>(null);
+  const sharpLoaded = sharpLoadedUrl === sharpUrl;
 
   // Live playback position — updated by the polling interval below
   const [currentTimeSec, setCurrentTimeSec] = useState(startSeconds);
@@ -470,14 +468,15 @@ export default function VideoModal({
                     src={previewUrl}
                     alt=""
                     aria-hidden="true"
-                    className="absolute inset-0 w-full h-full object-contain blur-sm scale-105"
+                    className={`absolute inset-0 w-full h-full object-contain ${cardPreview ? "" : "blur-sm scale-105"}`}
                   />
                 )}
                 {sharpUrl && (
                   <img
+                    key={sharpUrl}
                     src={sharpUrl}
                     alt=""
-                    onLoad={() => setSharpLoaded(true)}
+                    onLoad={() => setSharpLoadedUrl(sharpUrl)}
                     className={`relative w-full h-full object-contain transition-opacity duration-200 ${
                       sharpLoaded ? "opacity-100" : "opacity-0"
                     }`}

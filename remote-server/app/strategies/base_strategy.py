@@ -46,7 +46,7 @@ class SearchContext:
     def option(self, key, default=None):
         return self.options.get(key, default)
 
-    async def retrieve(self, channel, query, *, top_k=None):
+    async def retrieve(self, channel, query, *, top_k=None, include_vector=True):
         requested = self.top_k if top_k is None else min(max(int(top_k), 1), FETCH_CAP)
         kwargs = {
             "top_k": requested,
@@ -54,7 +54,9 @@ class SearchContext:
         }
         if self._vector_search_algorithm:
             kwargs["vector_search_algorithm"] = self._vector_search_algorithm
-        key = (channel, query, requested)
+        if not include_vector:
+            kwargs["include_vector"] = False
+        key = (channel, query, requested, include_vector)
         state = self._retrieval_cache.setdefault(
             key, {"hits": [], "pages": [], "exhausted": False}
         )

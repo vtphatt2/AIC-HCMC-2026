@@ -7,6 +7,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from app.db import milvus_client, postgres_client
+from app.services.blocking_io import BlockingIO
 from app.services.text_encoder import PECoreTextEncoder
 from app.services.transcript_search import TranscriptSearchService
 
@@ -56,6 +57,7 @@ class DataProvider:
                 f"remote-server DataProvider only supports ENV_MODE=SERVER, got '{ENV_MODE}'"
             )
         self._collections = {}
+        self._db_io = BlockingIO(int(os.getenv("DB_IO_WORKERS", "2")))
         self._text_encoder = PECoreTextEncoder()
         self._text_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -105,6 +107,10 @@ class DataProvider:
 
     def close(self) -> None:
         self._text_executor.shutdown(wait=False)
+        self._db_io.close()
+
+    async def _run_db(self, function, *args, **kwargs):
+        return await self._db_io.run(function, *args, **kwargs)
 
     def _get_cagra(self):
         if self._cagra is not None:
@@ -144,6 +150,7 @@ class DataProvider:
         video_genre: str = "All",
         vector_search_algorithm: str | None = None,
         exclude_frame_ids: list[str] | None = None,
+        include_vector: bool = True,
     ) -> list[dict]:
         if channel not in CHANNELS:
             raise ValueError(f"Unknown channel '{channel}'. Available: {sorted(CHANNELS)}")
@@ -175,13 +182,15 @@ class DataProvider:
                 excluded_set = set(excluded)
                 hits = [hit for hit in hits if hit.get("frame_id") not in excluded_set][:top_k]
             else:
-                hits = milvus_client.vector_search(
+                hits = await self._run_db(milvus_client.vector_search,
                     self._get_collection(algorithm, channel),
                     vector.tolist(),
                     top_k=top_k,
                     algorithm=algorithm,
                     expr=search_expr,
-                    include_vector=True,
+                    # Deferred fetching uses the default raw collection below.
+                    include_vector=(include_vector or channel != "raw.semantic"
+                                    or algorithm != DEFAULT_VECTOR_SEARCH_ALGORITHM),
                 )
             await self._hydrate_frames(hits)
             return [
@@ -209,7 +218,7 @@ class DataProvider:
         collection = self._metadata_collection()
         embeddings = {}
         for start in range(0, len(frame_ids), 1000):
-            embeddings.update(milvus_client.query_frame_vectors(
+            embeddings.update(await self._run_db(milvus_client.query_frame_vectors,
                 collection, frame_ids[start:start + 1000]
             ))
         return embeddings
@@ -224,7 +233,7 @@ class DataProvider:
     ) -> list[dict]:
         if int(start_ms) > int(end_ms):
             raise ValueError("start_ms must be <= end_ms")
-        hits = milvus_client.query_frames_in_time_range(
+        hits = await self._run_db(milvus_client.query_frames_in_time_range,
             self._metadata_collection(),
             video_id,
             int(start_ms),
@@ -333,7 +342,7 @@ class DataProvider:
                 search_limit = max(int(limit), 1)
                 timer_start = time.monotonic()
                 if vector_algorithm in {"hnsw", "flat", "scann"}:
-                    hits = milvus_client.vector_search(
+                    hits = await self._run_db(milvus_client.vector_search,
                         self._get_collection(vector_algorithm),
                         query_vector.tolist(),
                         top_k=search_limit,

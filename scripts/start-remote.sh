@@ -51,13 +51,13 @@ if [[ "$skip_databases" == false ]]; then
         echo "docker was not found. Install Docker or use --skip-databases for external databases." >&2
         exit 1
     }
-    (cd "$remote_dir" && docker compose up -d)
+    (cd "$remote_dir" && docker compose up -d --wait --wait-timeout 120)
     wait_port 19530
     wait_port 15432
 fi
 
 port_listening "$port" && { echo "Port $port is already in use." >&2; exit 1; }
-args=(-m uvicorn main:app --host 0.0.0.0 --port "$port")
+args=(-m uvicorn main:app --env-file "$remote_dir/.env" --host 0.0.0.0 --port "$port")
 [[ "$reload" == true ]] && args+=(--reload)
 echo "Remote backend: http://127.0.0.1:$port (Ctrl+C to stop; Docker databases stay running)"
 cd "$remote_dir"

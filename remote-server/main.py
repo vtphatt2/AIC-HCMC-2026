@@ -8,7 +8,7 @@ from bisect import bisect_left, bisect_right
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -197,6 +197,13 @@ class TranscriptSearchRequest(BaseModel):
     algorithm: str = "semantic"
 
 
+class ContextScoresRequest(FrameScoresRequest):
+    start_ms: int
+    end_ms: int
+    expand: int = 20
+    frame_numbers: dict[str, int] = Field(default_factory=dict)
+
+
 class StrategyConfigUpdate(BaseModel):
     weights: dict[str, float | list[float]]
 
@@ -315,8 +322,8 @@ async def get_video_info(video_id: str):
 
     frame_id, frame_number, timestamp_ms = None, 0, 0
     try:
-        collection = milvus_client.get_collection()
-        frames = milvus_client.query_frames_in_time_range(collection, video_id, 0, 10**12, limit=1)
+        collection = _data_provider._metadata_collection()
+        frames = await _data_provider._run_db(milvus_client.query_frames_in_time_range, collection, video_id, 0, 10**12, limit=1)
         if frames:
             frame = frames[0]
             frame_id = frame["frame_id"]
@@ -358,8 +365,8 @@ async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: 
     rows = await postgres_client.fetch_video_metadata([video_id])
     fps = float(rows[0].get("fps") or 25.0) if rows else 25.0
 
-    collection = milvus_client.get_collection()
-    frames = milvus_client.query_frames_in_time_range(
+    collection = _data_provider._metadata_collection()
+    frames = await _data_provider._run_db(milvus_client.query_frames_in_time_range,
         collection, video_id, 0, 10**12, limit=_CONTEXT_FRAMES_FETCH_LIMIT
     )
     # query_frames_in_time_range already sorts by timestamp_ms.
@@ -406,8 +413,7 @@ async def get_frame_scores(req: FrameScoresRequest):
     from app.strategies._similarity_filter import filter_similar_results
 
     query_vectors = [(await _data_provider._encode_text(q)).tolist() for q in queries]
-    collection = milvus_client.get_collection()
-    frame_vectors = milvus_client.query_frame_vectors(collection, req.frame_ids)
+    frame_vectors = await _data_provider.frame_embeddings(req.frame_ids)
     scores = event_weighted_scores(query_vectors, frame_vectors, weights=req.event_weights)
 
     candidates = sorted(
@@ -420,6 +426,27 @@ async def get_frame_scores(req: FrameScoresRequest):
         for c in filter_similar_results(candidates, frame_vectors, threshold=req.duplicate_threshold)
     }
     return {"scores": {frame_id: score for frame_id, score in scores.items() if frame_id in kept_ids}}
+
+
+@app.post("/api/video/{video_id}/context-scores")
+async def get_context_scores(video_id: str, req: ContextScoresRequest):
+    context = await get_context_frames(video_id, req.start_ms, req.end_ms, req.expand)
+    neighbors = context["before"] + context["middle"] + context["after"]
+    numbers = {frame["frame_id"]: frame["frame_number"] for frame in neighbors}
+    numbers.update(req.frame_numbers)
+    # Match the frontend's stable, chronological strip order, including real hits.
+    frame_ids = list(dict.fromkeys(req.frame_ids + [frame["frame_id"] for frame in neighbors]))
+    frame_ids.sort(key=lambda frame_id: numbers.get(frame_id, 0))
+    try:
+        scored = await get_frame_scores(FrameScoresRequest(
+            query_groups=req.query_groups, frame_ids=frame_ids,
+            event_weights=req.event_weights, duplicate_threshold=req.duplicate_threshold,
+        ))
+        scores = scored["scores"]
+    except Exception:
+        logger.warning("Context scoring failed for %s; retaining context frames", video_id, exc_info=True)
+        scores = None
+    return {**context, "scores": scores}
 
 
 @app.get("/api/zip-video/{video_id}")
@@ -445,7 +472,9 @@ async def zip_video(video_id: str, request: Request):
 
 
 @app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
-async def zip_frame(video_id: str, timestamp_ms: int):
+async def zip_frame(video_id: str, timestamp_ms: int,
+                    width: int | None = Query(default=None, ge=640, le=640),
+                    format: str = Query(default="jpeg", pattern="^(jpeg|webp)$")):
     """Decode one JPEG straight out of a local archive, for lots ingested
     without keyframe JPGs (ingest_zip_pipeline_results.py). The per-video sample
     table is parsed once and cached; each frame is then one seek plus one
@@ -454,9 +483,11 @@ async def zip_frame(video_id: str, timestamp_ms: int):
     This route is the boundary where every failure has to become an HTTP
     response — get_frame_jpeg guarantees bytes or LocalZipUnavailable, and the
     timeout bounds total wall time so a client is never left waiting."""
+    if format == "webp" and width is None:
+        raise HTTPException(422, "WebP requires width=640")
     try:
         jpeg_bytes = await asyncio.wait_for(
-            local_zip_media.get_frame_jpeg(video_id, timestamp_ms),
+            local_zip_media.get_frame_jpeg(video_id, timestamp_ms, width=width, format=format),
             timeout=ZIP_FRAME_TIMEOUT_SEC,
         )
     except local_zip_media.LocalZipUnavailable as exc:
@@ -469,7 +500,7 @@ async def zip_frame(video_id: str, timestamp_ms: int):
 
     return Response(
         content=jpeg_bytes,
-        media_type="image/jpeg",
+        media_type="image/webp" if format == "webp" else "image/jpeg",
         # A frame of an archive that never changes.
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )

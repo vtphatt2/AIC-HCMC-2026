@@ -224,6 +224,7 @@ __marimo__/
 # Node / Next.js
 node_modules/
 .next/
+.next-production/
 out/
 .vercel/
 *.tsbuildinfo
@@ -245,6 +246,7 @@ static/frames/
 
 # weights
 *.onnx
+/challenge_resources/pe_text_tower/
 
 # data files
 challenge_resources/data/*

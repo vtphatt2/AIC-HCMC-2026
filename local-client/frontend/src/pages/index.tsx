@@ -96,6 +96,13 @@ export default function Home() {
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [response, setResponse] = useState<SearchResponse | null>(null);
   const [totalTimeMs, setTotalTimeMs] = useState(0);
+  const [frameSearchQueryEvents, setFrameSearchQueryEvents] = useState<string[]>([]);
+  const frameRequestRef = useRef<AbortController | null>(null);
+  const transcriptRequestRef = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    frameRequestRef.current?.abort();
+    transcriptRequestRef.current?.abort();
+  }, []);
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
@@ -383,6 +390,12 @@ export default function Home() {
     setError(null);
     setLoading(true);
     setLoadingLabel("Searching…");
+    frameRequestRef.current?.abort();
+    const request = new AbortController();
+    frameRequestRef.current = request;
+    const submittedQueries = queryGroups.map(g =>
+      [g.semanticQuery, g.textQuery].map(v => v.trim()).filter(Boolean).join(" ")
+    ).filter(Boolean);
     const topK = normalizeTopK(topKInput);
     setTopKInput(String(topK));
     const started = performance.now();
@@ -394,13 +407,18 @@ export default function Home() {
         selectedConfig,
         configOverrides ?? strategyConfigDraft?.overrides ?? {},
         threshold,
+        request.signal,
       );
+      if (request.signal.aborted || frameRequestRef.current !== request) return;
+      setFrameSearchQueryEvents(submittedQueries);
       setTotalTimeMs(Math.round(performance.now() - started));
       setResponse(res);
     } catch (err: any) {
-      setError(err.message || "Search failed.");
+      if (!request.signal.aborted && frameRequestRef.current === request) {
+        setError(err.message || "Search failed.");
+      }
     } finally {
-      setLoading(false);
+      if (frameRequestRef.current === request) setLoading(false);
     }
   }
 
@@ -448,6 +466,9 @@ export default function Home() {
     }
     setError(null);
     setTranscriptLoading(true);
+    transcriptRequestRef.current?.abort();
+    const request = new AbortController();
+    transcriptRequestRef.current = request;
     const topK = normalizeTopK(transcriptTopK);
     setTranscriptTopK(String(topK));
     const submittedQuery = transcriptQuery.trim();
@@ -457,14 +478,18 @@ export default function Home() {
         submittedQuery, topK,
         selectedTranscriptAlgorithm,
         currentTranscriptAlgorithm?.supports_topic_filter ? transcriptGenre || undefined : undefined,
+        request.signal,
       );
+      if (request.signal.aborted || transcriptRequestRef.current !== request) return;
       setTranscriptTimeMs(Math.round(performance.now() - started));
       setTranscriptResultQuery(submittedQuery);
       setTranscriptResponse(res);
     } catch (err: any) {
-      setError(err.message || "Transcript search failed.");
+      if (!request.signal.aborted && transcriptRequestRef.current === request) {
+        setError(err.message || "Transcript search failed.");
+      }
     } finally {
-      setTranscriptLoading(false);
+      if (transcriptRequestRef.current === request) setTranscriptLoading(false);
     }
   }
 
@@ -517,18 +542,10 @@ export default function Home() {
   // Video view's second-phase frame scoring — same query text + event
   // weights the active search itself used, so expanded neighbor frames
   // score on the same scale as the search's own matches.
-  const frameSearchQueryEvents = useMemo(
-    () =>
-      queryGroups
-        .map((g) => [g.semanticQuery, g.textQuery].map((v) => v.trim()).filter(Boolean).join(" "))
-        .filter(Boolean),
-    [queryGroups],
-  );
   const frameSearchEventWeights = useMemo(() => {
-    const config = strategyConfigs.find((item) => item.id === selectedConfig);
-    const weights = strategyConfigDraft?.overrides.event_weights ?? config?.weights.event_weights;
-    return Array.isArray(weights) ? (weights as number[]) : undefined;
-  }, [strategyConfigDraft, strategyConfigs, selectedConfig]);
+    const weights = response?.effective_config?.event_weights;
+    return Array.isArray(weights) ? weights as number[] : undefined;
+  }, [response]);
 
   const transcriptFrameResults = useMemo<SearchResult[]>(() => {
     if (!transcriptResponse) return [];

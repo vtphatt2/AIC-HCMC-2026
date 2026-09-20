@@ -57,6 +57,7 @@ function ClusterRow({ result, index, focusedStep, isFocused, setCardRef, onCardC
               ref={setCardRef(index, stepIndex)}
               result={stepFrame}
               rank={stepIndex + 1}
+              imageLoading={index === 0 && stepIndex < 6 ? "eager" : "lazy"}
               onClick={(r) => { onSelect(index, stepIndex); onCardClick(r); }}
               badgeLabel={`Step ${stepIndex + 1}`}
               focused={isFocused && stepIndex === focusedStep}

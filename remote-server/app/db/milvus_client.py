@@ -7,6 +7,8 @@ from typing import Any
 
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
+from app.db.milvus_compat import query_frame_vector_rows
+
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = os.getenv("MILVUS_COLLECTION", "video_frames")
@@ -38,9 +40,11 @@ VECTOR_INDEXES = {
 }
 INDEX_TYPE = VECTOR_INDEXES[DEFAULT_ALGORITHM]["index_type"]
 INDEX_PARAMS = VECTOR_INDEXES[DEFAULT_ALGORITHM]["index_params"]
-SEARCH_PARAMS = {"ef": 256}
+SEARCH_PARAMS = {"ef": int(os.getenv("MILVUS_HNSW_EF", "256"))}
 DEEP_SEARCH_TOP_K = 50
-DEEP_SEARCH_EF = 512
+DEEP_SEARCH_EF = int(os.getenv("MILVUS_HNSW_DEEP_EF", "512"))
+if not all(1 <= ef <= 32768 for ef in (SEARCH_PARAMS["ef"], DEEP_SEARCH_EF)):
+    raise ValueError("Milvus HNSW ef values must be between 1 and 32768")
 
 
 def connect() -> None:
@@ -267,7 +271,7 @@ def query_frame_vectors(collection: Collection, frame_ids: list[str]) -> dict[st
     if not frame_ids:
         return {}
     quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
-    rows = collection.query(
+    rows = query_frame_vector_rows(collection,
         expr=f"frame_id in [{quoted}]",
         output_fields=["frame_id", "vector"],
         limit=len(frame_ids),

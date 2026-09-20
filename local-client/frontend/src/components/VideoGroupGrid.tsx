@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
-import { apiUrl, fetchContextFrames, fetchFrameScores, fetchTranscript } from "@/lib/api";
+import { apiUrl, fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript } from "@/lib/api";
 import ResultCard from "./ResultCard";
 
 interface Props {
@@ -140,6 +140,8 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
   const centeredForFrameIdRef = useRef<string | null>(null);
   const [bestDirection, setBestDirection] = useState<BestDirection>("visible");
   const [isVisible, setIsVisible] = useState(false);
+  const userScrolledRef = useRef(false);
+  const centeredStripRef = useRef("");
   const [transcriptSegments, setTranscriptSegments] = useState<TranscriptSegment[] | null>(null);
   const [transcriptError, setTranscriptError] = useState<string | null>(null);
   const bestScore = Math.max(...frames.map((f) => f.result.confidence));
@@ -149,59 +151,69 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
   // search hits, just what the system already has around the matched
   // cluster, so a 3-frame result doesn't read as "that's genuinely all
   // there is" when the video has far more indexed nearby.
-  const [contextFrames, setContextFrames] = useState<DisplayFrame[]>([]);
+  const framesKey = JSON.stringify(frames.map(f => [
+    f.result.frame_id, f.result.timestamp_ms, f.result.frame_number,
+  ]));
+  const needsContext = isVisible && frames.length > 0 && frames.length < CONTEXT_TARGET_TOTAL;
+  const contextKey = JSON.stringify([videoId, framesKey, queryEvents, eventWeights, duplicateThreshold]);
+  const [contextState, setContextState] = useState<{ key: string; framesKey: string; frames: DisplayFrame[]; scores: Record<string, number> | null } | null>(null);
   useEffect(() => {
-    setContextFrames([]);
-    const perSide = contextExpandPerSide(frames.length);
-    // Gate on total matched count, not on perSide alone — perSide==0 only
-    // means "the edges don't need widening," but matches spread across a
-    // video with tens-of-seconds gaps between them still need those gaps
-    // filled even when the total is already at/above target.
-    if (!isVisible || frames.length === 0 || frames.length >= CONTEXT_TARGET_TOTAL) return;
-    let cancelled = false;
-    const startMs = Math.min(...frames.map((f) => f.result.timestamp_ms));
-    const endMs = Math.max(...frames.map((f) => f.result.timestamp_ms));
-    const matchedIds = new Set(frames.map((f) => f.result.frame_id));
-    fetchContextFrames(videoId, startMs, endMs, perSide)
-      .then((res) => {
-        if (cancelled) return;
-        const toDisplay = (list: typeof res.before) =>
-          list
-            .filter((f) => !matchedIds.has(f.frame_id))
-            .map((f) => contextFrameToDisplay(videoId, res.fps, f));
-        setContextFrames([...toDisplay(res.before), ...toDisplay(res.middle), ...toDisplay(res.after)]);
-      })
-      .catch(() => { if (!cancelled) setContextFrames([]); });
-    return () => { cancelled = true; };
-    // frames.length alone (not the frames array itself) — the array
-    // reference changes every render even when its contents don't, which
-    // would refetch on every unrelated re-render.
+    if (!needsContext) return;
+    const controller = new AbortController();
+    const startMs = Math.min(...frames.map(f => f.result.timestamp_ms));
+    const endMs = Math.max(...frames.map(f => f.result.timestamp_ms));
+    const matchedIds = new Set(frames.map(f => f.result.frame_id));
+    const applyContext = (res: Awaited<ReturnType<typeof fetchScoredContext>>) => {
+      if (controller.signal.aborted) return;
+      const additions = [...res.before, ...res.middle, ...res.after]
+        .filter(f => !matchedIds.has(f.frame_id))
+        .map(f => contextFrameToDisplay(videoId, res.fps, f));
+      setContextState({ key: contextKey, framesKey, frames: additions, scores: res.scores });
+    };
+    const request = queryEvents?.length
+      ? fetchScoredContext(videoId, startMs, endMs, contextExpandPerSide(frames.length),
+          frames.map(f => f.result), queryEvents, eventWeights, duplicateThreshold, controller.signal, applyContext)
+      : fetchContextFrames(videoId, startMs, endMs, contextExpandPerSide(frames.length), controller.signal)
+          .then(res => ({ ...res, scores: null }));
+    request
+      .then(applyContext)
+      .catch(async () => {
+        if (controller.signal.aborted) return;
+        const scores = queryEvents?.length
+          ? await fetchFrameScores(queryEvents, frames.map(f => f.result.frame_id), eventWeights, duplicateThreshold, controller.signal)
+          : null;
+        if (!controller.signal.aborted) setContextState({ key: contextKey, framesKey, frames: [], scores });
+      });
+    return () => controller.abort();
+    // The key tracks frame identities and times without depending on array identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisible, videoId, frames.length]);
+  }, [needsContext, contextKey]);
 
   const displayFrames = useMemo(() => {
-    if (contextFrames.length === 0) return frames;
-    return [...frames, ...contextFrames].sort((a, b) => a.result.frame_number - b.result.frame_number);
-  }, [frames, contextFrames]);
+    const additions = needsContext && contextState?.framesKey === framesKey ? contextState.frames : [];
+    return additions.length ? [...frames, ...additions].sort((a, b) =>
+      a.result.frame_number - b.result.frame_number
+    ) : frames;
+  }, [frames, needsContext, contextState, framesKey]);
 
-  // Second-phase score, computed the same way for every frame in the strip
-  // — original matches and expanded neighbors alike — so they land on one
-  // directly comparable scale instead of each strategy's own (differently
-  // scaled) result score. The backend also runs the standard near-duplicate
-  // filter over this same set in score order — a frame_id missing from the
-  // response was filtered as a near-duplicate of a better-scoring one, not
-  // left unscored (null below means "not answered yet", distinct from "").
-  const [frameScores, setFrameScores] = useState<Record<string, number> | null>(null);
-  const frameIdsKey = displayFrames.map((f) => f.result.frame_id).join(",");
+  // Score the completed strip once, using the query that produced its matches.
+  const frameIdsKey = displayFrames.map(f => f.result.frame_id).join(",");
+  const scoreKey = JSON.stringify([videoId, frameIdsKey, queryEvents, eventWeights, duplicateThreshold]);
+  const [scoreState, setScoreState] = useState<{ key: string; scores: Record<string, number> | null } | null>(null);
+  const frameScores = needsContext
+    ? (contextState?.key === contextKey ? contextState.scores : null)
+    : (scoreState?.key === scoreKey ? scoreState.scores : null);
   useEffect(() => {
-    setFrameScores(null);
-    if (!isVisible || !queryEvents || queryEvents.length === 0 || !frameIdsKey) return;
-    let cancelled = false;
-    fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights, duplicateThreshold)
-      .then((scores) => { if (!cancelled) setFrameScores(scores); });
-    return () => { cancelled = true; };
+    if (!isVisible || needsContext || !queryEvents?.length || !frameIdsKey) return;
+    const controller = new AbortController();
+    fetchFrameScores(queryEvents, frameIdsKey.split(","), eventWeights, duplicateThreshold, controller.signal)
+      .then(scores => {
+        if (!controller.signal.aborted) setScoreState({ key: scoreKey, scores });
+      });
+    return () => controller.abort();
+    // scoreKey includes the query, weights, threshold and complete frame set.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isVisible, queryEvents, eventWeights, duplicateThreshold, frameIdsKey]);
+  }, [isVisible, needsContext, scoreKey]);
 
   // Duplicate filtering only ever removes *expanded* frames (rankInVideo
   // 0) — a real search match stays visible regardless, so badges/
@@ -222,9 +234,17 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
     let cancelled = false;
     setTranscriptSegments(null);
     setTranscriptError(null);
-    fetchTranscript(videoId)
-      .then((res) => { if (!cancelled) setTranscriptSegments(res.segments); })
-      .catch((err) => { if (!cancelled) setTranscriptError(err.message || "No transcript available"); });
+    const applyTranscript = (res: Awaited<ReturnType<typeof fetchTranscript>>) => {
+      if (!cancelled) setTranscriptSegments(res.segments);
+    };
+    fetchTranscript(videoId, applyTranscript)
+      .then(applyTranscript)
+      .catch((err) => {
+        if (!cancelled) {
+          setTranscriptSegments(null);
+          setTranscriptError(err.message || "No transcript available");
+        }
+      });
     return () => { cancelled = true; };
   }, [showTranscript, isVisible, videoId]);
 
@@ -257,6 +277,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
   // permanently tripped from the first-ever search.
   if (bestFrame && centeredForFrameIdRef.current !== bestFrame.result.frame_id) {
     hasCenteredRef.current = false;
+    userScrolledRef.current = false;
   }
 
   // Lazy render observer to drop off-screen DOM weight and network load
@@ -317,10 +338,12 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
       // Center the best-match frame on first layout instead of leaving the
       // strip scrolled to its start — the user shouldn't have to notice the
       // "jump to best" affordance to find the top result.
-      if (!hasCenteredRef.current) {
+      const stripKey = visibleFrames.map(f => f.result.frame_id).join(",");
+      if (!hasCenteredRef.current || (!userScrolledRef.current && centeredStripRef.current !== stripKey)) {
         hasCenteredRef.current = true;
         centeredForFrameIdRef.current = bestFrame?.result.frame_id ?? null;
         centerBest(false);
+        centeredStripRef.current = stripKey;
       }
       updateBestDirection();
     }, 0);
@@ -374,6 +397,10 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
           )}
           <div
             ref={stripRef}
+            data-frame-strip
+            onPointerDown={() => { userScrolledRef.current = true; }}
+            onWheel={() => { userScrolledRef.current = true; }}
+            onKeyDown={() => { userScrolledRef.current = true; }}
             onScroll={updateBestDirection}
             className="flex overflow-x-auto gap-2 p-3 scrollbar-thin"
           >
@@ -408,6 +435,8 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
                   <ResultCard
                     result={df.result}
                     rank={i + 1}
+                    imageLoading="lazy"
+                    imagePriority={df.rankInVideo === 1 ? "high" : "auto"}
                     onClick={onCardClick}
                     hideBadge={df.rankInVideo <= 5}
                     compact
@@ -491,7 +520,7 @@ export default function VideoGroupGrid({
     let cancelled = false;
     fetchFrameScores(queryEvents, allMatchedFrameIdsKey.split(","), eventWeights, duplicateThreshold)
       .then((scores) => {
-        if (cancelled) return;
+        if (cancelled || scores === null) return;
         const totals: Record<string, number> = {};
         for (const [videoId, frames] of Array.from(videoGroups.entries())) {
           totals[videoId] = frames.reduce((sum, f) => sum + (scores[f.result.frame_id] ?? 0), 0);
