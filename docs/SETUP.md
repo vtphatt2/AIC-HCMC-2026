@@ -26,7 +26,7 @@ focused on running it.
 | Python | 3.10+ | any backend |
 | Node.js + npm | 18+ | frontend |
 | Docker Desktop | latest | `remote-server` with real Milvus (optional — see below) |
-| ngrok | any | sharing across machines without a shared network |
+| ngrok or cloudflared | any | sharing across machines without a shared network |
 
 ---
 
@@ -264,14 +264,19 @@ xargs kill`.
 
 ---
 
-## 5. Sharing across machines (ngrok)
+## 5. Sharing across machines (ngrok or Cloudflare Tunnel)
 
 Two different situations — pick the one that matches what you're doing:
 
 | Sharing… | Command |
 |---|---|
 | A frontend + backend running together on **your** machine | [§5a](#5a-frontend--backend-on-the-same-machine) |
-| Only a `remote-server` backend, for teammates' own `local-backend` (LOCAL mode) | [§5b](#5b-only-a-backend-remote-server) |
+| Only a `remote-server` backend, for teammates' own `local-backend` (LOCAL mode) | [§5c](#5c-only-a-backend-remote-server) |
+
+Choose either ngrok or Cloudflare Tunnel. ngrok has a PowerShell launcher;
+Cloudflare Tunnel is started manually because it needs no application-specific
+adapter. `scripts/share-proxy.cjs` is tunnel-agnostic: it presents the
+frontend and backend on one local port.
 
 One-time ngrok setup: `ngrok config add-authtoken <token>` (from
 [dashboard.ngrok.com](https://dashboard.ngrok.com)). Claiming a free static
@@ -304,7 +309,11 @@ share the printed URL, nothing else to configure.
    still shipping the old value to every visitor.
    ```bash
    cd local-client/frontend
-   set NEXT_PUBLIC_API_URL=/
+   NEXT_PUBLIC_API_URL=/ npm run dev
+   ```
+   PowerShell equivalent:
+   ```powershell
+   $env:NEXT_PUBLIC_API_URL = "/"
    npm run dev
    ```
 2. Start the proxy and point the tunnel at **it**, not at 3000 or 8000 directly:
@@ -326,7 +335,63 @@ doesn't match. Then open the tunnel URL in an **incognito window** and run
 one real search — that's the only check that also catches the
 `NEXT_PUBLIC_API_URL` mistake above.
 
-### 5b. Only a backend (`remote-server`)
+### 5b. Frontend + backend through Cloudflare Tunnel
+
+Cloudflare Tunnel uses the same topology as ngrok, but points `cloudflared`
+at the local share proxy. The proxy binds only to `127.0.0.1`; Cloudflare
+connects out from the machine, so no inbound port needs to be opened.
+Install [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+on the machine that runs the frontend/backend before continuing.
+
+1. Start the backend on port 8000 and restart the frontend with
+   `NEXT_PUBLIC_API_URL=/`, exactly as in §5a. The relative API URL is
+   essential: visitors then call `/api/...` on the same public hostname.
+2. Start the proxy from the repository root:
+   ```bash
+   SHARE_PORT=3001 FRONTEND_PORT=3000 BACKEND_PORT=8000 \
+     node scripts/share-proxy.cjs
+   ```
+3. For a temporary development link (no Cloudflare account or DNS setup):
+   ```bash
+   cloudflared tunnel --url http://127.0.0.1:3001
+   ```
+   Share the generated `https://*.trycloudflare.com` URL. Quick tunnels are
+   for testing only; use a named tunnel for a stable team or production URL.
+   They also cannot start while `~/.cloudflared/config.yml` exists.
+4. For a named tunnel and a domain managed in Cloudflare:
+   ```bash
+   cloudflared tunnel login
+   cloudflared tunnel create aic-frontend
+   cloudflared tunnel route dns aic-frontend app.example.com
+   ```
+   Create `~/.cloudflared/config.yml`, substituting the UUID and credentials
+   path printed by `tunnel create`:
+   ```yaml
+   tunnel: <tunnel-uuid>
+   credentials-file: /home/<user>/.cloudflared/<tunnel-uuid>.json
+   ingress:
+     - hostname: app.example.com
+       service: http://127.0.0.1:3001
+     - service: http_status:404
+   ```
+   Validate and run it:
+   ```bash
+   cloudflared tunnel ingress validate
+   cloudflared tunnel run aic-frontend
+   ```
+
+Verify the deployed hostname before sharing it:
+
+```bash
+curl https://app.example.com/api/health
+```
+
+It must return JSON. As with ngrok, HTML means the tunnel was pointed at the
+Next dev server instead of the share proxy. This application has no built-in
+authentication, so protect any non-private hostname with Cloudflare Access or
+another auth layer before exposing it beyond the team.
+
+### 5c. Only a backend (`remote-server`)
 
 ```bash
 ngrok http 8000
@@ -337,6 +402,17 @@ Teammates set the printed URL as `REMOTE_SERVER_URL` in their own
 this URL directly (no `local-backend` in between), add the tunnel URL to
 `CORS_ORIGINS` in `remote-server/.env` and restart the backend.
 
+The equivalent Cloudflare command for a temporary backend-only tunnel is:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+For a named tunnel, map its public hostname to `http://127.0.0.1:8000` rather
+than port 3001. Teammates using `ENV_MODE=LOCAL` set that HTTPS hostname as
+`REMOTE_SERVER_URL`. Browser-direct use still requires that browser origin in
+`CORS_ORIGINS`.
+
 ### Troubleshooting
 
 | Symptom | Fix |
@@ -345,8 +421,10 @@ this URL directly (no `local-backend` in between), add the tunnel URL to
 | `curl .../api/health` returns HTML | Tunnel points at 3000, not 3001 — `ngrok http 3001` |
 | `curl .../api/health` refused/502 | `share-proxy.cjs` down or wrong `BACKEND_PORT` |
 | Interstitial "you are about to visit" page | Normal on free ngrok — click through once, a cookie skips it after |
-| CORS error in browser console | Only relevant to §5b browser-direct access — add the tunnel URL to `CORS_ORIGINS`, restart |
+| CORS error in browser console | Only relevant to §5c browser-direct access — add the tunnel URL to `CORS_ORIGINS`, restart |
 | `agent already running (port 4040 in use)` | A previous `ngrok` is still up — fine to reuse, or close it first |
+| Cloudflare URL returns 502 | Confirm `share-proxy.cjs` is running on 3001 and the tunnel ingress service is `http://127.0.0.1:3001` |
+| Cloudflare quick tunnel exits or is rate-limited | It is a development-only `trycloudflare.com` tunnel; create a named tunnel instead |
 
 ---
 
