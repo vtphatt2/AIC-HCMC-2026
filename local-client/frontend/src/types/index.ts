@@ -54,6 +54,10 @@ export interface VectorSearchAlgorithmResponse {
 
 export interface QueryGroup {
   semanticQuery: string;
+  /** English result kept separate from the query the user entered. */
+  translatedSemanticQuery?: string;
+  /** When enabled, search submits translatedSemanticQuery instead of semanticQuery. */
+  translationEnabled?: boolean;
   textQuery: string;
   temporalOffsetMs: number;  // ms after the previous group's result — 0 for the first group
 }

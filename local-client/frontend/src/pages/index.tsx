@@ -377,7 +377,18 @@ export default function Home() {
       clearTimeout(thresholdSearchTimerRef.current);
       thresholdSearchTimerRef.current = null;
     }
-    const hasInput = queryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
+    const hasPendingTranslation = queryGroups.some(
+      (g) => g.translationEnabled && g.semanticQuery.trim() && !g.translatedSemanticQuery?.trim(),
+    );
+    if (hasPendingTranslation) {
+      setError("Wait for the English translation before searching.");
+      return;
+    }
+    const searchQueryGroups = queryGroups.map((g) => ({
+      ...g,
+      semanticQuery: g.translationEnabled ? (g.translatedSemanticQuery || "") : g.semanticQuery,
+    }));
+    const hasInput = searchQueryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
       setError("Enter at least one search query.");
       return;
@@ -393,7 +404,7 @@ export default function Home() {
     frameRequestRef.current?.abort();
     const request = new AbortController();
     frameRequestRef.current = request;
-    const submittedQueries = queryGroups.map(g =>
+    const submittedQueries = searchQueryGroups.map(g =>
       [g.semanticQuery, g.textQuery].map(v => v.trim()).filter(Boolean).join(" ")
     ).filter(Boolean);
     const topK = normalizeTopK(topKInput);
@@ -401,7 +412,7 @@ export default function Home() {
     const started = performance.now();
     try {
       const res = await runSearch(
-        selectedStrategy, queryGroups, topK,
+        selectedStrategy, searchQueryGroups, topK,
         videoGenre,
         selectedVectorAlgorithm || undefined,
         selectedConfig,
