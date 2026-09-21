@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Any
 
+import numpy as np
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
 from app.db.milvus_compat import query_frame_vector_rows
@@ -214,6 +215,11 @@ def vector_search(
     if config["index_type"] == "HNSW":
         base_ef = DEEP_SEARCH_EF if top_k >= DEEP_SEARCH_TOP_K else int(SEARCH_PARAMS["ef"])
         search_params = {"ef": max(base_ef, top_k)}
+        if top_k >= DEEP_SEARCH_TOP_K and not expr:
+            # Knowhere's cached HNSW entry point can change repeat rankings.
+            # Bypass it for deep, unfiltered searches; shallow/filtered recall
+            # was not consistently better with the bypass.
+            search_params["for_tuning"] = True
     elif config["index_type"] == "SCANN":
         search_params = {"nprobe": 32, "reorder_k": max(top_k, top_k * 5)}
     else:
@@ -266,19 +272,19 @@ def query_frames_in_time_range(
     return [dict(row) for row in rows]
 
 
-def query_frame_vectors(collection: Collection, frame_ids: list[str]) -> dict[str, list[float]]:
+def query_frame_vectors(collection: Collection, frame_ids: list[str]) -> dict[str, np.ndarray]:
     frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
     if not frame_ids:
         return {}
     quoted = ", ".join(json.dumps(frame_id) for frame_id in frame_ids)
     rows = query_frame_vector_rows(collection,
+        as_array=True,
         expr=f"frame_id in [{quoted}]",
         output_fields=["frame_id", "vector"],
         limit=len(frame_ids),
     )
     return {
-        str(row["frame_id"]): row["vector"].tolist()
-        if hasattr(row["vector"], "tolist") else list(row["vector"])
+        str(row["frame_id"]): np.asarray(row["vector"], dtype=np.float32)
         for row in rows
     }
 

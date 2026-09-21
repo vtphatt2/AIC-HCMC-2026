@@ -24,10 +24,13 @@ import re
 import struct
 import subprocess
 import zipfile
+from array import array
 from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import numpy as np
 
 from app.services import mp4_box_parser as box
 from app.services.jpeg_disk_cache import JpegDiskCache
@@ -368,7 +371,9 @@ class VideoFrameIndex:
     timescale: int
     fps: float
     base_pts: int  # pts of the first *presented* frame — rarely 0 when B-frames reorder
-    samples: list[dict]
+    sample_offsets: array
+    sample_sizes: array
+    sample_pts: array
     keyframe_samples: list[int]
     keyframe_frames: list[int] = field(default_factory=list)
     sps: list[bytes] = field(default_factory=list)
@@ -450,12 +455,10 @@ def _build_index(video_id: str, entry: dict) -> VideoFrameIndex:
                 video_id, authoritative, fps,
             )
         fps = authoritative
-    samples = [{"o": offsets[i], "s": sizes[i], "p": pts[i]} for i in range(sample_count)]
-
     base_pts = min(pts) if pts else 0
     keyset = sorted(s - 1 for s in key_samples_1based)  # 0-based
     keyframe_frames = [
-        int(round(((samples[s]["p"] - base_pts) / timescale) * fps)) if fps else s
+        int(round(((pts[s] - base_pts) / timescale) * fps)) if fps else s
         for s in keyset
     ]
     sps, pps, nal_length_size = box.parse_avcc(moov, stbl)
@@ -466,7 +469,11 @@ def _build_index(video_id: str, entry: dict) -> VideoFrameIndex:
         timescale=timescale,
         fps=fps,
         base_pts=base_pts,
-        samples=samples,
+        # Numeric columns avoid a dictionary and three boxed integers per frame.
+        # Keep timestamps signed: composition offsets may precede decode time.
+        sample_offsets=array("Q", offsets),
+        sample_sizes=array("Q", sizes),
+        sample_pts=array("q", pts),
         keyframe_samples=keyset,
         keyframe_frames=keyframe_frames,
         sps=sps,
@@ -507,20 +514,30 @@ def _range_plan(index: VideoFrameIndex, frame_id: int, reorder_margin: int = 4):
         index.base_pts + (frame_id / index.fps) * index.timescale if index.fps else 0
     )
     start_sample = index.nearest_keyframe_sample(frame_id)
-    tail = range(start_sample, len(index.samples))
-    target_sample = min(tail, key=lambda i: (abs(index.samples[i]["p"] - target_pts), i))
-    target_p = index.samples[target_sample]["p"]
+    pts = index.sample_pts
+    # Match the scalar int-minus-float distance and its earliest-index tie break.
+    # Do not binary-search PTS: B-frames can put them out of presentation order.
+    if index.fps:
+        distances = np.subtract(
+            np.frombuffer(pts, dtype=np.int64)[start_sample:], target_pts, dtype=np.float64,
+        )
+        np.abs(distances, out=distances)
+        target_sample = start_sample + int(distances.argmin())
+    else:
+        # The no-fps fallback compares integers, including values above 2**53.
+        target_sample = min(range(start_sample, len(pts)), key=lambda i: (abs(pts[i]), i))
+    target_p = pts[target_sample]
 
     # Every frame presented before the target must be decoded as well, or the
     # rank below counts a picture the decoder never emitted. Reordering depth is
     # small and bounded, so a fixed look-ahead covers it without scanning on.
-    horizon = min(len(index.samples), target_sample + 1 + REORDER_LOOKAHEAD)
+    horizon = min(len(pts), target_sample + 1 + REORDER_LOOKAHEAD)
     last_needed = max(
-        i for i in range(start_sample, horizon) if index.samples[i]["p"] <= target_p
+        i for i in range(start_sample, horizon) if pts[i] <= target_p
     )
-    end_sample = min(last_needed + reorder_margin, len(index.samples) - 1)
+    end_sample = min(last_needed + reorder_margin, len(pts) - 1)
     target_index = sum(
-        1 for i in range(start_sample, end_sample + 1) if index.samples[i]["p"] < target_p
+        1 for i in range(start_sample, end_sample + 1) if pts[i] < target_p
     )
     return start_sample, target_sample, end_sample, target_index
 
@@ -627,9 +644,10 @@ async def _decode_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: floa
 
         frame_id = round(max(0, int(timestamp_ms)) / 1000 * index.fps) if index.fps else 0
         start_sample, target_sample, end_sample, target_index = _range_plan(index, frame_id)
-        region = index.samples[start_sample:end_sample + 1]
-        region_start = min(s["o"] for s in region)
-        region_end = max(s["o"] + s["s"] for s in region)
+        region = range(start_sample, end_sample + 1)
+        offsets, sizes = index.sample_offsets, index.sample_sizes
+        region_start = min(offsets[i] for i in region)
+        region_end = max(offsets[i] + sizes[i] for i in region)
 
         # Cache final JPEGs above; local reads need no additional region cache.
         fetched = await asyncio.to_thread(
@@ -641,9 +659,9 @@ async def _decode_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: floa
             stream += b"\x00\x00\x00\x01" + nal
         for nal in index.pps:
             stream += b"\x00\x00\x00\x01" + nal
-        for s in region:
-            rel = s["o"] - region_start
-            stream += _avcc_to_annexb(fetched[rel:rel + s["s"]], index.nal_length_size)
+        for i in region:
+            rel = offsets[i] - region_start
+            stream += _avcc_to_annexb(fetched[rel:rel + sizes[i]], index.nal_length_size)
 
         async with _decode_semaphore:
             return await asyncio.to_thread(

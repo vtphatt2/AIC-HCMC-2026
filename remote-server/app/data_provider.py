@@ -6,6 +6,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
+
 from app.db import milvus_client, postgres_client
 from app.services.blocking_io import BlockingIO
 from app.services.text_encoder import PECoreTextEncoder
@@ -79,14 +81,18 @@ class DataProvider:
                 # Lot archives ship no JPGs, so this is usually an empty
                 # directory and thumbnails resolve through /api/zip-frame.
                 keyframe_dir = Path(
-                    os.getenv("FRAME_STATIC_DIR", "")
-                    or Path(__file__).resolve().parents[2] / "static" / "frames"
-                )
+                    os.getenv("FRAME_STATIC_DIR", "").strip()
+                    or Path(__file__).resolve().parents[1] / "static" / "frames"
+                ).expanduser()
                 self._transcript_search = TranscriptSearchService(keyframe_dir=keyframe_dir)
                 logger.info("Transcript chunk search enabled (keyframe_dir=%s)", keyframe_dir)
             except Exception as exc:
                 logger.warning("Transcript chunk search unavailable: %s", exc)
                 self._transcript_search = None
+
+    @property
+    def transcript_search_service(self) -> TranscriptSearchService | None:
+        return self._transcript_search
 
     async def warmup_text_encoder(self, query: str = "warmup query", passes: int = 10) -> dict:
         loop = asyncio.get_running_loop()
@@ -213,7 +219,7 @@ class DataProvider:
             hits = [hit for hit in hits if hit["video_id"] in allowed]
         return hits
 
-    async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, list[float]]:
+    async def frame_embeddings(self, frame_ids: list[str]) -> dict[str, np.ndarray]:
         frame_ids = list(dict.fromkeys(str(frame_id) for frame_id in frame_ids if frame_id))
         collection = self._metadata_collection()
         embeddings = {}

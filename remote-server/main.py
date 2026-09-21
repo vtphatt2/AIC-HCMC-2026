@@ -87,7 +87,10 @@ async def lifespan(app: FastAPI):
     if os.getenv("TRANSCRIPT_CHUNK_SEARCH_ENABLED", "true").lower() in {"1", "true", "yes"}:
         try:
             milvus_client.create_transcript_collection_if_missing()
-            _transcript_search_service = TranscriptSearchService(keyframe_dir=FRAME_STATIC_DIR)
+            # Share the model and query cache with transcript-aware strategies.
+            _transcript_search_service = _data_provider.transcript_search_service
+            if _transcript_search_service is None:
+                _transcript_search_service = TranscriptSearchService(keyframe_dir=FRAME_STATIC_DIR)
             print("Transcript chunk search service ready")
             if os.getenv("WARMUP_TRANSCRIPT_SEARCH", "true").lower() in {"1", "true", "yes"}:
                 print("Warming up transcript search service model...")
@@ -648,7 +651,12 @@ async def frame_embeddings(req: FrameEmbeddingsRequest):
         raise HTTPException(503, "DataProvider is not ready")
     if len(req.frame_ids) > 20_000:
         raise HTTPException(400, "frame_ids is limited to 20000 items")
-    return {"embeddings": await _data_provider.frame_embeddings(req.frame_ids)}
+    embeddings = await _data_provider.frame_embeddings(req.frame_ids)
+    # Keep numeric arrays internally; only the public JSON boundary needs lists.
+    return {"embeddings": {
+        key: vector.tolist() if hasattr(vector, "tolist") else list(map(float, vector))
+        for key, vector in embeddings.items()
+    }}
 
 
 @app.post("/api/keyframes")

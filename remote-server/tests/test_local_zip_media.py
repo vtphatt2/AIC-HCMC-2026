@@ -76,7 +76,7 @@ class LocalZipMediaTests(unittest.TestCase):
 
         for timestamp_ms in (0, 5_000, 60_000):
             expected = round(timestamp_ms / 1000 * fps)
-            if expected >= len(index.samples) - 8:
+            if expected >= len(index.sample_pts) - 8:
                 continue  # video too short for this probe
             with self.subTest(timestamp_ms=timestamp_ms):
                 jpeg = asyncio.run(media.get_frame_jpeg(self.video_id, timestamp_ms))
