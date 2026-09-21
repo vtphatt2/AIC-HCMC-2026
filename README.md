@@ -16,7 +16,7 @@ Three docs cover everything day to day:
 
 | Document | Description |
 |---|---|
-| [docs/SETUP.md](docs/SETUP.md) | **Start here** — every way to run it (local, GPU server, proxy mode), launch scripts, sharing across machines over ngrok, troubleshooting |
+| [docs/SETUP.md](docs/SETUP.md) | **Start here** — every way to run it (local, GPU server, proxy mode), launch scripts, sharing across machines over ngrok or Cloudflare Tunnel, troubleshooting |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the system works: ENV_MODE, request flow, media serving, known limitations |
 | [docs/STRATEGIES.md](docs/STRATEGIES.md) | How to write a new search strategy |
 | [docs/SUBMISSION.md](docs/SUBMISSION.md) | The submission dashboard — sessions, CSV storage, frame-grid vs raw-CSV editing |
