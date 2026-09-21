@@ -56,14 +56,16 @@ export interface QueryGroup {
   semanticQuery: string;
   /** English result kept separate from the query the user entered. */
   translatedSemanticQuery?: string;
-  /** When enabled, search submits translatedSemanticQuery instead of semanticQuery. */
-  translationEnabled?: boolean;
+  /** Three Gemini paraphrases; translatedSemanticQuery is the selected one. */
+  translatedSemanticQueries?: string[];
+  selectedTranslationIndex?: number;
+  /** Search submits this selected English paraphrase when it is present. */
   textQuery: string;
   temporalOffsetMs: number;  // ms after the previous group's result — 0 for the first group
 }
 
 export interface TranslationResponse {
-  translations: string[];
+  translations: string[][];
 }
 
 export interface SearchResult {

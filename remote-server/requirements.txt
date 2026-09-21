@@ -14,9 +14,8 @@ torch==2.13.0
 sentencepiece==0.2.2
 huggingface-hub==0.36.0
 
-# Vietnamese -> English translation via Google Translate's free web endpoint
-# (see app/services/translation.py). No API key, low volume (~1-2 req/s).
-deep-translator==1.11.4
+# Vietnamese -> English query paraphrasing uses the Gemini REST API through
+# httpx. Set GEMINI_API_KEY; no extra SDK is required.
 
 # PECore text encoder — "onnx" backend (PECORE_BACKEND=onnx). CPU-only, no
 # multi-GB model download. See app/services/simple_tokenizer.py and

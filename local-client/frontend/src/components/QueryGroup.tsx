@@ -1,5 +1,3 @@
-import { useEffect, useRef, useState } from "react";
-import { translateTexts } from "@/lib/api";
 import type { QueryGroup as QueryGroupType } from "@/types";
 
 interface Props {
@@ -9,61 +7,14 @@ interface Props {
   onChange: (updated: QueryGroupType) => void;
   onRemove: () => void;
   onSubmit?: () => void;
+  onTranslateAll: () => void;
+  translating: boolean;
+  translationError: string;
 }
 
-export default function QueryGroup({ group, index, isFirst, onChange, onRemove, onSubmit }: Props) {
-  const [translating, setTranslating] = useState(false);
-  const [translationError, setTranslationError] = useState("");
-  const translationRequestId = useRef(0);
-
+export default function QueryGroup({ group, index, isFirst, onChange, onRemove, onSubmit, onTranslateAll, translating, translationError }: Props) {
   function update(patch: Partial<QueryGroupType>) {
     onChange({ ...group, ...patch });
-  }
-
-  async function translateQuery() {
-    const text = group.semanticQuery.trim();
-    if (!text) return;
-
-    const requestId = ++translationRequestId.current;
-    setTranslating(true);
-    setTranslationError("");
-    try {
-      const response = await translateTexts([text]);
-      if (requestId === translationRequestId.current) {
-        update({ translatedSemanticQuery: response.translations[0] });
-      }
-    } catch (error) {
-      if (requestId === translationRequestId.current) {
-        setTranslationError(error instanceof Error ? error.message : "Translation failed");
-      }
-    } finally {
-      if (requestId === translationRequestId.current) setTranslating(false);
-    }
-  }
-
-  // Enabling translation immediately produces an English query. Subsequent
-  // edits refresh it after a short pause, avoiding a request on every keystroke.
-  useEffect(() => {
-    if (
-      !group.translationEnabled ||
-      !group.semanticQuery.trim() ||
-      group.translatedSemanticQuery ||
-      translationError
-    ) return;
-    const timeout = window.setTimeout(() => void translateQuery(), 350);
-    return () => window.clearTimeout(timeout);
-  }, [group.semanticQuery, group.translatedSemanticQuery, group.translationEnabled]);
-
-  function handleTranslationToggle() {
-    const enabled = !group.translationEnabled;
-    translationRequestId.current += 1;
-    setTranslationError("");
-    setTranslating(false);
-    update({
-      translationEnabled: enabled,
-      // Keep the original text untouched; force a new result for this source.
-      translatedSemanticQuery: undefined,
-    });
   }
 
   // Enter in any of this step's inputs runs the search. Previously this
@@ -121,11 +72,12 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove, 
             value={group.semanticQuery}
             disabled={translating}
             onChange={(e) => {
-              // Ignore an in-flight response for the text that was just replaced.
-              translationRequestId.current += 1;
-              setTranslating(false);
-              setTranslationError("");
-              update({ semanticQuery: e.target.value, translatedSemanticQuery: undefined });
+              update({
+                semanticQuery: e.target.value,
+                translatedSemanticQuery: undefined,
+                translatedSemanticQueries: undefined,
+                selectedTranslationIndex: undefined,
+              });
             }}
             onKeyDown={handleKeyDown}
             className="w-full bg-cream-card dark:bg-stone-700 border-2 border-stone-700 dark:border-stone-500 rounded px-3 py-2 text-stone-900 dark:text-white placeholder-stone-400 dark:placeholder-stone-500 focus:outline-none focus:ring-2 focus:ring-orange-600"
@@ -133,30 +85,38 @@ export default function QueryGroup({ group, index, isFirst, onChange, onRemove, 
         </div>
         <button
           type="button"
-          role="switch"
-          aria-checked={Boolean(group.translationEnabled)}
-          title="Use an English translation for search"
-          disabled={!group.semanticQuery.trim()}
-          onClick={handleTranslationToggle}
-          className={`flex items-center gap-2 rounded px-2.5 py-2 text-xs font-bold border-2 transition disabled:opacity-50 disabled:cursor-not-allowed ${
-            group.translationEnabled
-              ? "bg-orange-700 border-orange-700 text-white"
-              : "bg-cream-card dark:bg-stone-700 border-stone-700 dark:border-stone-500 text-stone-500 dark:text-stone-400 hover:text-orange-700 dark:hover:text-orange-400"
-          }`}
+          title="Translate all temporal-step queries to English"
+          disabled={!group.semanticQuery.trim() || translating}
+          onClick={onTranslateAll}
+          className="rounded px-2.5 py-2 text-xs font-bold border-2 transition disabled:opacity-50 disabled:cursor-not-allowed bg-cream-card dark:bg-stone-700 border-stone-700 dark:border-stone-500 text-stone-500 dark:text-stone-400 hover:text-orange-700 dark:hover:text-orange-400"
         >
-          <span>VI→EN</span>
-          <span className={`relative h-4 w-7 rounded-full ${group.translationEnabled ? "bg-orange-200/80" : "bg-stone-300 dark:bg-stone-500"}`}>
-            <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${group.translationEnabled ? "translate-x-3.5" : "translate-x-0.5"}`} />
-          </span>
+          {translating ? "Translating…" : "VI→EN"}
         </button>
       </div>
 
-      {group.translationEnabled && (
+      {group.translatedSemanticQueries && (
         <div className="border-l-2 border-orange-700/70 pl-3 text-sm text-stone-700 dark:text-stone-200" aria-live="polite">
           <span className="text-xs font-semibold text-orange-800 dark:text-orange-300">English query</span>
-          <p className="mt-0.5 break-words">
-            {translating ? "Translating…" : group.translatedSemanticQuery || "Translation will appear here."}
-          </p>
+          <div className="mt-1.5 grid gap-1.5">
+            {group.translatedSemanticQueries.map((option, optionIndex) => (
+                <button
+                  key={option}
+                  type="button"
+                  aria-pressed={group.selectedTranslationIndex === optionIndex}
+                  onClick={() => update({ selectedTranslationIndex: optionIndex, translatedSemanticQuery: option })}
+                  className={`rounded border px-2 py-1.5 text-left text-sm transition ${
+                    group.selectedTranslationIndex === optionIndex
+                      ? "border-orange-700 bg-orange-100 text-stone-900 dark:bg-orange-950/50 dark:text-white"
+                      : "border-stone-300 hover:border-orange-700 dark:border-stone-600"
+                  }`}
+                >
+                  <span className="mr-2 text-xs font-semibold text-orange-800 dark:text-orange-300">
+                    {["Direct", "Action", "Visual"][optionIndex]}
+                  </span>
+                  {option}
+                </button>
+              ))}
+          </div>
         </div>
       )}
       {translationError && <p className="text-xs text-rose-700 dark:text-rose-400">{translationError}</p>}

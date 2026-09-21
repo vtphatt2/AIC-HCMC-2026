@@ -23,6 +23,7 @@ import {
   fetchStrategyConfigDraft,
   saveStrategyConfigDraft,
   runSearch,
+  translateTexts,
   warmupTextEncoder,
   searchTranscriptChunks,
 } from "@/lib/api";
@@ -106,6 +107,8 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("Searching…");
   const [error, setError] = useState<string | null>(null);
+  const [translatingQueries, setTranslatingQueries] = useState(false);
+  const [translationError, setTranslationError] = useState("");
   const [activeResult, setActiveResult] = useState<SearchResult | null>(null);
   const [showTranscript, setShowTranscript] = useState(true);
   const [showHelp, setShowHelp] = useState(false);
@@ -368,6 +371,39 @@ export default function Home() {
     setQueryGroups((prev) => prev.filter((_, i) => i !== index));
   }
 
+  async function handleTranslateAll() {
+    const sourceGroups = queryGroups
+      .map((group, index) => ({ index, text: group.semanticQuery.trim() }))
+      .filter((group) => group.text);
+    if (!sourceGroups.length || translatingQueries) return;
+
+    setTranslatingQueries(true);
+    setTranslationError("");
+    try {
+      const response = await translateTexts(sourceGroups.map((group) => group.text));
+      if (response.translations.length !== sourceGroups.length || response.translations.some(
+        (options) => !Array.isArray(options) || options.length !== 3 || options.some((option) => !option.trim()),
+      )) {
+        throw new Error("Translation service returned invalid paraphrases");
+      }
+      setQueryGroups((previous) => previous.map((group, index) => {
+        const responseIndex = sourceGroups.findIndex((source) => source.index === index);
+        if (responseIndex < 0) return group;
+        const options = response.translations[responseIndex];
+        return {
+          ...group,
+          translatedSemanticQueries: options,
+          selectedTranslationIndex: 0,
+          translatedSemanticQuery: options[0],
+        };
+      }));
+    } catch (translationFailure) {
+      setTranslationError(translationFailure instanceof Error ? translationFailure.message : "Translation failed");
+    } finally {
+      setTranslatingQueries(false);
+    }
+  }
+
   // ── Frame search ───────────────────────────────────────────────────────────
   async function handleSearch(
     configOverrides?: Record<string, StrategyConfigValue>,
@@ -377,16 +413,9 @@ export default function Home() {
       clearTimeout(thresholdSearchTimerRef.current);
       thresholdSearchTimerRef.current = null;
     }
-    const hasPendingTranslation = queryGroups.some(
-      (g) => g.translationEnabled && g.semanticQuery.trim() && !g.translatedSemanticQuery?.trim(),
-    );
-    if (hasPendingTranslation) {
-      setError("Wait for the English translation before searching.");
-      return;
-    }
     const searchQueryGroups = queryGroups.map((g) => ({
       ...g,
-      semanticQuery: g.translationEnabled ? (g.translatedSemanticQuery || "") : g.semanticQuery,
+      semanticQuery: g.translatedSemanticQuery || g.semanticQuery,
     }));
     const hasInput = searchQueryGroups.some((g) => g.semanticQuery.trim() || g.textQuery.trim());
     if (!hasInput) {
@@ -831,6 +860,9 @@ export default function Home() {
                           onChange={(updated) => updateGroup(i, updated)}
                           onRemove={() => removeGroup(i)}
                           onSubmit={handleSearch}
+                          onTranslateAll={handleTranslateAll}
+                          translating={translatingQueries}
+                          translationError={translationError}
                         />
                       ))}
                     </div>

@@ -28,7 +28,7 @@ logging.basicConfig(
 )
 
 from app.data_provider import DataProvider
-from app.services.translation import TranslationService
+from app.services.translation import TranslationNotConfigured, TranslationService
 from app.services.strategy_config import StrategyConfigStore
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.services.query_parser import QueryParser
@@ -656,6 +656,8 @@ async def translate(req: TranslationRequest):
         translations = await asyncio.to_thread(_translation_service.translate, req.texts)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except TranslationNotConfigured as exc:
+        raise HTTPException(503, str(exc))
     except Exception as exc:
         raise HTTPException(502, f"Translation failed: {exc}")
     return {"translations": translations}

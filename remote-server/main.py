@@ -22,7 +22,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=True)  # this ser
 from app.data_provider import DataProvider
 from app.strategies.base_strategy import BaseStrategy, FETCH_CAP
 from app.db import postgres_client, milvus_client
-from app.services.translation import TranslationService
+from app.services.translation import TranslationNotConfigured, TranslationService
 from app.services.strategy_config import StrategyConfigStore
 from app.services.transcript_search import TranscriptSearchService
 from app.services.transcript_jsonl_reader import transcript_response
@@ -620,6 +620,8 @@ async def translate(req: TranslationRequest):
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    except TranslationNotConfigured as exc:
+        raise HTTPException(503, str(exc))
     except Exception as exc:
         logger.exception("Translation failed")
         raise HTTPException(502, f"Translation failed: {exc}")
