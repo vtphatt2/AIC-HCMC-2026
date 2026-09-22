@@ -39,8 +39,8 @@ reference, not actively maintained — see
 
 | Directory | What it is |
 |---|---|
-| [keyframe_pipeline_global_v9_3/](keyframe_pipeline_global_v9_3/README.md) | The GPU keyframe + embedding pipeline that produces `*_results.zip` |
-| [preprocess/](preprocess/README.md) | Dataset preprocessing utilities |
+| [keyframe_pipeline_global_v9_3/](keyframe_pipeline_global_v9_3/README.md) | GPU engine used by the ZIP-native preprocessing facade |
+| [preprocess/](preprocess/README.md) | ZIP-native video pipeline plus concurrent transcript collection and Gemini cleaning |
 | [notebooks/](notebooks/NOTEBOOK_AUDIT.md) | EDA and evaluation notebooks |
 | [paper_draft/](paper_draft/README.md) | Write-up drafts |
 | [scripts/synthetic_query_generator/](scripts/synthetic_query_generator/README.md) | Synthetic query generation |
@@ -77,7 +77,7 @@ AIC-HCMC-2026/
 │       ├── services/
 │       │   ├── text_encoder.py       # PE-Core text encoder + cache
 │       │   ├── local_zip_media.py    # Frames/playback from raw_zip_videos/Videos_L*.zip, no unpacking
-│       │   └── translation.py        # VI/mixed → English via free Google Translate (deep-translator)
+│       │   └── translation.py        # VI/mixed → three Gemini English video-query paraphrases
 │       ├── data_provider.py          # Reads directly from local DBs
 │       └── strategies/               # Mirrors local-backend/app/strategies/ — same contract
 │           ├── base_strategy.py      # SearchContext + BaseStrategy V2 (+ duplicate-result filtering)
@@ -180,7 +180,7 @@ the dropdown automatically.
 | Backend | Python 3.10+ / FastAPI / uvicorn |
 | Frontend | Next.js 14 (Pages Router) / Tailwind CSS / TypeScript |
 | Video player | YouTube IFrame API, falling back to a Range-proxied organizer-ZIP `<video>` stream on embed failure |
-| Translation | Google Translate (free web endpoint via `deep-translator`); button replaces the editable query |
+| Translation | Gemini API; one manual click translates every temporal step in one request and offers three selectable English video-query paraphrases per step |
 | Local transport | HTTP via `httpx` (LOCAL mode) |
 | Local vector search | Exact search over a memmapped `vectors.f32.npy` (BLAS, ~35 ms at `top_k=1000`); Milvus Lite FLAT as fallback — [why not HNSW](docs/archive/milvus-lite-hnsw-recall-bug.md) |
 | Media | Frames and playback read straight out of the organizers' video ZIPs — HTTP Range on local-backend, a file seek on remote-server, no unpacking either way ([ARCHITECTURE.md § Media](docs/ARCHITECTURE.md#media-youtube-first-zip-proxy-fallback)) |

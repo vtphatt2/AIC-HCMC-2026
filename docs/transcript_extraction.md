@@ -1,18 +1,41 @@
-# Transcript Extraction & Processing (AIC2026) — Draft
+# Transcript collection and cleaning
 
-**Pipeline.** Metadata `video_link` → YouTube auto-captions (`youtube_transcript_api`, prefer `vi`/`en`) → `*_Transcript.txt` in `[HH:MM:SS] text` format. Videos with no captions are logged to `failed_transcripts.txt` and re-processed with Whisper `large-v3` (openai-whisper locally, `faster-whisper` on Kaggle T4x2) → `.jsonl` `{start_time_ms, end_time_ms, text}`.
+The maintained implementation is now under `preprocess/transcript_cleaner/`.
+The previous notebook and standalone scripts are historical references; new runs
+should use `python -m preprocess`.
 
-**Processing.** `convert_transcripts_to_jsonl.py` normalizes TXT→JSONL (`end_ms` = next start, last +5000 ms). `transcript_jsonl_reader.py` reads JSONL with TXT fallback. `preprocess/transcript/sentences.py` merges fragments and splits into non-overlapping sentences by terminal punctuation; when ASR has no punctuation it falls back to source-fragment boundaries (≤15 s / 320 chars) and interpolates timestamps. `build_keyframe_index.py` anchors each sentence to the nearest keyframe inside its interval (real PTS from `manifest.json`, else `frame_id/fps`). `add_transcript_banner.py` renders the sentence onto the keyframe for visual encoding. `index_transcripts.py` chunks, topic-labels, and embeds (`multilingual-e5-small`) into Milvus + PostgreSQL.
+## Current flow
 
-**Problems with missing auto-transcripts.**
+```text
+media-info directory/ZIP
+  → filter metadata to the current lot
+  → YouTube captions (prefer vi, then en)
+  → atomic raw JSONL {start_time_ms, end_time_ms, text}
+  → one resumable Gemini request per video
+  → contract validation
+  → atomic clean JSONL (only text may change)
+```
 
-- YouTube blocks/missing captions (`TranscriptsDisabled`, `NoTranscriptFound`, `RequestBlocked`): **60/835 videos** (28 L24, 6 L26, 24 L28, 2 L30).
-- 28 L24 lion-dance videos have **no speech** → Whisper would hallucinate, so skipped and marked "no transcript".
-- First Whisper pass partially failed → **retried 18 then 32 videos** (`transcript_retry/`).
-- ASR cuts phrases at silences → mitigated with a 2-chunk sliding window.
-- No punctuation/casing → fallback splitting, interpolated timestamps.
-- Timestamp drift → prefer rendered-manifest PTS over `fps`.
-- ~40% silent/B-roll videos penalized by fixed fusion → dynamic weights shift to OCR when transcript is empty.
-- Frames outside any sentence get a blank banner / `anchor=None` (never a wrong frame).
+Metadata ZIPs are read directly with `zipfile`; they are not extracted. Collection
+uses bounded thread concurrency, request pacing, retry/backoff, per-video failures,
+and atomic output. Cleaning preserves row count, order, timestamp, field set, and
+all non-text metadata. Checkpoints allow a restarted run to avoid repeated Gemini
+requests.
 
-**Result.** 835 transcript files (822 `.jsonl`); 60 videos lacked captions, 32 recovered via Whisper, 28 skipped as speechless. No video is dropped — each is either ASR-recovered or explicitly marked empty for OCR-weighted fusion.
+When passed to `python -m preprocess run --transcript-metadata ...`, this whole
+branch runs concurrently with ZIP video decoding/TransNet/PE-Core. Collection and
+cleaning are themselves connected by a filesystem-backed producer/consumer queue:
+Gemini may clean the first atomically published JSONL while captions for later
+videos are still downloading. Only the same video's `collect → clean` dependency
+remains ordered.
+
+See [`preprocess/README.md`](../preprocess/README.md#thu-thập-và-làm-sạch-transcript)
+for commands and output locations.
+
+## Historical dataset notes
+
+- YouTube captions were unavailable for 60/835 videos.
+- Whisper recovered 32 videos; 28 speechless L24 videos were intentionally left
+  without transcripts to avoid hallucinated ASR.
+- Existing Whisper/Kaggle scripts remain under `scripts/` for that explicit fallback;
+  they are not silently invoked by the caption collector.

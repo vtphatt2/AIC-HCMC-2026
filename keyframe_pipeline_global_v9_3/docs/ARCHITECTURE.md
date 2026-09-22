@@ -9,14 +9,21 @@ from the threading/queue code every time.
 ```
 ZIP (video archive)
    │
-   ├── Phase 1: TransNet  ──▶ scenes.json + keyframes.json   (per video)
-   │
-   └── Phase 2: PE-Core    ──▶ embeddings.npy                (per video, needs Phase 1 output)
+   ├── Phase 1: TransNet  ──▶ atomic scenes/keyframes JSON ──▶ ready queue
+   │                                                              │
+   └── Phase 2: PE-Core ◀──────────────────────────────────────────┘──▶ embeddings.npy
 ```
 
 Both phases decouple **decode/CPU work** from **GPU compute** using a producer/consumer
 pattern over a bounded queue, so ffmpeg decoding for the *next* unit of work overlaps GPU
 inference on the *current* one. They differ in what "unit of work" and "consumer" mean.
+
+`run_pipeline.sh` also overlaps the two phases by default (`--parallel-stages`). TransNet and
+PE-Core run as separate processes. The embed producer polls all pending video IDs and consumes
+whichever video's two metadata files appear first, so a slow video cannot head-of-line block a
+later ready video. An atomic `.transnet.complete` sentinel ends the wait and turns any remaining
+video into a per-video failure. `--sequential-stages` retains the former archive-wide barrier for
+A/B measurement or a device without enough VRAM for both model processes.
 
 ---
 
@@ -63,6 +70,21 @@ todo ──▶ [video, video, ...] ──▶  N decode workers ──▶ [Stream
   read these — low fill ratio means decode-bound (more `--transnet-decode-workers`, up to CPU
   core count), not a batch-size problem.
 
+### Scene-to-keyframe policies
+
+After TransNet converts predictions to scene intervals, `keyframe_selection.py`
+chooses evenly spaced sub-interval centers inside each scene. The default
+`--keyframe-strategy tiered` preserves the original rule: 1 frame for scenes up
+to 3 seconds, 3 up to 10 seconds, and 5 above 10 seconds. The optional `linear`
+policy uses `ceil(scene_seconds * --keyframes-per-second)`, clamped by
+`--min-keyframes-per-scene` and `--max-keyframes-per-scene` (defaults 0.3, 1,
+and 20). Counts never exceed the actual frame count.
+
+The policy is stored under `selection` in `keyframes.json`. At process startup,
+artifacts made with a different policy are invalidated before the concurrent
+TransNet/embed processes can observe them; legacy metadata without `selection`
+is recognized as the backward-compatible tiered policy.
+
 ### `sequential` (legacy v8 path)
 
 File: `_run_transnet_phase_sequential`. One video fully decoded (`_decode_transnet_entry`,
@@ -84,7 +106,8 @@ producer thread ──▶ [TensorBatch | VideoEnd | ProducerFailure] ──▶ m
 
 - **Producer** (`embedding_producer`, one background thread): iterates videos **sequentially**
   (only one video's ffmpeg decode running at a time — unlike Phase 1, there's no concurrent
-  multi-video decode here). For each video it decodes only the *requested* keyframes
+  multi-video decode here). The next video is selected from the inter-stage ready queue rather
+  than fixed filename order. For each video it decodes only the *requested* keyframes
   (`_decode_selected_frames`, adaptive `--embed-decode-mode auto|sequential|seek`), resizes/crops
   per the encoder's own preprocessing config (`--embed-ffmpeg-preprocess`, offloaded into the
   ffmpeg filter graph so the GPU/CPU-normalize path doesn't have to touch full-resolution frames),
@@ -122,5 +145,8 @@ producer thread ──▶ [TensorBatch | VideoEnd | ProducerFailure] ──▶ m
   processes, no DDP/NCCL).
 - **Multiple datasets**: `scripts/run_many.sh` runs `run_pipeline.sh` once per URL, one dataset
   fully to completion (both phases) before starting the next. No cross-dataset overlap.
-- **Phase 1 and Phase 2 of the same dataset**: strictly sequential — Phase 2 needs Phase 1's
-  `scenes.json`/`keyframes.json` on disk first.
+- **A single video's Phase 1 and Phase 2**: still causally ordered because embedding needs that
+  video's `scenes.json`/`keyframes.json`. Different videos overlap, so there is no archive-wide
+  Phase 1 → Phase 2 barrier in the default `--parallel-stages` mode.
+- **Final packaging**: remains a barrier. The manifest is written only after both stage processes
+  finish, and it includes only videos with all three required artifacts.

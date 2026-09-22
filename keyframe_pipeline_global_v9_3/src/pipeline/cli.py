@@ -7,12 +7,10 @@ Phase 1 (CPU streaming decode + GPU, TransNetV2):
       <out>/<video_id>/keyframes.json
 
 Phase 2 (CPU producer + GPU consumer):
-    Load PE-Core only after all TransNet work is complete. A CPU producer streams
-    each video once through ffmpeg, discards non-keyframes, preprocesses selected
-    frames, forms batches, and puts them into a bounded queue. The main thread
-    consumes batches on the GPU, writes embeddings, and immediately releases the
-    image tensors. CPU decoding/preprocessing of the next batch overlaps GPU
-    inference of the current batch.
+    In streaming mode, PE-Core accepts each video as soon as TransNet atomically
+    publishes its metadata; it does not wait for the whole archive. A CPU producer
+    streams that video once through ffmpeg, discards non-keyframes, preprocesses
+    selected frames, and feeds a bounded queue while GPU inference consumes it.
 
 No JPEG keyframe files are required. ZIP_STORED entries are decoded directly from
 inside the ZIP using ffmpeg's subfile protocol. Compressed entries are extracted
@@ -42,6 +40,7 @@ import torch
 from .phase2_embed.model import DEFAULT_KAGGLE_MODEL, DEFAULT_MODEL_ARCH, DEFAULT_MODEL_ID, DEFAULT_MODEL_SOURCE
 from .phase2_embed.phase import run_embedding_phase
 from .io_utils import atomic_json, safe_video_id
+from .keyframe_selection import KEYFRAME_STRATEGIES, invalidate_mismatched_selection
 from .phase1_transnet.phase import run_transnet_phase
 from .zip_source import list_video_entries
 
@@ -55,6 +54,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-shards", type=int, default=1, help="Split the sorted video list into N deterministic shards (default: 1)")
     p.add_argument("--shard-index", type=int, default=0, help="Zero-based shard index to process (default: 0)")
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument(
+        "--keyframe-strategy", choices=KEYFRAME_STRATEGIES, default="tiered",
+        help="Per-scene sampling policy: existing duration buckets or linear rate (default: tiered).",
+    )
+    p.add_argument("--keyframes-per-second", type=float, default=0.3,
+                   help="Linear policy sampling rate per scene (default: 0.3).")
+    p.add_argument("--min-keyframes-per-scene", type=int, default=1,
+                   help="Minimum samples per scene in linear mode (default: 1).")
+    p.add_argument("--max-keyframes-per-scene", type=int, default=20,
+                   help="Maximum samples per scene in linear mode (default: 20).")
     p.add_argument(
         "--transnet-mode", choices=("global", "sequential"), default="global",
         help="TransNet scheduling mode. global batches 100-frame windows across videos; sequential keeps the legacy one-video-at-a-time path.",
@@ -158,6 +167,15 @@ def parse_args() -> argparse.Namespace:
         "--phase", choices=("all", "transnet", "embed"), default="all",
         help="Run the full pipeline, only TransNet metadata, or only PE-Core embedding",
     )
+    p.add_argument(
+        "--wait-for-transnet-sentinel", type=Path, default=None,
+        help=("Embed phase only: consume videos as their TransNet metadata appears, "
+              "and stop waiting when this producer-completion sentinel exists."),
+    )
+    p.add_argument(
+        "--summary-name", default=None,
+        help="Optional output filename under --out-dir for this process summary.",
+    )
     p.add_argument("--ffmpeg-bin", default="ffmpeg")
     p.add_argument("--ffprobe-bin", default="ffprobe")
     return p.parse_args()
@@ -193,13 +211,25 @@ def check_environment(args: argparse.Namespace) -> None:
         raise ValueError("--transnet-prefetch-windows must be positive")
     if args.transnet_batch_timeout_ms < 0:
         raise ValueError("--transnet-batch-timeout-ms must be non-negative")
+    if args.keyframes_per_second <= 0:
+        raise ValueError("--keyframes-per-second must be positive")
+    if args.min_keyframes_per_scene < 1:
+        raise ValueError("--min-keyframes-per-scene must be positive")
+    if args.max_keyframes_per_scene < args.min_keyframes_per_scene:
+        raise ValueError("--max-keyframes-per-scene must be >= --min-keyframes-per-scene")
     if args.num_shards <= 0:
         raise ValueError("--num-shards must be positive")
     if not 0 <= args.shard_index < args.num_shards:
         raise ValueError(f"--shard-index must be in [0, {args.num_shards - 1}]")
+    if args.wait_for_transnet_sentinel is not None and args.phase != "embed":
+        raise ValueError("--wait-for-transnet-sentinel requires --phase embed")
+    if args.summary_name is not None and Path(args.summary_name).name != args.summary_name:
+        raise ValueError("--summary-name must be a filename, not a path")
 
 
 def run_summary_path(args: argparse.Namespace) -> Path:
+    if args.summary_name is not None:
+        return args.out_dir / args.summary_name
     if args.num_shards == 1:
         return args.out_dir / "run_summary.json"
     return args.out_dir / f"run_summary.shard_{args.shard_index}_of_{args.num_shards}.json"
@@ -220,6 +250,18 @@ def main() -> None:
     args = parse_args()
     check_environment(args)
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    invalidated = invalidate_mismatched_selection(
+        args.out_dir,
+        strategy=args.keyframe_strategy,
+        keyframes_per_second=args.keyframes_per_second,
+        min_keyframes_per_scene=args.min_keyframes_per_scene,
+        max_keyframes_per_scene=args.max_keyframes_per_scene,
+    )
+    if invalidated:
+        print(
+            f"Keyframe selection changed; invalidated {len(invalidated)} video artifact set(s).",
+            flush=True,
+        )
 
     all_entries = list_video_entries(args.zip_path, args.entry_regex)
     if args.limit is not None:
@@ -259,18 +301,26 @@ def main() -> None:
     else:
         # Embed-only mode deliberately avoids loading TransNetV2. Only entries
         # with existing keyframes/scenes metadata are eligible.
-        ready = []
-        for entry in entries:
-            video_out = args.out_dir / safe_video_id(entry.name)
-            if (video_out / "keyframes.json").exists() and (video_out / "scenes.json").exists():
-                ready.append(entry)
-            else:
-                failures.append({
-                    "entry": entry.name,
-                    "phase": "embed-prerequisite",
-                    "error": "missing scenes.json/keyframes.json; run TransNet phase first",
-                })
-        print(f"Embed-only: {len(ready)}/{len(entries)} video(s) have TransNet metadata", flush=True)
+        if args.wait_for_transnet_sentinel is not None:
+            ready = entries
+            print(
+                f"Embed streaming: watching {len(ready)} video(s); "
+                f"producer sentinel={args.wait_for_transnet_sentinel}",
+                flush=True,
+            )
+        else:
+            ready = []
+            for entry in entries:
+                video_out = args.out_dir / safe_video_id(entry.name)
+                if (video_out / "keyframes.json").exists() and (video_out / "scenes.json").exists():
+                    ready.append(entry)
+                else:
+                    failures.append({
+                        "entry": entry.name,
+                        "phase": "embed-prerequisite",
+                        "error": "missing scenes.json/keyframes.json; run TransNet phase first",
+                    })
+            print(f"Embed-only: {len(ready)}/{len(entries)} video(s) have TransNet metadata", flush=True)
 
     if args.phase in {"all", "embed"}:
         print("\n=== PHASE 2/2: CPU ffmpeg/preprocess producer + GPU PE-Core consumer ===")

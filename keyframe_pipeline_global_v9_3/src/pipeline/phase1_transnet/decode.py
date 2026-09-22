@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io_utils import safe_video_id
+from ..keyframe_selection import keyframe_count, select_keyframes
 from ..video_probe import probe_video
 from ..zip_source import VideoEntry, materialized_video
 
@@ -63,31 +64,6 @@ def decode_transnet_frames(ffmpeg_bin: str, video_source: str) -> np.ndarray:
         raise RuntimeError(f"Invalid TransNet raw byte count: {len(stdout)}")
     count = len(stdout) // TRANSNET_FRAME_BYTES
     return np.frombuffer(stdout, dtype=np.uint8).reshape(count, TRANSNET_H, TRANSNET_W, 3).copy()
-
-
-def keyframe_count(duration_s: float) -> int:
-    if duration_s <= 3.0:
-        return 1
-    if duration_s <= 10.0:
-        return 3
-    return 5
-
-
-def select_keyframes(scenes: np.ndarray, fps: float) -> list[dict]:
-    selected: list[dict] = []
-    for scene_index, (start_raw, end_raw) in enumerate(scenes):
-        start_frame, end_frame = int(start_raw), int(end_raw)
-        duration_frames = end_frame - start_frame + 1
-        count = keyframe_count(duration_frames / fps)
-        numbers = sorted({
-            min(end_frame, max(start_frame, start_frame + round((i + 0.5) * duration_frames / count)))
-            for i in range(count)
-        })
-        selected.extend(
-            {"frame_number": number, "scene_index": scene_index}
-            for number in numbers
-        )
-    return selected
 
 
 def _decode_transnet_entry(args, entry: VideoEntry) -> TransNetDecodedVideo | TransNetDecodeFailure:

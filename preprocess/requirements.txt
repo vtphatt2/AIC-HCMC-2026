@@ -1,16 +1,7 @@
-# Python dependencies for the isolated SSH preprocessing environment.
-# aria2c, ffmpeg and ffprobe remain system executables installed with APT.
-numpy==2.2.6
+# Dependencies for retained transcript utilities, collection, and safe,
+# resumable Gemini cleaning.
+# The ZIP video engine owns its own environment and requirements under
+# keyframe_pipeline_global_v9_3/.
 Pillow==12.3.0
-tqdm==4.68.4
-# Kaggle 2.x requires Python >=3.11. Python 3.10 SSH hosts use the latest
-# compatible 1.x CLI; both versions support the datasets commands used here.
-kaggle==1.7.4.5; python_version < "3.11"
-kaggle==2.2.4; python_version >= "3.11"
-transnetv2-pytorch==1.0.5
-open_clip_torch==3.3.0
-huggingface_hub==1.26.0
-# Pin the runtime selected by the validated SSH environment. For a CUDA
-# vendor wheel, install the matching torch/torchvision pair before this file.
-torch==2.13.0
-torchvision==0.28.0
+httpx==0.28.1
+youtube-transcript-api==1.2.4

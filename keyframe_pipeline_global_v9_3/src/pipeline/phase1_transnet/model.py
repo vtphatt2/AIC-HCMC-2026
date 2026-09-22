@@ -6,6 +6,7 @@ import torch
 from transnetv2_pytorch import TransNetV2
 
 from ..io_utils import atomic_json
+from ..keyframe_selection import selection_metadata
 from .decode import TRANSNET_H, TRANSNET_W, TransNetDecodedVideo, select_keyframes
 
 
@@ -65,7 +66,13 @@ def _finalize_transnet_video(
         {"start_frame": int(start), "end_frame": int(end)}
         for start, end in scenes
     ]
-    selected = select_keyframes(scenes, item.fps)
+    selected = select_keyframes(
+        scenes, item.fps,
+        strategy=args.keyframe_strategy,
+        keyframes_per_second=args.keyframes_per_second,
+        min_keyframes_per_scene=args.min_keyframes_per_scene,
+        max_keyframes_per_scene=args.max_keyframes_per_scene,
+    )
     num_frames = int(num_frames_override if num_frames_override is not None else len(item.frames))
     atomic_json(scenes_path, {
         "zip": str(args.zip_path), "entry": item.entry.name,
@@ -77,6 +84,12 @@ def _finalize_transnet_video(
         "zip": str(args.zip_path), "entry": item.entry.name,
         "fps": item.fps, "width": item.width, "height": item.height,
         "num_frames": num_frames, "num_scenes": len(scene_items),
+        "selection": selection_metadata(
+            strategy=args.keyframe_strategy,
+            keyframes_per_second=args.keyframes_per_second,
+            min_keyframes_per_scene=args.min_keyframes_per_scene,
+            max_keyframes_per_scene=args.max_keyframes_per_scene,
+        ),
         "num_keyframes": len(selected), "keyframes": selected,
     })
     if args.save_transnet_predictions:

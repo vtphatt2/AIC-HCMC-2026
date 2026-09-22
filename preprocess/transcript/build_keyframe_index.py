@@ -13,7 +13,7 @@ from pathlib import Path
 
 from preprocess.transcript.frame_assignment import anchor_frame_id
 from preprocess.transcript.sentences import Transcript, build_sentences
-from preprocess.batch.provenance import atomic_json_write, digest_records, file_record
+from preprocess.transcript.provenance import atomic_json_write, digest_records, file_record
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

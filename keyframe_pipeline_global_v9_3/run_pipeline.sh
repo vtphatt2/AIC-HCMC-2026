@@ -30,6 +30,11 @@ TRANSNET_ACTIVE_VIDEOS="8"
 TRANSNET_PREFETCH_VIDEOS="8"
 TRANSNET_PREFETCH_WINDOWS="256"
 TRANSNET_BATCH_TIMEOUT_MS="20"
+KEYFRAME_STRATEGY="tiered"
+KEYFRAMES_PER_SECOND="0.3"
+MIN_KEYFRAMES_PER_SCENE="1"
+MAX_KEYFRAMES_PER_SCENE="20"
+PARALLEL_STAGES=1
 DEVICE="cuda"
 LIMIT=""
 DOWNLOAD_ENGINE="auto"
@@ -93,6 +98,14 @@ Compute:
   --transnet-prefetch-videos N Legacy compatibility flag; ignored by streaming-global mode.
   --transnet-prefetch-windows N 100-frame windows queued ahead of GPU (default 256).
   --transnet-batch-timeout-ms N Flush partial GPU batch after N ms (default 20).
+  --keyframe-strategy tiered|linear
+                               Per-scene sample count policy (default tiered).
+  --keyframes-per-second N     Linear sampling rate (default 0.3).
+  --min-keyframes-per-scene N  Linear lower bound per scene (default 1).
+  --max-keyframes-per-scene N  Linear upper bound per scene (default 20).
+  --parallel-stages           Start PE-Core immediately and consume each video as
+                              soon as TransNet publishes it (default).
+  --sequential-stages         Wait for all TransNet videos before starting PE-Core.
   --device DEVICE              Default cuda.
   --limit N                    Process only the first N videos (useful for smoke tests).
   --local-files-only           Never download PE-Core; require local cache.
@@ -159,6 +172,12 @@ while [[ $# -gt 0 ]]; do
     --transnet-prefetch-videos) TRANSNET_PREFETCH_VIDEOS="$2"; shift 2 ;;
     --transnet-prefetch-windows) TRANSNET_PREFETCH_WINDOWS="$2"; shift 2 ;;
     --transnet-batch-timeout-ms) TRANSNET_BATCH_TIMEOUT_MS="$2"; shift 2 ;;
+    --keyframe-strategy) KEYFRAME_STRATEGY="$2"; shift 2 ;;
+    --keyframes-per-second) KEYFRAMES_PER_SECOND="$2"; shift 2 ;;
+    --min-keyframes-per-scene) MIN_KEYFRAMES_PER_SCENE="$2"; shift 2 ;;
+    --max-keyframes-per-scene) MAX_KEYFRAMES_PER_SCENE="$2"; shift 2 ;;
+    --parallel-stages) PARALLEL_STAGES=1; shift ;;
+    --sequential-stages) PARALLEL_STAGES=0; shift ;;
     --device) DEVICE="$2"; shift 2 ;;
     --limit) LIMIT="$2"; shift 2 ;;
     --download-engine) DOWNLOAD_ENGINE="$2"; shift 2 ;;
@@ -191,6 +210,10 @@ esac
 case "$TRANSNET_MODE" in
   global|sequential) ;;
   *) echo "ERROR: invalid --transnet-mode: $TRANSNET_MODE" >&2; exit 2 ;;
+esac
+case "$KEYFRAME_STRATEGY" in
+  tiered|linear) ;;
+  *) echo "ERROR: invalid --keyframe-strategy: $KEYFRAME_STRATEGY" >&2; exit 2 ;;
 esac
 case "$DOWNLOAD_ENGINE" in
   auto|aria2|python) ;;
@@ -288,7 +311,8 @@ HF_CACHE_DIR="$(cd "$HF_CACHE_DIR" && pwd)"
 TEMP_DIR="$(cd "$TEMP_DIR" && pwd)"
 KAGGLE_CACHE_DIR="$(cd "$KAGGLE_CACHE_DIR" && pwd)"
 
-# Derive data name from URL/existing ZIP, e.g. Videos_L28_a.zip -> L28_a.
+# Derive data name from URL/existing ZIP. Both historical ``Videos_L28_a.zip``
+# and current range ``Video_N001-N010.zip`` transport prefixes are omitted.
 if [[ -n "$URL" ]]; then
   BASENAME="$(basename "${URL%%\?*}")"
   [[ "$BASENAME" == *.zip ]] || BASENAME="input.zip"
@@ -298,6 +322,7 @@ else
 fi
 STEM="${BASENAME%.zip}"
 DATA_ID="${STEM#Videos_}"
+DATA_ID="${DATA_ID#Video_}"
 [[ -n "$OUT_DIR" ]] || OUT_DIR="$WORK_ROOT/output_${DATA_ID}"
 [[ -n "$ARCHIVE" ]] || ARCHIVE="$WORK_ROOT/${DATA_ID}_results.zip"
 mkdir -p "$OUT_DIR" "$(dirname "$ARCHIVE")"
@@ -329,7 +354,12 @@ if [[ -d "$ROOT/.python_deps" ]]; then
   export PYTHONPATH="$ROOT/.python_deps${PYTHONPATH:+:$PYTHONPATH}"
 fi
 
+TRANSNET_PID=""
 cleanup() {
+  if [[ -n "$TRANSNET_PID" ]] && kill -0 "$TRANSNET_PID" 2>/dev/null; then
+    kill "$TRANSNET_PID" 2>/dev/null || true
+    wait "$TRANSNET_PID" 2>/dev/null || true
+  fi
   if [[ "$KEEP_TEMP" -eq 0 ]]; then
     rm -rf "$TEMP_DIR" 2>/dev/null || true
   else
@@ -355,6 +385,7 @@ echo "Output:       $OUT_DIR"
 echo "Archive:      $ARCHIVE"
 echo "PE-Core:      weights=fp32 amp=$AMP tf32=$TF32 compile=$COMPILE batch=$BATCH_SIZE prefetch=$PREFETCH_BATCHES"
 echo "TransNet:     mode=$TRANSNET_MODE batch=$TRANSNET_BATCH_SIZE decode_workers=$TRANSNET_DECODE_WORKERS active_videos=$TRANSNET_ACTIVE_VIDEOS prefetch_videos=$TRANSNET_PREFETCH_VIDEOS"
+echo "Stage flow:   $([[ "$PARALLEL_STAGES" -eq 1 ]] && echo streaming-parallel || echo sequential)"
 echo "Model src:    $MODEL_SOURCE"
 echo "Kaggle mdl:   $KAGGLE_MODEL"
 echo "Downloader:   $DOWNLOAD_ENGINE connections=$CONNECTIONS"
@@ -457,16 +488,31 @@ TRANSNET_ARGS=(
   --transnet-prefetch-videos "$TRANSNET_PREFETCH_VIDEOS"
   --transnet-prefetch-windows "$TRANSNET_PREFETCH_WINDOWS"
   --transnet-batch-timeout-ms "$TRANSNET_BATCH_TIMEOUT_MS"
+  --keyframe-strategy "$KEYFRAME_STRATEGY"
+  --keyframes-per-second "$KEYFRAMES_PER_SECOND"
+  --min-keyframes-per-scene "$MIN_KEYFRAMES_PER_SCENE"
+  --max-keyframes-per-scene "$MAX_KEYFRAMES_PER_SCENE"
   --no-jsonl
 )
 if [[ -n "$LIMIT" ]]; then TRANSNET_ARGS+=(--limit "$LIMIT"); fi
-# A handful of bad videos should not block embedding for everything else in
-# this ZIP, so don't let `set -e` abort the script here; capture the exit
-# code and keep going. The final exit status below still reflects it.
 TRANSNET_RC=0
-"$PYTHON_BIN" "$ROOT/src/process_video_zip_gpu.py" "${TRANSNET_ARGS[@]}" || TRANSNET_RC=$?
-if [[ "$TRANSNET_RC" -ne 0 ]]; then
-  echo "WARNING: TransNet phase reported failure(s) (exit $TRANSNET_RC); continuing to embed phase for videos that succeeded." >&2
+TRANSNET_SENTINEL="$OUT_DIR/.transnet.complete"
+rm -f "$TRANSNET_SENTINEL"
+if [[ "$PARALLEL_STAGES" -eq 1 ]]; then
+  TRANSNET_ARGS+=(--summary-name run_summary.transnet.json)
+  (
+    set +e
+    "$PYTHON_BIN" "$ROOT/src/process_video_zip_gpu.py" "${TRANSNET_ARGS[@]}"
+    rc=$?
+    sentinel_tmp="${TRANSNET_SENTINEL}.tmp.$$"
+    printf '%s\n' "$rc" > "$sentinel_tmp"
+    mv "$sentinel_tmp" "$TRANSNET_SENTINEL"
+    exit "$rc"
+  ) &
+  TRANSNET_PID=$!
+  echo "[parallel] TransNet producer pid=$TRANSNET_PID; starting PE-Core consumer without an archive-wide barrier."
+else
+  "$PYTHON_BIN" "$ROOT/src/process_video_zip_gpu.py" "${TRANSNET_ARGS[@]}" || TRANSNET_RC=$?
 fi
 
 echo ""
@@ -494,10 +540,46 @@ if [[ "$COMPILE" -eq 1 ]]; then EMBED_ARGS+=(--compile); fi
 if [[ -n "$MODEL_DIR" ]]; then EMBED_ARGS+=(--model-dir "$MODEL_DIR"); fi
 if [[ "$LOCAL_FILES_ONLY" -eq 1 ]]; then EMBED_ARGS+=(--local-files-only); fi
 if [[ -n "$LIMIT" ]]; then EMBED_ARGS+=(--limit "$LIMIT"); fi
+if [[ "$PARALLEL_STAGES" -eq 1 ]]; then
+  EMBED_ARGS+=(--wait-for-transnet-sentinel "$TRANSNET_SENTINEL" --summary-name run_summary.embed.json)
+fi
 EMBED_RC=0
 "$PYTHON_BIN" "$ROOT/src/process_video_zip_gpu.py" "${EMBED_ARGS[@]}" || EMBED_RC=$?
+if [[ "$PARALLEL_STAGES" -eq 1 ]]; then
+  wait "$TRANSNET_PID" || TRANSNET_RC=$?
+  TRANSNET_PID=""
+fi
+if [[ "$TRANSNET_RC" -ne 0 ]]; then
+  echo "WARNING: TransNet phase reported failure(s) (exit $TRANSNET_RC); embedding continued for videos that succeeded." >&2
+fi
 if [[ "$EMBED_RC" -ne 0 ]]; then
   echo "WARNING: Embed phase reported failure(s) (exit $EMBED_RC)." >&2
+fi
+
+if [[ "$PARALLEL_STAGES" -eq 1 ]]; then
+  "$PYTHON_BIN" - "$OUT_DIR" <<'PYMERGE'
+from pathlib import Path
+import json, os, sys
+
+out = Path(sys.argv[1])
+def load(name):
+    path = out / name
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+transnet = load("run_summary.transnet.json")
+embed = load("run_summary.embed.json")
+payload = {
+    "zip": embed.get("zip") or transnet.get("zip"),
+    "stage_flow": "streaming-parallel",
+    "transnet_ready": transnet.get("transnet_ready", []),
+    "embedding_results": embed.get("embedding_results", []),
+    "failures": transnet.get("failures", []) + embed.get("failures", []),
+}
+target = out / "run_summary.json"
+temporary = out / "run_summary.json.tmp"
+temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+os.replace(temporary, target)
+PYMERGE
 fi
 
 if [[ "$DELETE_SOURCE_BEFORE_PACKAGE" -eq 1 && "$DOWNLOADED_BY_US" -eq 1 ]]; then
@@ -512,10 +594,10 @@ bash "$ROOT/package_results.sh" "$OUT_DIR" "$ARCHIVE"
 
 RUN_ENDED_EPOCH=$(date +%s)
 RUN_WALL_SECONDS=$((RUN_ENDED_EPOCH-RUN_STARTED_EPOCH))
-"$PYTHON_BIN" - "$OUT_DIR" "$RUN_WALL_SECONDS" "$BATCH_SIZE" "$PREFETCH_BATCHES" "$AMP" "$TF32" <<'PYPERF'
+"$PYTHON_BIN" - "$OUT_DIR" "$RUN_WALL_SECONDS" "$BATCH_SIZE" "$PREFETCH_BATCHES" "$AMP" "$TF32" "$PARALLEL_STAGES" <<'PYPERF'
 from pathlib import Path
 import json, sys
-out=Path(sys.argv[1]); wall=float(sys.argv[2]); batch=int(sys.argv[3]); prefetch=int(sys.argv[4]); amp=sys.argv[5]; tf32=bool(int(sys.argv[6]))
+out=Path(sys.argv[1]); wall=float(sys.argv[2]); batch=int(sys.argv[3]); prefetch=int(sys.argv[4]); amp=sys.argv[5]; tf32=bool(int(sys.argv[6])); parallel=bool(int(sys.argv[7]))
 video_stats=[]; total_kf=0; cpu_s=0.0; gpu_s=0.0
 for p in sorted(out.glob('*/embedding_stats.json')):
     try: d=json.loads(p.read_text()); video_stats.append(d)
@@ -536,6 +618,7 @@ summary={
  'decode_preprocess_seconds_sum':round(cpu_s,3),'decode_preprocess_keyframes_per_s':round(total_kf/cpu_s,3) if cpu_s>0 else None,
  'transnet_decode_seconds_sum':round(transnet_decode,3),'transnet_inference_seconds_sum':round(transnet_infer,3),
  'batch_size':batch,'prefetch_batches':prefetch,'amp':amp,'tf32':tf32,
+ 'stage_flow':'streaming-parallel' if parallel else 'sequential',
 }
 (out/'performance_summary.json').write_text(json.dumps(summary,indent=2),encoding='utf8')
 print('[performance] videos=%d keyframes=%d wall=%.1fs e2e=%.2f keyframes/s gpu=%.2f img/s decode_preprocess=%.2f keyframes/s' % (

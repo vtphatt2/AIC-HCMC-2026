@@ -9,11 +9,11 @@ embeddings for each keyframe. Built for CCTV/AIC-style CFR video on a single CUD
 - **Phase 2 — PE-Core embedding**: FFmpeg decodes only the requested keyframes, resized/cropped
   from the encoder's own preprocessing config, then batched onto the GPU for embedding.
 
-Both phases overlap CPU decode and GPU compute via a producer/consumer thread + bounded queue,
-and can mix work from multiple videos into one GPU batch. See **`docs/ARCHITECTURE.md`** for the
-full mechanism (streaming window batching, cross-video batch accumulation, what is/isn't
-parallel) — read it before tuning `--transnet-*`/`--prefetch-batches`/`--batch-size` on a new
-machine.
+Both phases overlap CPU decode and GPU compute via producer/consumer queues and can mix work from
+multiple videos into one GPU batch. They also overlap each other by default: as soon as TransNet
+publishes one video's metadata, PE-Core may consume that video while TransNet continues with the
+rest of the ZIP. See **`docs/ARCHITECTURE.md`** for the full mechanism and VRAM trade-off before
+tuning `--transnet-*`/`--prefetch-batches`/`--batch-size` on a new machine.
 
 `src/process_video_zip_gpu.py` and `src/stream_download_transnet.py` are thin CLI entrypoints
 (launchers below call these, not repo-root scripts); the actual implementation lives in
@@ -57,6 +57,22 @@ bash run_pipeline.sh --url https://host/Videos_L28_a.zip \
 Or with an already-downloaded ZIP: `bash run_pipeline.sh --zip /path/videos.zip --profile balanced`.
 
 Full option list: `bash run_pipeline.sh --help`.
+
+Inter-stage streaming is enabled by default (`--parallel-stages`). Use `--sequential-stages` only
+for an A/B baseline or when GPU memory cannot hold both model processes at once.
+
+Keyframe count defaults to the existing `tiered` scene policy (1/3/5 frames for
+scenes of <=3s, <=10s, and >10s). Duration-linear sampling is available with:
+
+```bash
+bash run_pipeline.sh --zip /path/Video_N001-N010.zip \
+  --keyframe-strategy linear --keyframes-per-second 0.3 \
+  --min-keyframes-per-scene 1 --max-keyframes-per-scene 20
+```
+
+Linear counts use `ceil(scene_seconds * rate)` and are clamped per scene. Frames
+remain evenly spaced inside each detected scene. The configuration is recorded
+in `keyframes.json`; changing it invalidates stale keyframes and embeddings.
 
 ### Storage profiles
 

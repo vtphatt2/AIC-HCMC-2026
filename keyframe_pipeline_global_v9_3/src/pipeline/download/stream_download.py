@@ -22,6 +22,7 @@ import requests
 import torch
 
 from ..io_utils import atomic_json, safe_video_id
+from ..keyframe_selection import invalidate_mismatched_selection, selection_metadata
 from ..phase1_transnet.decode import decode_transnet_frames, select_keyframes
 from ..phase1_transnet.model import load_transnet
 from ..video_probe import probe_video
@@ -48,6 +49,10 @@ def parse_args():
     p.add_argument("--zip", dest="zip_path", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, required=True)
     p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--keyframe-strategy", choices=("tiered", "linear"), default="tiered")
+    p.add_argument("--keyframes-per-second", type=float, default=0.3)
+    p.add_argument("--min-keyframes-per-scene", type=int, default=1)
+    p.add_argument("--max-keyframes-per-scene", type=int, default=20)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--chunk-mb", type=int, default=8)
     p.add_argument("--entry-regex", default=None)
@@ -157,12 +162,24 @@ def process_entry(args, model, item: ReadyEntry):
     scenes = model.predictions_to_scenes(pred_np, threshold=args.threshold)
     infer_s = time.perf_counter() - ti
     scene_items = [{"start_frame": int(a), "end_frame": int(b)} for a, b in scenes]
-    keys = select_keyframes(scenes, fps)
+    keys = select_keyframes(
+        scenes, fps,
+        strategy=args.keyframe_strategy,
+        keyframes_per_second=args.keyframes_per_second,
+        min_keyframes_per_scene=args.min_keyframes_per_scene,
+        max_keyframes_per_scene=args.max_keyframes_per_scene,
+    )
     common = {"zip": str(args.zip_path), "entry": item.name, "fps": fps, "width": width,
               "height": height, "num_frames": int(frames.shape[0])}
     atomic_json(scenes_path, {**common, "threshold": args.threshold,
                              "num_scenes": len(scene_items), "scenes": scene_items})
     atomic_json(keys_path, {**common, "num_scenes": len(scene_items),
+                           "selection": selection_metadata(
+                               strategy=args.keyframe_strategy,
+                               keyframes_per_second=args.keyframes_per_second,
+                               min_keyframes_per_scene=args.min_keyframes_per_scene,
+                               max_keyframes_per_scene=args.max_keyframes_per_scene,
+                           ),
                            "num_keyframes": len(keys), "keyframes": keys})
     np.save(out / "transnet_predictions.npy", pred_np)
     atomic_json(out / "transnet_stats.json", {"entry": item.name,
@@ -176,11 +193,24 @@ def process_entry(args, model, item: ReadyEntry):
 
 def main():
     args = parse_args()
+    if args.keyframes_per_second <= 0:
+        raise SystemExit("--keyframes-per-second must be positive")
+    if args.min_keyframes_per_scene < 1:
+        raise SystemExit("--min-keyframes-per-scene must be positive")
+    if args.max_keyframes_per_scene < args.min_keyframes_per_scene:
+        raise SystemExit("--max-keyframes-per-scene must be >= --min-keyframes-per-scene")
     if shutil.which(args.ffmpeg_bin) is None or shutil.which(args.ffprobe_bin) is None:
         raise SystemExit("ffmpeg/ffprobe not found")
     if args.device.startswith("cuda") and not torch.cuda.is_available():
         raise SystemExit("CUDA requested but unavailable")
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    invalidate_mismatched_selection(
+        args.out_dir,
+        strategy=args.keyframe_strategy,
+        keyframes_per_second=args.keyframes_per_second,
+        min_keyframes_per_scene=args.min_keyframes_per_scene,
+        max_keyframes_per_scene=args.max_keyframes_per_scene,
+    )
     q: queue.Queue = queue.Queue(maxsize=2)
     thread = threading.Thread(target=downloader, args=(args, q), daemon=True)
     thread.start()

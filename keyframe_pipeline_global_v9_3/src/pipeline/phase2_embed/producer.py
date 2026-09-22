@@ -21,6 +21,7 @@ import torch
 from .decode import _decode_selected_frames, put_queue
 from .preprocess import EncoderPreprocessPlan, normalize_uint8_cpu
 from ..io_utils import safe_video_id
+from ..ready_queue import ReadyEntryQueue
 from ..video_probe import probe_video
 from ..zip_source import VideoEntry, materialized_video
 
@@ -78,6 +79,33 @@ def embedding_producer(
     frame_numbers: list[int] = []
     scene_indices: list[int] = []
 
+    def scheduled_entries():
+        sentinel = getattr(args, "wait_for_transnet_sentinel", None)
+        if sentinel is None:
+            for index, entry in enumerate(entries, 1):
+                yield index, len(entries), entry
+            return
+
+        ready_queue = ReadyEntryQueue(entries, args.out_dir, sentinel)
+        emitted = 0
+        while ready_queue:
+            ready = ready_queue.take_ready()
+            for entry in ready:
+                emitted += 1
+                yield emitted, len(entries), entry
+            if not ready_queue:
+                return
+            if ready_queue.producer_finished:
+                for entry in ready_queue.take_missing():
+                    put_queue(out_queue, ProducerFailure(
+                        entry_name=entry.name,
+                        error="TransNet completed without scenes.json/keyframes.json",
+                        detail=f"producer sentinel: {sentinel}",
+                    ))
+                return
+            if not ready:
+                time.sleep(0.1)
+
     def flush_global() -> None:
         if not tensors:
             return
@@ -96,14 +124,14 @@ def embedding_producer(
         positions.clear(); frame_numbers.clear(); scene_indices.clear()
 
     try:
-        for index, entry in enumerate(entries, 1):
+        for index, total, entry in scheduled_entries():
             video_id = safe_video_id(entry.name)
             done_path = args.out_dir / video_id / "embeddings.npy"
             if done_path.exists() and not args.overwrite:
-                print(f"[Embed producer {index}/{len(entries)}] skip {entry.name}", flush=True)
+                print(f"[Embed producer {index}/{total}] skip {entry.name}", flush=True)
                 continue
 
-            print(f"[Embed producer {index}/{len(entries)}] decode {entry.name}", flush=True)
+            print(f"[Embed producer {index}/{total}] decode {entry.name}", flush=True)
             started = time.perf_counter()
             try:
                 keyframes_data = json.loads(

@@ -1,15 +1,5 @@
-# Top-level reproducibility lock for the preprocess SSH venv.
-# System tools (aria2c, ffmpeg, ffprobe) and the CUDA driver are recorded in
-# provenance.json but remain installed through the operating system/vendor.
-numpy==2.2.6
+# Lock for retained transcript utilities plus Gemini cleaning. The ZIP video
+# engine maintains its runtime dependencies independently.
 Pillow==12.3.0
-tqdm==4.68.4
-# Kaggle 2.x requires Python >=3.11. Python 3.10 SSH hosts use the latest
-# compatible 1.x CLI; both versions support the datasets commands used here.
-kaggle==1.7.4.5; python_version < "3.11"
-kaggle==2.2.4; python_version >= "3.11"
-transnetv2-pytorch==1.0.5
-open_clip_torch==3.3.0
-huggingface_hub==1.26.0
-torch==2.13.0
-torchvision==0.28.0
+httpx==0.28.1
+youtube-transcript-api==1.2.4
