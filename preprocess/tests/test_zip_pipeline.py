@@ -75,6 +75,14 @@ class ZipPipelineConfigTest(unittest.TestCase):
                 max_keyframes_per_scene=2,
             )
 
+    def test_zero_max_keyframes_is_an_unlimited_valid_configuration(self) -> None:
+        config = ZipPipelineConfig(
+            source_zip=Path("input.zip"),
+            keyframe_strategy="linear",
+            max_keyframes_per_scene=0,
+        )
+        self.assertEqual(config.max_keyframes_per_scene, 0)
+
     def test_default_archive_uses_challenge_name(self) -> None:
         config = ZipPipelineConfig(
             source_url="https://example.test/path/Videos_L31_b.zip?token=abc",

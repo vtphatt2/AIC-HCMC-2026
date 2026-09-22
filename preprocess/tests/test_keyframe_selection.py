@@ -32,6 +32,15 @@ class KeyframeSelectionTest(unittest.TestCase):
         self.assertEqual(keyframe_count(60.0, **options), 18)
         self.assertEqual(keyframe_count(600.0, **options), 20)
 
+    def test_linear_zero_max_means_unlimited(self) -> None:
+        self.assertEqual(keyframe_count(
+            600.0,
+            strategy="linear",
+            keyframes_per_second=0.3,
+            min_keyframes_per_scene=1,
+            max_keyframes_per_scene=0,
+        ), 180)
+
     def test_selected_frames_are_evenly_spaced_inside_each_scene(self) -> None:
         selected = select_keyframes(
             [(0, 99)],

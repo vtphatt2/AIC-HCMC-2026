@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ from preprocess.transcript_stage import (
     lot_video_id_regex,
     run_commands_concurrently,
 )
-from preprocess.__main__ import build_parser
+from preprocess.__main__ import build_parser, main as preprocess_main
 from preprocess.transcript_cleaner.collect import CollectionSummary
 from preprocess.transcript_cleaner.workflow import main as transcript_workflow_main
 
@@ -143,6 +144,27 @@ class MainPipelineParserTest(unittest.TestCase):
         ])
         self.assertEqual(args.transcript_metadata, Path("media-info.zip"))
         self.assertEqual(args.transcript_concurrency, 4)
+
+    def test_loads_a_complete_run_from_json_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = Path(temp_name)
+            config = root / "run.json"
+            config.write_text(json.dumps({
+                "zip": "Video_N001-N010.zip",
+                "work_root": "work/N001-N010",
+                "keyframe_strategy": "linear",
+                "keyframes_per_second": 0.3,
+                "min_keyframes_per_scene": 1,
+                "max_keyframes_per_scene": 0,
+            }), encoding="utf-8")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = preprocess_main(["run", "--config", str(config), "--dry-run"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("--keyframe-strategy linear", output.getvalue())
+        self.assertIn("--max-keyframes-per-scene 0", output.getvalue())
+        self.assertIn(str(root / "Video_N001-N010.zip"), output.getvalue())
 
 
 if __name__ == "__main__":

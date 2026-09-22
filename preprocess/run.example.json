@@ -1,0 +1,19 @@
+{
+  "zip": "/data/Video_N001-N010.zip",
+  "work_root": "/data/aic-preprocess/N001-N010",
+  "profile": "balanced",
+  "device": "cuda",
+  "batch_size": 64,
+  "prefetch_batches": 3,
+  "transnet_batch_size": 16,
+  "transnet_decode_workers": 4,
+  "transnet_prefetch_windows": 256,
+  "keyframe_strategy": "linear",
+  "keyframes_per_second": 0.3,
+  "min_keyframes_per_scene": 1,
+  "max_keyframes_per_scene": 0,
+  "transcript_metadata": "/data/media-info.zip",
+  "transcript_concurrency": 8,
+  "transcript_rpm": 0,
+  "transcript_tpm": 0
+}

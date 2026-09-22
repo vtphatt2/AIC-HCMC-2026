@@ -197,7 +197,9 @@ def main():
         raise SystemExit("--keyframes-per-second must be positive")
     if args.min_keyframes_per_scene < 1:
         raise SystemExit("--min-keyframes-per-scene must be positive")
-    if args.max_keyframes_per_scene < args.min_keyframes_per_scene:
+    if args.max_keyframes_per_scene < 0:
+        raise SystemExit("--max-keyframes-per-scene must be non-negative")
+    if args.max_keyframes_per_scene and args.max_keyframes_per_scene < args.min_keyframes_per_scene:
         raise SystemExit("--max-keyframes-per-scene must be >= --min-keyframes-per-scene")
     if shutil.which(args.ffmpeg_bin) is None or shutil.which(args.ffprobe_bin) is None:
         raise SystemExit("ffmpeg/ffprobe not found")

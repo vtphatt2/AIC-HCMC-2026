@@ -117,6 +117,27 @@ export HF_HUB_ENABLE_HF_TRANSFER=1
 
 ## Quick start
 
+### Recommended: a JSON configuration per lot
+
+Copy [`run.example.json`](run.example.json), set the source and output paths,
+then keep the resulting file beside the run log. The full run is reproducible
+with one command:
+
+```bash
+cp preprocess/run.example.json /data/aic-runs/N001-N010.json
+preprocess/.venv/bin/python -m preprocess run --config /data/aic-runs/N001-N010.json
+```
+
+`zip` is a local source; use `url` instead for a downloaded source. Paths inside
+the JSON may be absolute or relative to the config file. The JSON keys use the
+same snake_case names as the CLI flags, for example
+`keyframe_strategy`, `transnet_decode_workers`, and
+`transcript_metadata`. `--dry-run` can be appended to inspect the resolved
+commands. Do not put `GEMINI_API_KEY` in this file.
+
+`max_keyframes_per_scene: 0` means **unlimited**. It should only be used when
+the expected embedding cost for long scenes is acceptable.
+
 ### Video only, local ZIP
 
 ```bash
@@ -185,7 +206,7 @@ python3 -m preprocess inspect /data/aic-preprocess/L30_a/L30_a_results.zip
 | `--keyframe-strategy tiered\|linear` | `tiered` | Per-scene keyframe count policy. `tiered` preserves the existing 1/3/5 rule; `linear` scales with scene duration. |
 | `--keyframes-per-second N` | 0.3 | Linear rate: `ceil(scene_seconds × N)`. |
 | `--min-keyframes-per-scene N` | 1 | Lower bound for each scene in linear mode. |
-| `--max-keyframes-per-scene N` | 20 | Upper bound for each scene in linear mode. |
+| `--max-keyframes-per-scene N` | 20 | Upper bound for each scene in linear mode; `0` disables the cap. |
 | `--limit N` | unset | Process only the first N videos; use for smoke tests. |
 | `--sequential-stages` | off | Disable per-video TransNet → PE-Core streaming to reduce concurrent VRAM demand. |
 | `--delete-source-before-package` | off | Delete only a **downloaded** source ZIP after embedding, before packaging. Do not use when preserving source is required. |
@@ -243,11 +264,11 @@ python3 -m preprocess run --zip /data/Videos_L30_a.zip \
   --transnet-batch-size 4 --transnet-decode-workers 2 \
   --sequential-stages
 
-# 4. Linear scene sampling: about 3 frames per 10 seconds, capped at 20/scene.
+# 4. Linear scene sampling: about 3 frames per 10 seconds, no per-scene cap.
 python3 -m preprocess run --zip /data/Video_N001-N010.zip \
   --work-root /data/aic-preprocess/N001-N010 \
   --keyframe-strategy linear --keyframes-per-second 0.3 \
-  --min-keyframes-per-scene 1 --max-keyframes-per-scene 20
+  --min-keyframes-per-scene 1 --max-keyframes-per-scene 0
 
 # 5. Downloaded source, preserve all evidence for debugging.
 bash keyframe_pipeline_global_v9_3/run_pipeline.sh \
@@ -262,7 +283,8 @@ directory per lot and one final archive path per lot.
 The tiered policy selects 1 frame for scenes up to 3 seconds, 3 frames for
 scenes up to 10 seconds, and 5 frames for longer scenes. The linear policy
 computes `ceil(duration × keyframes-per-second)`, clamps it to the configured
-minimum/maximum, and positions frames evenly at sub-interval centers. Selection
+minimum/maximum (or has no upper bound when maximum is `0`), and positions
+frames evenly at sub-interval centers. Selection
 settings are stored in every `keyframes.json`. Reusing a work root with a
 different policy automatically invalidates stale keyframe and embedding files.
 
@@ -386,11 +408,11 @@ checks all NPY shapes/dimensions without extracting the archive.
    df -h /data /dev/shm
    ```
 
-3. Pick a unique work root, check source name, and print the planned command.
+3. Copy the JSON example, set a unique work root, check the source name, and
+   print the planned command.
 
    ```bash
-   python3 -m preprocess run --zip /data/Videos_L30_a.zip \
-     --work-root /data/aic-preprocess/L30_a --dry-run
+   python3 -m preprocess run --config /data/aic-runs/N001-N010.json --dry-run
    ```
 
 4. Run a two-video smoke test using a separate work root. Inspect its archive.

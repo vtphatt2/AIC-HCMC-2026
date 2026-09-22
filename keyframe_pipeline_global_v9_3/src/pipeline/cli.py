@@ -215,7 +215,9 @@ def check_environment(args: argparse.Namespace) -> None:
         raise ValueError("--keyframes-per-second must be positive")
     if args.min_keyframes_per_scene < 1:
         raise ValueError("--min-keyframes-per-scene must be positive")
-    if args.max_keyframes_per_scene < args.min_keyframes_per_scene:
+    if args.max_keyframes_per_scene < 0:
+        raise ValueError("--max-keyframes-per-scene must be non-negative")
+    if args.max_keyframes_per_scene and args.max_keyframes_per_scene < args.min_keyframes_per_scene:
         raise ValueError("--max-keyframes-per-scene must be >= --min-keyframes-per-scene")
     if args.num_shards <= 0:
         raise ValueError("--num-shards must be positive")

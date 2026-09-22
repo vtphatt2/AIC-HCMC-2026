@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .run_config import apply_run_config
+
 from .zip_pipeline import (
     ResultArchiveValidator,
     ZipPipelineConfig,
@@ -32,9 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     run = commands.add_parser("run", help="Run ZIP-native TransNet + PE-Core preprocessing.")
-    source = run.add_mutually_exclusive_group(required=True)
+    source = run.add_mutually_exclusive_group(required=False)
     source.add_argument("--url", help="Download one complete source ZIP, then process it in place.")
     source.add_argument("--zip", dest="zip_path", type=Path, help="Use an existing local source ZIP.")
+    run.add_argument("--config", type=Path, help="JSON run definition; supplies source and all run settings.")
     run.add_argument("--work-root", type=Path, default=Path("data/zip-preprocess"))
     run.add_argument("--archive", type=Path, help="Final challenge-compatible *_results.zip path.")
     run.add_argument("--profile", choices=("balanced", "ram-rich", "disk-rich", "colab"), default="balanced")
@@ -164,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(inspection.to_dict(), indent=2))
             return 0
 
+        args = apply_run_config(args)
         config = _config(args)
         transcript_command = _transcript_command(args, config)
         if args.dry_run:

@@ -86,7 +86,9 @@ def keyframe_count(
         raise ValueError("keyframes_per_second must be positive")
     if min_keyframes_per_scene < 1:
         raise ValueError("min_keyframes_per_scene must be positive")
-    if max_keyframes_per_scene < min_keyframes_per_scene:
+    if max_keyframes_per_scene < 0:
+        raise ValueError("max_keyframes_per_scene must be non-negative")
+    if max_keyframes_per_scene and max_keyframes_per_scene < min_keyframes_per_scene:
         raise ValueError("max_keyframes_per_scene must be >= min_keyframes_per_scene")
 
     if strategy == "tiered":
@@ -97,7 +99,8 @@ def keyframe_count(
         return 5
 
     requested = math.ceil(max(0.0, duration_s) * keyframes_per_second)
-    return min(max_keyframes_per_scene, max(min_keyframes_per_scene, requested))
+    count = max(min_keyframes_per_scene, requested)
+    return min(max_keyframes_per_scene, count) if max_keyframes_per_scene else count
 
 
 def select_keyframes(

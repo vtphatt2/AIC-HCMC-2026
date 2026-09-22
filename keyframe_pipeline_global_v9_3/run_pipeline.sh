@@ -102,7 +102,7 @@ Compute:
                                Per-scene sample count policy (default tiered).
   --keyframes-per-second N     Linear sampling rate (default 0.3).
   --min-keyframes-per-scene N  Linear lower bound per scene (default 1).
-  --max-keyframes-per-scene N  Linear upper bound per scene (default 20).
+  --max-keyframes-per-scene N  Linear upper bound per scene (default 20; 0 = unlimited).
   --parallel-stages           Start PE-Core immediately and consume each video as
                               soon as TransNet publishes it (default).
   --sequential-stages         Wait for all TransNet videos before starting PE-Core.

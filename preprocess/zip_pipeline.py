@@ -82,7 +82,9 @@ class ZipPipelineConfig:
             raise ValueError("keyframes_per_second must be positive")
         if self.min_keyframes_per_scene < 1:
             raise ValueError("min_keyframes_per_scene must be positive")
-        if self.max_keyframes_per_scene < self.min_keyframes_per_scene:
+        if self.max_keyframes_per_scene < 0:
+            raise ValueError("max_keyframes_per_scene must be non-negative")
+        if self.max_keyframes_per_scene and self.max_keyframes_per_scene < self.min_keyframes_per_scene:
             raise ValueError("max_keyframes_per_scene must be >= min_keyframes_per_scene")
 
     @property

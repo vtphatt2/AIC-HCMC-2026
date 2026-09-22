@@ -67,10 +67,11 @@ scenes of <=3s, <=10s, and >10s). Duration-linear sampling is available with:
 ```bash
 bash run_pipeline.sh --zip /path/Video_N001-N010.zip \
   --keyframe-strategy linear --keyframes-per-second 0.3 \
-  --min-keyframes-per-scene 1 --max-keyframes-per-scene 20
+  --min-keyframes-per-scene 1 --max-keyframes-per-scene 0
 ```
 
-Linear counts use `ceil(scene_seconds * rate)` and are clamped per scene. Frames
+Linear counts use `ceil(scene_seconds * rate)` and are clamped per scene unless
+the maximum is `0` (unlimited). Frames
 remain evenly spaced inside each detected scene. The configuration is recorded
 in `keyframes.json`; changing it invalidates stale keyframes and embeddings.
 
