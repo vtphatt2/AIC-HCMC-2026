@@ -57,6 +57,21 @@ class QuarantineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             policy.block_release('N001-V001', reason='', details='y', evidence='z')
 
+    def test_clear_release_block_requires_the_expected_audited_reason(self):
+        self.path.write_text(json.dumps({'version':1,'videos':{
+            'N015-V001':{'reason':'decoder_sensitive_source_picture',
+                         'details':'candidate','evidence':'old','release_blocked':True},
+        }}))
+        with self.assertRaises(ValueError):
+            policy.clear_release_block('N015-V001', reason='stable', details='ok',
+                                       evidence='new', expected_reason='different')
+        policy.clear_release_block('N015-V001', reason='verified_decoder_setting_variation',
+                                   details='four-thread replay exact', evidence='new',
+                                   expected_reason='decoder_sensitive_source_picture')
+        entry=json.loads(self.path.read_text())['videos']['N015-V001']
+        self.assertNotIn('release_blocked',entry)
+        self.assertEqual(entry['reason'],'verified_decoder_setting_variation')
+
     def test_milvus_filters_before_limit_without_changing_search_parameters(self):
         collection=MagicMock();collection.search.return_value=[[]]
         milvus_client.vector_search(collection,[1.,0.],top_k=100,algorithm='hnsw')

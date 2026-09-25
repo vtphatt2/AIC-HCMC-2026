@@ -23,7 +23,7 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Warmer: idle waits outside cache locks, including recovery | complete | Concurrent lock/idle regression test passes. |
 | Protect verified metadata from Phase 1 and policy invalidation | complete | Preflight guard test proves no artifact deletion on a protected generation. |
 | Staged generations and deterministic processing regression tests | in progress | Independent source-fingerprinted N stage; no publication. Pulled changes add immutable candidates, locks, artifact digests and interrupted-metadata recovery; complete remote tests pass. More end-to-end interruption tests remain. |
-| Reuse decoded source frame/PTS/time-base/checksum maps | in progress | Full N001-N010 audit: 27/30 old maps match one-thread replay exactly; N007-V002/V003 and N009-V002 old maps differ at 9/5/1 pixels with unchanged IDs/PTS. Full N031-N040 replay: 27 exact; N039-V001/N040-V002/N040-V003 differ at 4/1/2 pixels. One-thread recovery maps for all seven pass complete replay (100,107 frames). The same complete replay is now running across every remaining N archive; N011–N020, N021–N030 and N041–N050 are the current bounded lanes. |
+| Reuse decoded source frame/PTS/time-base/checksum maps | complete | All 298 N videos received complete independent replay. Seven existing one-thread profile maps pass exact replay (100,107 frames). Among the remaining maps, 32 differ only across one-/four-thread settings; every fresh four-thread repeat reproduces its authoritative four-thread map exactly. All frame IDs and PTS agree. Cross-setting variation is ignored because the unified pipeline uses the map setting. |
 | Isolated organizer redownload of N031-N040 | complete | Fresh 10,924,602,184-byte ZIP from the supplied URL has the same SHA-256 as local (`f66be6b1bb0189e86f6b8e2df3b704b8e5b85a9d8a82ed806873eb01005551aa`); all 30 entry records match and fresh full CRC passes. No source or derivative replacement is warranted. |
 | N configurable two-second presentation sampling, retain valid selections, deduplicate, no scene cap | complete | 298 N videos / 89,795 staged pictures; stage manifest records identities and omissions. |
 | Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. Review found the normal map decoder used four threads while derivatives used two. All derivatives now use their authoritative map's decoder setting, so normal two-thread checkpoints are intentionally invalidated; verified one-thread profile artifacts remain reusable. Resume follows the archive-wide audit. |
@@ -48,7 +48,7 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Unchanged L/M/S vectors and baseline search | pending | Mixed-data ranking measured separately. |
 | Two-client load during warming and resource bounds | pending | Local warm top-100 p95 ≤1s, cached first viewport ≤2s; 32 GiB card budget, no deadlock/OOM/swap growth; WAN separately. |
 | Maintenance publication, indexes/exports, quarantine release | pending | Consistent validated generation and rollback. |
-| Exceptions, final evidence and focused commits | in progress | Nine decoder-sensitive videos are release-blocked: the seven verified one-thread profiles plus N015-V001 and N019-V003 pending archive replay. Original sources are retained; organizer corruption is not established. Preserve pre-existing modifications and exclude generated artifacts. |
+| Exceptions, final evidence and focused commits | in progress | Only the seven previously verified one-thread profile videos remain release-blocked pending derivatives/publication. Temporary blocks for 32 stable current maps were cleared after exact same-setting replay. Original sources are retained; organizer corruption is not established. |
 
 ## Shared decoder recovery
 
@@ -58,9 +58,9 @@ server and proxied clients; independent N support on standalone ZIP clients is d
   stale source/map identities and mismatched evidence are rejected. Atomic writes
   and a file lock preserve concurrent registrations. See
   [DECODER_RECOVERY.md](docs/DECODER_RECOVERY.md).
-- **In progress (data):** complete recovery verification and staged publication
-  for every archive-audit mismatch. Seven profiles are verified; N015-V001 and
-  N019-V003 are blocked pending their archive replay. Decoder reproducibility does not by itself
+- **In progress (data):** complete staged publication for the seven already
+  verified profiles. The other 32 cross-setting differences have exact current-map
+  repeats and require no recovery. Decoder reproducibility does not by itself
   establish intended picture identity or release readiness.
 - **Complete (compatibility check):** all seven profiles resolve to their existing
   source map paths. Verified vectors and exact images remain reusable. Playback
@@ -333,3 +333,13 @@ result exists. No competition submission is authorized by this plan.
   source-specific one-thread profiles remain reserved for independently verified
   unstable maps. Organizer VFR guidance remains handled separately through PTS:
   KIS/QA use source PTS milliseconds and TRAKE rejects N.
+- 2026-09-25: Completed archive-wide replay across all 298 N videos. Thirty-two
+  additional videos showed small pixel-only differences between one- and
+  four-thread decoding, with zero frame-ID or PTS differences. Per the user's
+  severity guidance, these were not treated as defects automatically. A new
+  global stability gate repeated each authoritative four-thread map with four
+  threads: all 32 matched every row and checksum exactly. Their conservative
+  release blocks were cleared, no profiles were created, and four interrupted
+  one-thread candidate maps were removed. N059-V002's earlier random-seek concern
+  also passes full sequential replay. The seven older verified profiles remain;
+  no organizer corruption or additional exclusion is established.

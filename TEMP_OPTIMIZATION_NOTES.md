@@ -7,12 +7,13 @@ derivative now uses its source map's verified decoder setting, with provenance
 and cache invalidation; H.264 encoding remains bounded to two threads. Repeated
 full frame-map hashing is now stat-cached. Thirty-nine focused tests pass.
 
-Seven source-bound one-thread profiles pass complete replay. N015-V001 and
-N019-V003 are additionally release-blocked pending their archive replay. Three
-bounded audit lanes are checking every remaining N archive and can atomically
-block the same verified mismatch pattern. No organizer corruption is established;
-official N001-N010 and N031-N040 redownloads matched and redundant copies were
-removed. KIS/QA use verified source-PTS milliseconds; TRAKE excludes N.
+All 298 N videos completed full replay. Seven source-bound one-thread profiles
+pass complete verification. Another 32 videos differ across one-/four-thread
+decoding, but every same-setting four-thread repeat is exact; those variations
+are harmless under the unified policy and their temporary blocks were cleared.
+No organizer corruption or new exclusion is established. Official N001-N010 and
+N031-N040 redownloads matched and redundant copies were removed. KIS/QA use
+verified source-PTS milliseconds; TRAKE excludes N.
 
 All 21 source/result ZIPs and the 614-video structural/live audit pass. Remaining:
 finish archive replay, rebuild invalidated N derivatives, finish M/S semantics,

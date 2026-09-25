@@ -60,6 +60,29 @@ def block_release(video_id: str, *, reason: str, details: str, evidence: str) ->
         _read.cache_clear()
 
 
+def clear_release_block(video_id: str, *, reason: str, details: str,
+                        evidence: str, expected_reason: str) -> None:
+    """Clear only the audited release block, retaining other quarantine scope."""
+    path = manifest_path()
+    lock_path = path.with_suffix(path.suffix + '.lock')
+    with lock_path.open('a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = json.loads(path.read_text())
+        entry = data.get('videos', {}).get(video_id)
+        if (isinstance(entry, dict) and entry.get('reason') == reason and
+                entry.get('release_blocked') is not True):
+            return
+        if (not isinstance(entry, dict) or entry.get('reason') != expected_reason or
+                entry.get('release_blocked') is not True):
+            raise ValueError(f'{video_id}: release block changed; refusing automatic clearance')
+        entry.update(reason=reason, details=details, evidence=evidence)
+        entry.pop('release_blocked')
+        temporary = path.with_suffix(path.suffix + '.partial')
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+        os.replace(temporary, path)
+        _read.cache_clear()
+
+
 def excluded_video_ids() -> frozenset[str]:
     return frozenset(_entries())
 

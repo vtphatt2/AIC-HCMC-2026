@@ -4,7 +4,7 @@ Two different failure patterns have been reproduced during the N audit:
 
 | Pattern | Evidence | Shared handling |
 |---|---|---|
-| Decoder-dependent pixels | The same source bytes, frame IDs and PTS produce different pixel checksums with different decoder thread counts. | Prepare a separate candidate map, independently replay every source frame, and record one verified decoder profile used by all derivatives. |
+| Decoder-dependent pixels | The same source bytes, frame IDs and PTS produce different pixel checksums with different decoder thread counts. | First repeat the authoritative map's own setting. Ignore cross-setting variation when that repeat is exact; recover only a map that is unstable under its own setting. |
 | Repeated or backward PTS | Decoded source IDs remain valid, but a timestamp does not advance beyond the last retained timestamp. | Keep original IDs, record omitted entries, and omit those entries from selection and playback. Resolve image selection by source frame ID where PTS is ambiguous. |
 
 These findings do not establish organizer corruption. An identical official
@@ -21,7 +21,11 @@ validation remain required before release.
    `audit_decoder_agreement.py --block-mismatches`; it atomically blocks only a
    completed replay disagreement and applies the same action when resuming a
    checkpointed mismatch.
-2. From `remote-server`, run the offline recovery with explicitly named videos:
+2. Run `audit_decoder_stability.py` against the completed archive report. It
+   repeats the current map setting and can clear conservative release blocks for
+   exact repeats. A one-thread/four-thread difference alone does not affect a
+   pipeline whose source maps and derivatives use the same setting.
+3. Only for a same-setting instability, run the offline recovery with explicitly named videos:
 
    ```bash
    .venv/bin/python scripts/recover_decoder_profiles.py \
@@ -33,13 +37,13 @@ validation remain required before release.
    fingerprinted map, then compares a second complete decode against every
    source ID, PTS and checksum, including omitted presentation entries. Exact
    coverage, successful decoding and the source time base must agree.
-3. Only a successful replay registers a source-bound profile in
+4. Only a successful replay registers a source-bound profile in
    `challenge_resources/data/source_decoder_profiles.json`, configurable with
    `SOURCE_DECODER_PROFILES_PATH`. It records settings, verification evidence,
    source identity and the map digest. Registration preserves release blocks.
    Concurrent registrations are serialized and the manifest is replaced
    atomically. Changed sources or maps require renewed verification.
-4. Stage the selected vectors, full-resolution source images, cards and playback
+5. Stage the selected vectors, full-resolution source images, cards and playback
    using the common profile. Validate those artifacts and exports before
    publishing a consistent generation and removing the release block.
 
@@ -57,7 +61,7 @@ longer matches.
 
 The complete one-thread replay runs across each N archive, rather than only the
 video that exposed a mismatch. A pixel disagreement at identical frame ID and PTS
-creates a source-bound recovery candidate. Videos whose one-thread replay matches
+creates a stability-check candidate. Videos whose fresh four-thread replay matches
 the existing four-thread map use the shared four-thread derivative policy and do
 not need a per-video exception.
 
