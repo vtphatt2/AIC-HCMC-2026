@@ -555,12 +555,15 @@ TRANSNET_ARGS=(
   --transnet-prefetch-videos "$TRANSNET_PREFETCH_VIDEOS"
   --transnet-prefetch-windows "$TRANSNET_PREFETCH_WINDOWS"
   --transnet-batch-timeout-ms "$TRANSNET_BATCH_TIMEOUT_MS"
+  --no-jsonl
+)
+SELECTION_ARGS=(
   --keyframe-strategy "$KEYFRAME_STRATEGY"
   --keyframes-per-second "$KEYFRAMES_PER_SECOND"
   --min-keyframes-per-scene "$MIN_KEYFRAMES_PER_SCENE"
   --max-keyframes-per-scene "$MAX_KEYFRAMES_PER_SCENE"
-  --no-jsonl
 )
+TRANSNET_ARGS+=("${SELECTION_ARGS[@]}")
 if [[ -n "$LIMIT" ]]; then TRANSNET_ARGS+=(--limit "$LIMIT"); fi
 TRANSNET_RC=0
 TRANSNET_SENTINEL="$OUT_DIR/.transnet.complete"
@@ -601,6 +604,7 @@ EMBED_ARGS=(
   --kaggle-cache-dir "$KAGGLE_CACHE_DIR"
   --no-jsonl
 )
+EMBED_ARGS+=("${SELECTION_ARGS[@]}")
 if [[ "$TF32" -eq 1 ]]; then EMBED_ARGS+=(--tf32); else EMBED_ARGS+=(--no-tf32); fi
 if [[ "$EMBED_FFMPEG_PREPROCESS" -eq 1 ]]; then EMBED_ARGS+=(--embed-ffmpeg-preprocess); else EMBED_ARGS+=(--no-embed-ffmpeg-preprocess); fi
 if [[ "$COMPILE" -eq 1 ]]; then EMBED_ARGS+=(--compile); fi

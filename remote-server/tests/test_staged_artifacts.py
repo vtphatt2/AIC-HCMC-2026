@@ -58,6 +58,24 @@ class StagedArtifactTests(unittest.TestCase):
         atomic_json(self.folder / 'verified.json', marker)
         self.assertFalse(reusable_vectors(self.folder, self.payload, self.provenance))
 
+    def test_interrupted_metadata_write_resumes_without_changing_existing_bytes(self):
+        (self.folder / 'scenes.json').unlink()
+        (self.folder / 'embeddings.npy').unlink()
+        keyframes_before = (self.folder / 'keyframes.json').read_bytes()
+
+        folder, payload = metadata_generation(self.root, 'N001', self.payload, self.scenes)
+
+        self.assertEqual(folder, self.folder)
+        self.assertEqual(payload, self.payload)
+        self.assertEqual((folder / 'keyframes.json').read_bytes(), keyframes_before)
+        self.assertEqual(json.loads((folder / 'scenes.json').read_text()), self.scenes)
+
+    def test_missing_metadata_with_existing_vectors_is_not_reconstructed(self):
+        (self.folder / 'scenes.json').unlink()
+        folder, _ = metadata_generation(self.root, 'N001', self.payload, self.scenes)
+        self.assertNotEqual(folder, self.folder)
+        self.assertFalse((self.folder / 'scenes.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

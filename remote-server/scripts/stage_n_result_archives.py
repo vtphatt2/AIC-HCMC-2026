@@ -7,12 +7,14 @@ release block remains in force. Publication is a separate maintenance step.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -22,6 +24,7 @@ load_dotenv(ROOT / 'remote-server/.env')
 import numpy as np
 from app.services import local_zip_media as media
 from app.services.source_timeline import load_timeline, source_fingerprint, monotonic_entries
+from app.services.staged_artifacts import artifact_digests, atomic_json, file_digest
 from app.services.video_quarantine import release_blocked_video_ids
 from scripts.ingest_zip_pipeline_results import video_directories
 
@@ -49,10 +52,13 @@ def validate_video(video_id, index, folder: Path, generation: str):
     if (keyframes.get('version') != 2 or keyframes.get('generation') != generation or
             verified.get('generation') != generation or verified.get('rows') != len(rows) or
             verified.get('source_checksums') != 'exhaustive' or
+            verified.get('source_time_base_verified') is not True or
             verified.get('published') is not False or
             keyframes.get('source_identity') != source_fingerprint(index) or
             keyframes.get('num_keyframes') != len(rows)):
         raise ValueError(f'{video_id}: incomplete or stale verified generation')
+    if any(verified.get(name) != digest for name, digest in artifact_digests(folder).items()):
+        raise ValueError(f'{video_id}: verified artifact digest missing or changed')
     table = load_timeline(video_id, index)
     kept, omitted = monotonic_entries(table)
     frame_ids = [int(row['frame_number']) for row in rows]
@@ -69,6 +75,9 @@ def validate_video(video_id, index, folder: Path, generation: str):
                 int(row['source_checksum']) != int(table[frame, 2]) or
                 int(row['source_timebase']) != int(index.timescale)):
             raise ValueError(f'{video_id}/{frame}: source picture identity mismatch')
+        timestamp_ms = (int(row['source_pts']) * 1000 + index.timescale // 2) // index.timescale
+        if int(row['timestamp_ms']) != timestamp_ms:
+            raise ValueError(f'{video_id}/{frame}: presentation timestamp mismatch')
     if len(set(int(row['source_pts']) for row in rows)) != len(rows):
         raise ValueError(f'{video_id}: repeated selected PTS')
     if set(int(row['frame_number']) for row in keyframes['omitted_entries']) != set(map(int, omitted[:, 0])):
@@ -81,6 +90,15 @@ def validate_video(video_id, index, folder: Path, generation: str):
     if scenes.get('num_frames') != len(table):
         raise ValueError(f'{video_id}: scene frame count differs from decoded source')
     return keyframes, scenes, verified, vectors
+
+
+def same_archive_members(first: Path, second: Path) -> bool:
+    """ZIP timestamps/compression may differ; compare every logical member."""
+    with zipfile.ZipFile(first) as left, zipfile.ZipFile(second) as right:
+        names = left.namelist()
+        if names != right.namelist() or len(names) != len(set(names)):
+            return False
+        return all(left.read(name) == right.read(name) for name in names)
 
 
 def build_archive(source_archive: Path, entries: dict, stages: dict,
@@ -104,8 +122,11 @@ def build_archive(source_archive: Path, entries: dict, stages: dict,
         validated.append((video, folder, generation, keyframes, scenes, verified))
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / source_archive.name
-    temporary = path.with_suffix(path.suffix + '.partial')
+    with tempfile.NamedTemporaryFile(dir=output_dir, prefix=f'.{path.stem}.',
+                                     suffix='.partial', delete=False) as handle:
+        temporary = Path(handle.name)
     manifest = {'version': 2, 'source_result_archive': str(source_archive.resolve()),
+                'source_result_archive_sha256': file_digest(source_archive),
                 'source_archive_lot': lot, 'videos': [], 'release_blocked_excluded': excluded,
                 'audited_recoveries_staged_but_not_released': sorted(set(selected) & recover)}
     try:
@@ -144,12 +165,19 @@ def build_archive(source_archive: Path, entries: dict, stages: dict,
                 array = np.load(io.BytesIO(payload), allow_pickle=False)
                 if array.shape != (item['rows'], 1280):
                     raise ValueError(f'{video}: staged vector count changed')
-        os.replace(temporary, path)
+        with path.with_suffix(path.suffix + '.lock').open('a+b') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if path.exists():
+                if not same_archive_members(path, temporary):
+                    raise FileExistsError(f'{path}: a different staged candidate already exists; '
+                                          'choose a new --output-dir to preserve the previous generation')
+            else:
+                os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
     manifest['staged_archive'] = str(path)
-    manifest['staged_sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
-    (output_dir / f'{lot}_validation.json').write_text(json.dumps(manifest, indent=2) + '\n')
+    manifest['staged_sha256'] = file_digest(path)
+    atomic_json(output_dir / f'{lot}_validation.json', manifest)
     return manifest
 
 

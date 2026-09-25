@@ -16,6 +16,7 @@ a video is byte `data_offset + N` of the archive and any range is one seek away.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -33,8 +34,8 @@ from pathlib import Path
 import numpy as np
 
 from app.services import mp4_box_parser as box
-from app.services.exact_frame_pts import read_exact_pts, read_full_timeline_us, showinfo_frames
-from app.services.exact_frame_images import exact_image_path
+from app.services.exact_frame_pts import index_path, read_exact_pts, read_full_timeline_us, showinfo_frames
+from app.services.exact_frame_images import verified_exact_image_bytes
 from app.services.jpeg_disk_cache import JpegDiskCache
 
 logger = logging.getLogger(__name__)
@@ -56,9 +57,9 @@ _decode_semaphore = asyncio.Semaphore(int(os.getenv("ZIP_FRAME_DECODE_CONCURRENC
 _resize_semaphore = asyncio.Semaphore(2)
 FFMPEG_THREADS = max(0, int(os.getenv("ZIP_FFMPEG_THREADS", "0")))
 JPEG_CACHE_MAX_BYTES = max(0, int(os.getenv("ZIP_JPEG_CACHE_MB", "0"))) * 1024 * 1024
-_jpeg_cache: OrderedDict[tuple[str, int, int | None, str, int | None], bytes] = OrderedDict()
+_jpeg_cache: OrderedDict[tuple[str, int, int | None, str, int | None, str | None], bytes] = OrderedDict()
 _jpeg_cache_bytes = 0
-_jpeg_inflight: dict[tuple[str, int, int | None, str, int | None], asyncio.Task[bytes]] = {}
+_jpeg_inflight: dict[tuple[str, int, int | None, str, int | None, str | None], asyncio.Task[bytes]] = {}
 _jpeg_waiters: dict[asyncio.Task[bytes], int] = {}
 _disk_cache_dir = os.getenv("ZIP_JPEG_DISK_CACHE_DIR", "").strip()
 _disk_cache = JpegDiskCache(
@@ -128,6 +129,15 @@ def _resize_jpeg(original: bytes, width: int, format: str = "jpeg") -> bytes:
         return output.getvalue()
 
 
+def _map_sha256(path: str) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _frame_map_generation(video_id: str, index: "VideoFrameIndex") -> str:
+    path = index_path(video_id, index)
+    return f'{path.stem}-{_map_sha256(str(path))}'
+
+
 def _cache_key(index: "VideoFrameIndex", video_id: str, timestamp_ms: int,
                width: int | None, format: str, frame_number: int | None) -> str:
     source = index.zip_path.stat()
@@ -140,10 +150,7 @@ def _cache_key(index: "VideoFrameIndex", video_id: str, timestamp_ms: int,
                          else PRESENTATION_FRAME_CACHE_VERSION)
         version += f"-{frame_version}"
         if video_id.startswith("N"):
-            from app.services.readiness_policy import exceptional_decode_provenance
-            if exceptional_decode_provenance(video_id, index) is not None:
-                from app.services.exact_frame_pts import index_path
-                version += f"-{index_path(video_id, index).stem}"
+            version += f"-{_frame_map_generation(video_id, index)}"
     key_parts = [version, str(index.zip_path.resolve()), source.st_size,
                  source.st_mtime_ns, index.data_offset, index.fps, video_id, timestamp_ms]
     if frame_number is not None:
@@ -908,7 +915,13 @@ async def get_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: float = 
     if format not in ("jpeg", "webp") or (format == "webp" and width is None):
         raise ValueError("WebP is supported only for card previews")
     global _card_activity_task
-    key = (video_id, max(0, int(timestamp_ms)), width, format, frame_number)
+    map_generation = None
+    if frame_number is not None and video_id.startswith('N'):
+        try:
+            map_generation = _frame_map_generation(video_id, await _get_index(video_id))
+        except (OSError, ValueError) as exc:
+            raise LocalZipUnavailable(f'Verified source map unavailable for {video_id}') from exc
+    key = (video_id, max(0, int(timestamp_ms)), width, format, frame_number, map_generation)
     if key in _jpeg_cache:
         _jpeg_cache.move_to_end(key)
         return _jpeg_cache[key]
@@ -966,9 +979,9 @@ async def _decode_frame_jpeg(video_id: str, timestamp_ms: int, timeout_sec: floa
             # a clean sequential decode. Verified cached JPEGs are tied to
             # the source-identified timeline; reading one is cheaper and more
             # accurate than repeating a seek that cannot reconstruct it.
-            exact_path = exact_image_path(video_id, index, frame_number)
-            if exact_path.is_file():
-                return await asyncio.to_thread(exact_path.read_bytes)
+            verified = await asyncio.to_thread(verified_exact_image_bytes, video_id, index, frame_number)
+            if verified is not None:
+                return verified
 
         if frame_number is not None or index.codec not in (b"avc1", b"avc3"):
             chosen = frame_number if frame_number is not None else (

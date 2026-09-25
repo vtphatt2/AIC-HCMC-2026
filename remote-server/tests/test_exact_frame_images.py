@@ -1,5 +1,6 @@
 """Publish only verified source pictures, and never repeat full live decodes."""
 import asyncio
+from collections import OrderedDict
 import tempfile
 import unittest
 from pathlib import Path
@@ -45,6 +46,28 @@ class ExactImageTests(unittest.TestCase):
             self.assertTrue(all(p.is_file() for p in paths))
             self.assertEqual(images.build_exact_images('N001', self.index, [0, 2], directory=self.root), paths)
             self.assertEqual(run.call_count, 1)
+            self.assertEqual(images.verified_exact_image_bytes(
+                'N001', self.index, 2, directory=self.root), paths[1].read_bytes())
+
+    def test_modified_jpeg_is_rebuilt_before_it_can_be_served(self):
+        with patch.object(images.subprocess, 'run', side_effect=self.decode) as run:
+            paths = images.build_exact_images('N001', self.index, [0, 2], directory=self.root)
+            paths[1].write_bytes(b'changed')
+            self.assertIsNone(images.verified_exact_image_bytes(
+                'N001', self.index, 2, directory=self.root))
+            images.build_exact_images('N001', self.index, [0, 2], directory=self.root)
+            self.assertEqual(run.call_count, 2)
+            self.assertIsNotNone(images.verified_exact_image_bytes(
+                'N001', self.index, 2, directory=self.root))
+
+    def test_source_map_replacement_invalidates_cached_jpegs(self):
+        with patch.object(images.subprocess, 'run', side_effect=self.decode):
+            images.build_exact_images('N001', self.index, [0, 2], directory=self.root)
+        changed = np.load(self.map)
+        changed[2, 2] ^= 1
+        np.save(self.map, changed)
+        self.assertIsNone(images.verified_exact_image_bytes(
+            'N001', self.index, 2, directory=self.root))
 
     def test_n031_uses_single_thread_source_decode(self):
         with patch.object(images.subprocess, 'run', side_effect=self.decode) as run:
@@ -53,10 +76,20 @@ class ExactImageTests(unittest.TestCase):
         self.assertEqual(command[command.index('-threads') + 1], '1')
 
     def test_n031_card_cache_uses_new_map_generation(self):
-        key = media._cache_key(self.index, 'N031-V003', 488187, 640, 'jpeg', 12165)
-        self.assertIn('N031-V003-', key)
-        other = media._cache_key(self.index, 'N032-V003', 488187, 640, 'jpeg', 12165)
-        self.assertNotIn('N032-V003-', other)
+        with patch.object(media, 'index_path', return_value=self.map):
+            key = media._cache_key(self.index, 'N031-V003', 488187, 640, 'jpeg', 12165)
+            other = media._cache_key(self.index, 'N032-V003', 488187, 640, 'jpeg', 12165)
+        self.assertIn(self.map.stem, key)
+        self.assertNotEqual(key, other)
+
+    def test_frame_cache_changes_when_source_map_is_replaced(self):
+        with patch.object(media, 'index_path', return_value=self.map):
+            first = media._cache_key(self.index, 'N001', 2000, 640, 'jpeg', 0)
+            changed = np.load(self.map)
+            changed[0, 2] ^= 1
+            np.save(self.map, changed)
+            second = media._cache_key(self.index, 'N001', 2000, 640, 'jpeg', 0)
+        self.assertNotEqual(first, second)
 
     def test_checksum_failure_publishes_no_images(self):
         def wrong(command, **kwargs):
@@ -95,6 +128,28 @@ class ExactImageTests(unittest.TestCase):
 
 
 class SequentialCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_memory_card_cache_invalidates_on_map_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'source.zip'; source.write_bytes(b'source')
+            map_path = root / 'source.npy'
+            np.save(map_path, np.array([[0, 2000, 11]], dtype=np.int64))
+            index = SimpleNamespace(zip_path=source, data_offset=0, fps=25,
+                                    timescale=1000)
+            with patch.object(media, 'index_path', return_value=map_path), \
+                 patch.object(media, '_get_index', new=AsyncMock(return_value=index)), \
+                 patch.object(media, '_cached_decode', new=AsyncMock(side_effect=[b'old', b'new'])) as decode, \
+                 patch.object(media, '_jpeg_cache', OrderedDict()), \
+                 patch.object(media, '_jpeg_inflight', {}), \
+                 patch.object(media, '_jpeg_waiters', {}), \
+                 patch.object(media, 'JPEG_CACHE_MAX_BYTES', 1024):
+                self.assertEqual(await media.get_frame_jpeg('N001', 2000, frame_number=0), b'old')
+                table = np.load(map_path)
+                table[0, 2] += 1
+                np.save(map_path, table)
+                self.assertEqual(await media.get_frame_jpeg('N001', 2000, frame_number=0), b'new')
+                self.assertEqual(decode.await_count, 2)
+
     async def test_concurrent_failures_decode_once_per_video(self):
         recovery = SequentialFallback({'N001': [0, 2]})
         with patch('scripts.prewarm_result_thumbnails.build_exact_images', return_value=[]) as build, \
@@ -115,7 +170,7 @@ class SequentialCacheTests(unittest.IsolatedAsyncioTestCase):
             path = Path(directory) / '2.jpg'
             Image.new('RGB', (16, 16)).save(path)
             with patch.object(media, '_get_index', new=AsyncMock(return_value=object())), \
-                 patch.object(media, 'exact_image_path', return_value=path), \
+                 patch.object(media, 'verified_exact_image_bytes', return_value=path.read_bytes()), \
                  patch.object(media, '_decode_seekable_jpeg', new=AsyncMock()) as decoder:
                 result = await media._decode_frame_jpeg('N001', 80, frame_number=2)
                 self.assertEqual(result, path.read_bytes())

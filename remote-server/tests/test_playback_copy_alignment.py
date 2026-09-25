@@ -50,6 +50,7 @@ class PlaybackCopyAlignmentTests(unittest.TestCase):
                 altered = table.copy()
                 altered[3, 2] ^= 1
                 with patch.object(playback_copies, 'load_timeline', return_value=altered):
+                    self.assertIsNone(serving_copy('N999-V001', index, policy, root / 'valid'))
                     with self.assertRaisesRegex(ValueError, 'source-picture alignment failed'):
                         prepare_copy('N999-V001', index, policy, root / 'bad')
                 self.assertEqual(list((root / 'bad').glob('*.mp4')), [])

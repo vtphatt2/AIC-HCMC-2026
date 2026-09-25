@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+import numpy as np
 from app.services import local_zip_media as media
 from app.services.readiness_policy import PlaybackPolicy, playback_decoder_threads
 from app.services.source_timeline import source_fingerprint
@@ -24,10 +25,17 @@ class PlaybackFallbackTests(unittest.IsolatedAsyncioTestCase):
             index = SimpleNamespace(zip_path=source, data_offset=0, video_size=6)
             old = hashlib.sha256(json.dumps({'source': source_fingerprint(index),
                         'policy': asdict(policy)}, sort_keys=True).encode()).hexdigest()[:20]
-            ordinary, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
-            exceptional, _ = playback_copies.copy_paths('N031-V003', index, policy, Path(scratch))
-            self.assertEqual(ordinary.stem, f'N032-V003-{old}')
+            table = np.array([[0, 10, 11]], dtype=np.int64)
+            with patch.object(playback_copies, 'load_timeline', return_value=table):
+                ordinary, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
+                exceptional, _ = playback_copies.copy_paths('N031-V003', index, policy, Path(scratch))
+                changed = table.copy(); changed[0, 2] += 1
+                with patch.object(playback_copies, 'load_timeline', return_value=changed):
+                    changed_path, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
+            self.assertNotEqual(ordinary.stem, f'N032-V003-{old}')
             self.assertNotEqual(exceptional.stem, f'N031-V003-{old}')
+            self.assertNotEqual(ordinary, exceptional)
+            self.assertNotEqual(ordinary, changed_path)
 
     async def test_only_browser_verified_n010_originals_fall_back_to_source(self):
         from app.services import playback_copies

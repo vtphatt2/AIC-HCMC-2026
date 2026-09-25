@@ -23,9 +23,21 @@ def directory():
     return Path(os.getenv('PLAYBACK_COPY_DIR', str(DEFAULT_DIRECTORY)))
 
 
+def source_map_sha256(video_id, index):
+    """Bind playback to decoded PTS and pixels, including map-only repairs."""
+    table = load_timeline(video_id, index)
+    if table.ndim != 2 or table.shape[1] != 3 or table.dtype != np.int64:
+        raise ValueError(f'{video_id}: invalid source map for playback')
+    digest = hashlib.sha256()
+    digest.update(json.dumps({'shape': table.shape, 'dtype': str(table.dtype)}).encode())
+    digest.update(table.tobytes(order='C'))
+    return digest.hexdigest()
+
+
 def copy_paths(video_id, index, policy=None, root=None):
     policy = policy or playback_policy()
-    fingerprint = {'source': source_fingerprint(index), 'policy': asdict(policy)}
+    fingerprint = {'source': source_fingerprint(index), 'policy': asdict(policy),
+                   'source_map_sha256': source_map_sha256(video_id, index)}
     exceptional = exceptional_decode_provenance(video_id, index)
     if exceptional is not None:
         fingerprint['decode_provenance'] = exceptional
@@ -35,12 +47,13 @@ def copy_paths(video_id, index, policy=None, root=None):
 
 
 def validated_copy(video_id, index, policy=None, root=None):
-    path, marker = copy_paths(video_id, index, policy, root)
     try:
+        path, marker = copy_paths(video_id, index, policy, root)
         meta = json.loads(marker.read_text())
         stat = path.stat()
         if (meta.get('version') != 1 or not meta.get('validated') or
                 meta.get('source') != source_fingerprint(index) or
+                meta.get('source_map_sha256') != source_map_sha256(video_id, index) or
                 meta.get('size') != stat.st_size or meta.get('mtime_ns') != stat.st_mtime_ns):
             return None
     except (OSError, ValueError):
@@ -118,6 +131,7 @@ def prepare_copy(video_id, index, policy=None, root=None, timeout=7200):
         meta = {'version': 1, 'validated': True, 'picture_alignment_verified': True,
                 'picture_alignment_method': 'all_source_pts_checksums_before_encode_and_all_output_pts',
                 'source': source_fingerprint(index), 'policy': asdict(policy),
+                'source_map_sha256': source_map_sha256(video_id, index),
                 'source_time_base': {'num': 1, 'den': index.timescale}, 'source_origin_pts': origin,
                 'source_to_playback_offset_seconds': -origin / index.timescale, 'playback_start_seconds': 0,
                 'omitted_frame_ids': omitted[:, 0].tolist(), 'validation': validation,

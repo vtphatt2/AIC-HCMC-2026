@@ -6,6 +6,10 @@ map. The archive, selected frame numbers, and embedding vectors are untouched.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+import fcntl
+import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -16,6 +20,8 @@ from PIL import Image
 
 from app.services.exact_frame_pts import index_path, showinfo_frames
 from app.services.readiness_policy import verified_embed_decoder_threads
+from app.services.source_timeline import source_fingerprint
+from app.services.staged_artifacts import file_digest
 
 
 EXACT_N_FRAME_DIR = (Path(__file__).resolve().parents[3] /
@@ -27,9 +33,67 @@ def exact_image_path(video_id: str, index, frame_number: int,
     return directory / index_path(video_id, index).stem / f"{frame_number}.jpg"
 
 
+def _provenance(video_id: str, index, map_path: Path) -> dict:
+    return {'version': 1, 'source': source_fingerprint(index),
+            'source_map_sha256': file_digest(map_path),
+            'decoder_threads': verified_embed_decoder_threads(video_id, index)}
+
+
+@lru_cache(maxsize=512)
+def _read_manifest(path: str, mtime_ns: int, size: int) -> dict:
+    return json.loads(Path(path).read_text())
+
+
+def _manifest(path: Path) -> dict | None:
+    try:
+        stat = path.stat()
+        return _read_manifest(str(path), stat.st_mtime_ns, stat.st_size)
+    except (OSError, ValueError):
+        return None
+
+
+def verified_exact_image_bytes(video_id: str, index, frame_number: int, *,
+                               directory: Path = EXACT_N_FRAME_DIR) -> bytes | None:
+    """Read only a JPEG bound to the current source map and checked file bytes."""
+    try:
+        path = exact_image_path(video_id, index, frame_number, directory)
+        map_path = index_path(video_id, index)
+        marker = _manifest(path.parent / 'verified_images.json')
+        provenance = _provenance(video_id, index, map_path)
+        if marker is None or any(marker.get(key) != value for key, value in provenance.items()):
+            return None
+        row = marker.get('images', {}).get(str(frame_number))
+        if not isinstance(row, dict):
+            return None
+        table = np.load(map_path, mmap_mode='r', allow_pickle=False)
+        if (frame_number < 0 or frame_number >= len(table) or
+                row.get('source_pts') != int(table[frame_number, 1]) or
+                row.get('source_checksum') != int(table[frame_number, 2])):
+            return None
+        data = path.read_bytes()
+        if len(data) != row.get('size') or hashlib.sha256(data).hexdigest() != row.get('sha256'):
+            return None
+        return data
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
 def build_exact_images(video_id: str, index, frames: list[int], *,
                        directory: Path = EXACT_N_FRAME_DIR,
                        timeout: float = 900) -> list[Path]:
+    """Serialize publication for one source map across warmer/audit processes."""
+    if not frames:
+        return []
+    parent = exact_image_path(video_id, index, min(frames), directory).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    with (parent / '.images.lock').open('a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _build_exact_images_locked(video_id, index, frames, directory=directory,
+                                          timeout=timeout)
+
+
+def _build_exact_images_locked(video_id: str, index, frames: list[int], *,
+                               directory: Path, timeout: float) -> list[Path]:
     """Publish exact full-size JPEGs after validating the entire selected batch."""
     if not video_id.startswith("N"):
         raise ValueError("Sequential fallback publication is limited to N videos")
@@ -48,7 +112,12 @@ def build_exact_images(video_id: str, index, frames: list[int], *,
     unique_pts = len(set(map(int, selected[:, 1]))) == len(targets) and all(
         np.count_nonzero(table[:, 1] == pts) == 1 for pts in selected[:, 1])
     paths = [exact_image_path(video_id, index, frame, directory) for frame in targets]
-    if all(path.is_file() and path.stat().st_size for path in paths):
+    map_path = index_path(video_id, index)
+    provenance = _provenance(video_id, index, map_path)
+    marker_path = paths[0].parent / 'verified_images.json'
+    old_marker = _manifest(marker_path)
+    if all(verified_exact_image_bytes(video_id, index, frame, directory=directory) is not None
+           for frame in targets):
         return paths
     directory.mkdir(parents=True, exist_ok=True)
     source = (f"subfile,,start,{index.data_offset},end,"
@@ -84,4 +153,15 @@ def build_exact_images(video_id: str, index, frames: list[int], *,
         paths[0].parent.mkdir(parents=True, exist_ok=True)
         for position, path in enumerate(paths):
             os.replace(scratch_path / f"{position:08d}.jpg", path)
+        records = (dict(old_marker.get('images', {})) if old_marker and all(
+            old_marker.get(key) == value for key, value in provenance.items()) else {})
+        for frame, path in zip(targets, paths):
+            records[str(frame)] = {'source_pts': int(table[frame, 1]),
+                                   'source_checksum': int(table[frame, 2]),
+                                   'size': path.stat().st_size,
+                                   'sha256': file_digest(path)}
+        temporary_marker = scratch_path / 'verified_images.json'
+        temporary_marker.write_text(json.dumps({**provenance, 'images': records}, sort_keys=True))
+        os.replace(temporary_marker, marker_path)
+        _read_manifest.cache_clear()
     return paths

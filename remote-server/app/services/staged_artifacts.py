@@ -35,11 +35,30 @@ def metadata_generation(stage: Path, video_id: str, payload: dict, scenes: dict)
         folder = stage / video_id / payload['generation'][:16]
         if folder.exists() and any(folder.iterdir()):
             try:
-                matches = (json.loads((folder / 'keyframes.json').read_text()) == payload and
-                           json.loads((folder / 'scenes.json').read_text()) == scenes)
+                keyframes_path = folder / 'keyframes.json'
+                scenes_path = folder / 'scenes.json'
+                present = [path for path in (keyframes_path, scenes_path) if path.exists()]
+                matches = bool(present) and all(
+                    json.loads(path.read_text()) == expected
+                    for path, expected in ((keyframes_path, payload), (scenes_path, scenes))
+                    if path.exists()
+                )
+                # An interrupted metadata write can leave one final file or
+                # only atomic-write scratch. Never reconstruct metadata around
+                # existing vectors or a verification marker.
+                if matches and len(present) < 2:
+                    matches = not any((folder / name).exists() for name in
+                                      ('embeddings.npy', 'verified.json'))
+                if not present:
+                    matches = all(path.name in ('keyframes.json.partial', 'scenes.json.partial')
+                                  for path in folder.iterdir())
             except (OSError, ValueError):
                 matches = False
             if matches:
+                if not keyframes_path.exists():
+                    atomic_json(keyframes_path, payload)
+                if not scenes_path.exists():
+                    atomic_json(scenes_path, scenes)
                 return folder, payload
             if attempt:
                 raise ValueError(f'{video_id}: conflicting staged generation; preserve it for review')
