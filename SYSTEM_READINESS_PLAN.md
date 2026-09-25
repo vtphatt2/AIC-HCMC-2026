@@ -28,10 +28,13 @@ of the format remains unverified.
 
 ## Current checkpoint — 2026-09-25
 
-Services and background jobs are stopped at the user's request. Docker databases
-remain running. No N generation was published. The ignored local backend `.env`
-was restored; temporary remux test output was removed. RAM after stopping was
-about 19 GiB available, with 26 MiB swap used.
+After the pause checkpoint, the user asked to check the app, so the remote server,
+LOCAL proxy, and frontend are running on ports 8000, 8001, and 3000. Docker
+databases remain running; preprocessing remains stopped. The original local
+backend `.env` is restored; LOCAL proxy settings are process-only. Fresh browser
+search returned 100 results and loaded the first image. RAM available was about
+16 GiB, with 26 MiB swap used. No N generation was published; temporary remux
+output was removed.
 
 | Area | Status |
 |---|---|

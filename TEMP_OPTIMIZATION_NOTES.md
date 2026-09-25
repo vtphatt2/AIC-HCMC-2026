@@ -8,4 +8,4 @@ Work stopped at the user's request. Remote server, proxy and frontend are stoppe
 - Search comparison: FLAT exact self-search 316/316; HNSW 314/316. Proxied warm p95 was 290 ms vs 270 ms across tested top-100 queries; default unchanged pending recall/ranking decision.
 - No source corruption/exclusion established. Organizer: S01 video metadata JSON names use hyphens; N KIS/QA positions use source PTS milliseconds; N is excluded from TRAKE.
 
-Next: resume N copies and verify browser seeking; finish staged vectors/cards and M/S picture checks; run full suites; settle search backend; validate submission and cross-artifact consistency; publish only after checks pass. Full release gates: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).
+Next: if continuing, resume N copies and verify browser seeking; finish staged vectors/cards and M/S picture checks; run full suites; settle search backend; validate submission and cross-artifact consistency; publish only after checks pass. Full release gates: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).
