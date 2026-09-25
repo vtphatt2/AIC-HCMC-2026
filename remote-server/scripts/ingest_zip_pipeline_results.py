@@ -316,7 +316,7 @@ async def main() -> None:
     # A small multiple of the Milvus batch size amortizes Python call/progress
     # overhead while keeping peak RAM bounded. With the default batch_size=256,
     # this holds at most ~1024 vector records plus one video's temporary records.
-    stream_buffer_size = batch_size * 120
+    stream_buffer_size = batch_size * 4
     pending_records: list[dict[str, Any]] = []
     indexed_by_algorithm = {vector_index: 0 for vector_index in target_indexes}
 

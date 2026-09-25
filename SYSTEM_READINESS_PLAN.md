@@ -26,11 +26,11 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Reuse decoded source frame/PTS/time-base/checksum maps | complete | All 298 N videos received complete independent replay. Seven existing one-thread profile maps pass exact replay (100,107 frames). Among the remaining maps, 32 differ only across one-/four-thread settings; every fresh four-thread repeat reproduces its authoritative four-thread map exactly. All frame IDs and PTS agree. Cross-setting variation is ignored because the unified pipeline uses the map setting. |
 | Isolated organizer redownload of N031-N040 | complete | Fresh 10,924,602,184-byte ZIP from the supplied URL has the same SHA-256 as local (`f66be6b1bb0189e86f6b8e2df3b704b8e5b85a9d8a82ed806873eb01005551aa`); all 30 entry records match and fresh full CRC passes. No source or derivative replacement is warranted. |
 | N configurable two-second presentation sampling, retain valid selections, deduplicate, no scene cap | complete | 298 N videos / 89,795 staged pictures; stage manifest records identities and omissions. |
-| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. All derivatives now use their authoritative map's decoder setting. The 291-video main stage is running; old vectors are copied into the new generation only when exhaustive selected-source checks, rows, scenes and encoder settings match exactly. Other vectors are recomputed. |
+| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. All derivatives use their authoritative map's decoder setting. Main stage paused at 170/291 completed videos; unchanged vectors are adopted only after exhaustive selected-source, row, scene and encoder-setting validation. |
 | N031 non-increasing timestamp exclusions | complete | All 298 N timelines pass exhaustive numeric/source-ID audit; only N031-V001/V002/V003 omit entries (four each). All six adjacent retained pictures pass source PTS/checksum and visual continuity checks, with matching exclusions in validated playback copies. See n_timeline_audit.json and n031_discontinuity_picture_audit.json. |
-| Sequential selected 640px thumbnails and full-resolution inspection | in progress | All 309 N031-V003 and 935 combined N001 recovery selected JPEGs/cards pass source identity and exposed-card comparison (N007 max RGB MAE 2.90; N009 2.85). The full main-stage image/card audit needs resumption after the unified decoder-policy change. |
+| Sequential selected 640px thumbnails and full-resolution inspection | in progress | All 309 N031-V003 and 935 combined N001 recovery selected JPEGs/cards pass source identity and exposed-card comparison (N007 max RGB MAE 2.90; N009 2.85). Main exposed-card audit paused at 19/291 completed videos. |
 | Validate staged archives, exports, metadata and indexes | in progress | Recovered N001-N010 ZIP stages all 30 videos/9,181 vectors; full ZIP CRC, ingest dry run and NumPy export agree on every ID, source-PTS millisecond timestamp and vector (max component error 5.96e-8). Offline audit temporarily bypassed the public blocklist; live publication is still prohibited. Superseded 29-video candidate and export files were removed after validation. |
-| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | Recovery copies passed exhaustive source PTS/checksum and output PTS/codec checks. The unified decoder provenance changes copy identity, so the one-job full N conversion/validation has resumed. N015-V001 and N019-V003 exposed the shared two-thread/four-thread mismatch; the global policy fix covers both. Publication is pending. |
+| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | Recovery copies passed exhaustive source PTS/checksum and output PTS/codec checks. Unified-policy conversion paused at 13/288 early and 4/145 late completed copies; interrupted scratch copies were removed. N015-V001 and N019-V003 exposed the shared two-thread/four-thread mismatch; the global policy fix covers both. Publication is pending. |
 | Preserve VFR timing and playback origin independently of source pictures | in progress | All 298 N MP4 track durations agree with decoded presentation spans within 240 ms; fingerprinted per-video evidence is in n_duration_audit.json. Nominal frame/FPS duration was wrong by >10 s for 15 videos (worst 70.37 s). New staged metadata, timeline API and ingest use the source track duration; old artifacts keep legacy defaults. Playback origin remains a separate field. |
 | Proxy media, timing and availability | in progress | Local HTTP tests preserve timing capabilities, explicit timeline IDs, Range headers and playback bytes; metadata forwarding now includes the tunnel bypass header. Live two-client browser verification remains. |
 | Organizer archive naming, unambiguous ID aliases, M/S title/link refresh | in progress | Both archive naming forms and ambiguity-safe aliases implemented/tested. Local organizer metadata contains L only; M/S source titles/links remain blocked pending authoritative metadata, with no embedding change needed. N absence is expected. |
@@ -41,11 +41,11 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Neighbor fill and strict numeric/QA quoting tests | complete | L/M/S and N unit tests, strict parser and quoted QA tests pass. |
 | Machine-readable audit of every M/N/S source/artifact | in progress | Full source/result structural manifest and live PostgreSQL/vector-index manifest written with zero reported structural issues. Picture and playback audits remain. |
 | Exhaustive structural and cross-artifact audit | in progress | All 21 source ZIPs and 21 result ZIPs pass full CRC; 614 source/result videos and 221,760 M/N/S rows align. Packaged vectors match processing output exactly; NumPy export differs by at most 1.19e-7 per component. All live M/N/S PostgreSQL and populated Milvus rows agree. |
-| Picture identity checks | in progress | Every newly repaired N vector passed; main N pass continues. A deterministic M/S semantic audit inventories all 316 videos/2,991 sampled selected rows, including scene boundaries. The M01_V001 and S01-V001 pilots pass checksum-verified source seeking and fresh PE-Core comparison (minimum cosine 0.999987); CPU source-map preparation has resumed, and full PE-Core sampling follows the N GPU job. |
+| Picture identity checks | in progress | Every newly repaired N vector passed; main N pass paused at 170/291. A deterministic M/S semantic audit inventories all 316 videos/2,991 sampled selected rows, including scene boundaries. The M01_V001 and S01-V001 pilots pass checksum-verified source seeking and fresh PE-Core comparison (minimum cosine 0.999987); CPU source maps paused at 143/316, and full PE-Core sampling follows the N GPU job. |
 | Thumbnail/cache/playback/submission artifact validation | pending | Check generation, images/dimensions, compatibility/timing/seeks, units/round-trips. |
 | Legacy/versioned/interrupted/selective-invalidation tests | pending | Preserve rollback before derivative replacement. |
 | Every N start/middle/end/discontinuity and all exposed thumbnails | pending | Release quarantine only with evidence. |
-| Unchanged L/M/S vectors and baseline search | pending | Mixed-data ranking measured separately. |
+| Unchanged L/M/S vectors and baseline search | in progress | Exact stored-vector queries found two HNSW top-100 self-recall misses among 316 M/S videos; FLAT found all 316. Assess a FLAT default for remote search with end-to-end latency and ranking checks before changing behavior. Mixed-data ranking remains separate. |
 | Two-client load during warming and resource bounds | pending | Local warm top-100 p95 ≤1s, cached first viewport ≤2s; 32 GiB card budget, no deadlock/OOM/swap growth; WAN separately. |
 | Maintenance publication, indexes/exports, quarantine release | pending | Consistent validated generation and rollback. |
 | Exceptions, final evidence and focused commits | in progress | Only the seven previously verified one-thread profile videos remain release-blocked pending derivatives/publication. Temporary blocks for 32 stable current maps were cleared after exact same-setting replay. Original sources are retained; organizer corruption is not established. |
@@ -367,3 +367,34 @@ result exists. No competition submission is authorized by this plan.
   duration and frame ID/timestamp checks, and exact normalized vector comparison
   (maximum component error zero). The obsolete isolated candidate was removed;
   no live archive or index was changed.
+- 2026-09-25: Five duration-aware N result archives now pass packaging validation
+  (153 videos/45,518 vectors). The main exposed-card audit is underway. Fifty-
+  three old playback copies have pre-encode alignment markers but no source-map
+  digest, so they cannot safely inherit the new signature. Conversion continues
+  with two disjoint single-job partitions while host memory remains about 17–18
+  GiB available and memory pressure reads zero. Each job still uses the planned
+  720p libx264/yuv420p, veryfast, CRF 23 and two encoder threads.
+- 2026-09-25: The ingest buffer setting contradicted its bounded-memory comment:
+  it retained 120 batches of Python vector records before writing. It now keeps
+  four batches (1,024 rows at the default 256-row batch size), lowering peak
+  Python memory during the later full-index rebuild without changing record
+  content. The 56 local-backend tests also pass after the shared timing change.
+- 2026-09-25: Stored-vector baseline search across the first selected picture
+  of every M/S video found two HNSW top-100 self-recall misses out of 316:
+  M09_V013_000002 and S01-V001_000025. FLAT found all 316 at rank one; its
+  database search p95 was about 58 ms under background processing. An expanded
+  HNSW search still missed S01-V001_000025. The 75-query L/M/S comparison had
+  median top-100 overlap 100 and minimum 91. This is a search-index quality
+  issue, not evidence of source corruption. Assess a FLAT default after an
+  end-to-end latency/client test; no live search setting was changed.
+- 2026-09-25: User requested a temporary stop. Interrupted the N vector stage
+  at 170/291 videos, M/S source maps at 143/316, N exposed-card audit at 19/291,
+  and the two disjoint playback partitions at 13/288 and 4/145 completed copies.
+  No processing or ffmpeg job remains. Removed four incomplete playback scratch
+  files (601,391,904 bytes); kept completed validated derivatives and all source
+  archives. Five unpublished N result ZIPs (153 videos/45,518 vectors) remain
+  validated, with the first independently checked against every ingest row.
+  This checkpoint leaves picture, playback, client, index/export and publication
+  work in progress. Recent audit/ingest/packaging edits passed 17 focused tests;
+  the last full remote/local/frontend suites passed 172/56/48 tests before those
+  small edits. Resume from saved generations and logs, then rerun final suites.

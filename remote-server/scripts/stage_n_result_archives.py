@@ -204,8 +204,9 @@ def main():
     parser.add_argument('--recover', nargs='*', default=[],
                         help='Include independently verified blocked videos in staged archive only')
     args = parser.parse_args()
+    defaults = [root / 'readiness/n001_recovery', root / 'readiness/n031_audit']
     audit_stages = args.audit_stage if args.audit_stage is not None else [
-        root / 'readiness/n001_recovery', root / 'readiness/n031_audit']
+        path for path in defaults if (path / 'manifest.json').is_file()]
     stages = stage_entries(args.stage, *audit_stages)
     blocked = release_blocked_video_ids()
     recover = frozenset(args.recover)

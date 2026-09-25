@@ -25,7 +25,8 @@ load_dotenv(ROOT / 'remote-server/.env')
 import numpy as np
 from app.services import local_zip_media as media
 from app.services.exact_frame_pts import index_path
-from app.services.source_timeline import monotonic_entries, source_fingerprint
+from app.services.source_timeline import (monotonic_entries, source_fingerprint,
+                                           source_map_sha256)
 from app.services.playback_copies import validated_copy
 from app.services.video_quarantine import release_blocked_video_ids
 from scripts.ingest_zip_pipeline_results import video_directories, selected_timestamp_ms
@@ -143,11 +144,14 @@ def verify_result_inventory(archive_name, source_by_id, packaged_ids, manifest, 
     return missing
 
 
-def audit(crc=False, live=False, output=None):
+def audit(crc=False, live=False, output=None, result_dir=None, export_dir=None):
     os.chdir(ROOT / 'remote-server')
+    result_dir = Path(result_dir or RESULTS)
+    export_dir = Path(export_dir or DATA)
     started = time.time()
     report = {'version': 1, 'created_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
               'checks': {'source_crc': crc, 'live_indexes': live, 'source_picture_semantics': 'not assessed here'},
+              'result_dir': str(result_dir.resolve()), 'export_dir': str(export_dir.resolve()),
               'expected': {'source_archives': 21, 'videos': 614}, 'source_archives': [],
               'result_archives': [], 'videos': {}, 'indexes': {}, 'issues': []}
     source_by_id = {}
@@ -191,8 +195,8 @@ def audit(crc=False, live=False, output=None):
     timestamps = None
     export_lookup = {}
     try:
-        export = np.load(DATA / 'vectors.f32.npy', mmap_mode='r', allow_pickle=False)
-        with np.load(DATA / 'vectors.meta.npz', allow_pickle=False) as meta:
+        export = np.load(export_dir / 'vectors.f32.npy', mmap_mode='r', allow_pickle=False)
+        with np.load(export_dir / 'vectors.meta.npz', allow_pickle=False) as meta:
             ids = meta['frame_id']; videos = meta['video_id']; frames = meta['frame_number']; timestamps = meta['timestamp_ms']
         if export.shape != (len(ids), 1280): issue(report, 'numpy', f'vector/metadata shape {export.shape}/{len(ids)}')
         for i, video in enumerate(videos):
@@ -210,7 +214,7 @@ def audit(crc=False, live=False, output=None):
     result_by_id = {}
     packaged_frame_ids = set()
     release_blocked = release_blocked_video_ids()
-    archives = sorted(p for p in RESULTS.glob('*_results.zip') if p.name.startswith(('M','N','S')))
+    archives = sorted(p for p in result_dir.glob('*_results.zip') if p.name.startswith(('M','N','S')))
     for archive_path in archives:
         archive_report = {'name': archive_path.name, 'videos': 0, 'crc_ok': None}
         try:
@@ -303,7 +307,13 @@ def audit(crc=False, live=False, output=None):
                                 if selected.get('version') == 2:
                                     verify_n_source_identity(video, selected, table, index.timescale,
                                                              source_fingerprint(index))
+                                    if selected.get('source_duration_ms') is not None and \
+                                            selected['source_duration_ms'] != \
+                                            (index.duration_ticks * 1000 + index.timescale // 2) // index.timescale:
+                                        issue(report, video, 'source duration differs from MP4 track')
                                 video_report['pts_map'] = {'path':str(map_path), 'rows':len(table), 'time_base':[1,index.timescale],
+                                                           'sha256': source_map_sha256(map_path),
+                                                           'source': source_fingerprint(index),
                                                            'non_increasing':omitted[:,0].tolist()}
                                 video_report['playback_copy'] = validated_copy(video,index) is not None
                             except Exception as exc: issue(report,video,f'PTS map failed: {exc}')
@@ -431,6 +441,10 @@ if __name__=='__main__':
     parser.add_argument('--crc',action='store_true')
     parser.add_argument('--live',action='store_true')
     parser.add_argument('--output',type=Path)
+    parser.add_argument('--result-dir',type=Path,
+                        help='Candidate result ZIP directory; defaults to published artifacts')
+    parser.add_argument('--export-dir',type=Path,
+                        help='Candidate NumPy export directory; defaults to published artifacts')
     args=parser.parse_args()
-    result=audit(args.crc,args.live,args.output)
+    result=audit(args.crc,args.live,args.output,args.result_dir,args.export_dir)
     raise SystemExit(0 if result['status']=='pass' else 2)

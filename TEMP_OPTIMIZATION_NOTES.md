@@ -1,24 +1,27 @@
-# Current readiness — 2026-09-25
+# Readiness checkpoint — 2026-09-25
 
-The readiness fixes pass 172 remote, 56 local and 48 frontend tests plus the
-frontend build. N maps and all picture derivatives use the same verified decoder
-setting; map hashing is stat-cached. A second global fix uses the source MP4
-duration for N: nominal frame/FPS duration was short by up to 70 seconds.
+Work is temporarily paused at the user's request. All active preprocessing,
+image-audit and playback jobs were stopped; no conversion remains running.
+Four incomplete playback scratch files (about 601 MB) were removed. Verified
+sources, staged derivatives and completed playback copies were retained.
 
-All 298 N videos completed full replay. Seven source-bound one-thread profiles
-pass complete verification. Another 32 videos differ across one-/four-thread
-decoding, but every same-setting four-thread repeat is exact; those variations
-are harmless under the unified policy and their temporary blocks were cleared.
-No organizer corruption or new exclusion is established. Official N001-N010 and
-N031-N040 redownloads matched and redundant copies were removed. KIS/QA use
-verified source-PTS milliseconds; TRAKE excludes N.
+- Full independent replay passed for all 298 N videos. Seven verified decoder
+  profiles remain release-blocked pending complete derivatives; no organizer
+  corruption or new exclusion is established. Official N001 and N031 ZIP
+  redownloads matched the originals, and redundant downloads were removed.
+- The duration-aware N stage paused at 170/291 videos; M/S source maps at
+  143/316; exposed N card audit at 19/291. Playback paused at 13/288 early
+  and 4/145 late validated copies. Five unpublished N result ZIPs pass
+  packaging checks (153 videos/45,518 vectors); the first passes every
+  ingest row and exact vector comparison. No live N generation was published.
+- Structural/live audits cover all 21 source/result ZIPs and 614 M/N/S videos.
+  Exact stored-vector search found two HNSW top-100 misses in 316 M/S queries;
+  FLAT found all 316. Search behavior needs a final choice and client test.
+- Validation: 172 remote, 56 local and 48 frontend tests plus the frontend
+  build passed before the latest small audit/buffer edits; 17 focused tests
+  passed after them. Memory had about 17–18 GiB available, zero pressure and
+  negligible swap use during bounded jobs.
 
-All 21 source/result ZIPs and the 614-video structural/live audit pass. The
-291-video duration-aware N stage safely adopts unchanged source-verified vectors
-and recomputes the rest. Seven recovery videos are revalidated. The first
-five N result ZIPs (153 videos/45,518 vectors) pass packaging validation; the
-first also passed all-row ingest checks. M/S sample maps, exposed-image audit
-and one-job playback conversion run. Remaining: N derivatives, M/S semantics,
-image/playback and browser/load checks, indexes/exports and publication. Memory
-has about 18 GiB available with negligible swap use; the card cache is disk-backed.
-Details and evidence: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).
+Resume the checkpointed jobs, complete M/S picture and N derivative
+verification, evaluate FLAT search, then validate clients, indexes and exports
+before publication. Full tracking and evidence: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).
