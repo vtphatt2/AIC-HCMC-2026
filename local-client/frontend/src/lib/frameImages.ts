@@ -1,7 +1,7 @@
 // Original result URLs remain authoritative for playback and submissions.
 export function cardImageUrl(original: string, format: "jpeg" | "webp" = "jpeg"): string | null {
   if ((process.env.NEXT_PUBLIC_FRAME_DECODE || "server").toLowerCase() === "client") return null;
-  return /\/api\/zip-frame\/[^/?#]+\/\d+(?:\?frame_number=\d+(?:&v=[456])?)?$/.test(original)
+  return /\/api\/zip-frame\/[^/?#]+\/\d+(?:\?frame_number=\d+(?:&v=[4567])?)?$/.test(original)
     ? `${original}${original.includes("?") ? "&" : "?"}width=640${format === "webp" ? "&format=webp" : ""}`
     : null;
 }

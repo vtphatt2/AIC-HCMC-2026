@@ -1,7 +1,7 @@
 import { serializeSubmissionRow, validateSubmissionRow } from "./format";
 import { useEffect, useState } from "react";
 import type { SearchResult, SubmissionQueryType, SubmissionRow, SubmissionSessionSummary, SubmissionState } from "@/types";
-import { apiUrl, fetchVideoById } from "@/lib/api";
+import { apiUrl, fetchVideoById, zipFrameImageUrl } from "@/lib/api";
 
 // Talks to pages/api/submission.ts — a same-origin Next.js route, NOT the
 // FastAPI backend, so these calls deliberately do not go through apiUrl().
@@ -184,7 +184,7 @@ export function useVideoInfo(videoIds: string[]): Record<string, { fps: number; 
 export function rowThumbUrl(videoId: string, frame: number, fps: number, sourceFrame?: number): string {
   if (videoId.startsWith("N")) {
     if (sourceFrame === undefined) return "";
-    return apiUrl(`/api/zip-frame/${encodeURIComponent(videoId)}/${frame}?frame_number=${sourceFrame}&width=640`);
+    return `${zipFrameImageUrl(videoId, frame, sourceFrame)}&width=640`;
   }
   const timestampMs = Math.round((frame / (fps || 25)) * 1000);
   return apiUrl(`/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`);

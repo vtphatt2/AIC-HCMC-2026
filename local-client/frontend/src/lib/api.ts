@@ -28,6 +28,16 @@ export function apiUrl(path: string): string {
   return `${API_URL}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+export function zipFrameImageUrl(videoId: string, timestampMs: number,
+                                 frameNumber?: number): string {
+  const path = `/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`;
+  if (!videoId.startsWith("N")) return apiUrl(path);
+  if (frameNumber === undefined || !Number.isSafeInteger(frameNumber) || frameNumber < 0) {
+    throw new Error("N image needs verified source frame identity");
+  }
+  return apiUrl(`${path}?frame_number=${frameNumber}&v=7`);
+}
+
 export async function fetchFrameTimeline(videoId: string, signal?: AbortSignal): Promise<FrameTimeline> {
   const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/frame-timeline?version=2`), { signal });
   if (!res.ok) throw new Error(`Frame timeline unavailable for ${videoId} (${res.status})`);
@@ -346,7 +356,7 @@ export async function fetchVideoById(lookup: string): Promise<SearchResult> {
     frame_number: info.frame_number,
     timestamp_ms: info.timestamp_ms,
     confidence: 1,
-    frame_image_url: apiUrl(`/api/zip-frame/${info.video_id}/${info.timestamp_ms}`),
+    frame_image_url: zipFrameImageUrl(info.video_id, info.timestamp_ms, info.frame_number),
     fps: info.fps,
   };
 }

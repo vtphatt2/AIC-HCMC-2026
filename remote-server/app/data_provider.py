@@ -303,10 +303,10 @@ class DataProvider:
             # (ingest_zip_pipeline_results.py leaves it blank on purpose, so the
             # URL can't go stale when the serving mechanism changes). Derive it
             # here from what every hit already has. Same rule as local-backend.
-            if not hit.get("image_url"):
+            if hit["video_id"].startswith("N") or not hit.get("image_url"):
                 hit["image_url"] = f"/api/zip-frame/{hit['video_id']}/{hit['timestamp_ms']}"
                 if hit["video_id"].startswith(("N", "S")):
-                    version = 6 if hit["video_id"].startswith("N") else 4
+                    version = 7 if hit["video_id"].startswith("N") else 4
                     hit["image_url"] += f"?frame_number={int(hit['frame_number'])}&v={version}"
 
     async def get_raw_data(self, query_groups: list[dict], limit: int = 1000, video_genre: str = "All") -> dict:

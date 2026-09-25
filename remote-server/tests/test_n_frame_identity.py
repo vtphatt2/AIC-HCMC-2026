@@ -28,7 +28,7 @@ class HydrationIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_hydration_preserves_frame_timestamp_vector_identity_and_score(self):
         hits = [
             {"video_id": "N001-V001", "frame_id": "N001-V001_000005",
-             "frame_number": 5, "timestamp_ms": 200, "image_url": "", "score": .8},
+             "frame_number": 5, "timestamp_ms": 200, "image_url": "/static/stale-n-card.jpg", "score": .8},
             {"video_id": "M01_V001", "frame_id": "M01_V001_000005",
              "frame_number": 5, "timestamp_ms": 200, "image_url": "", "score": .7},
         ]
@@ -40,7 +40,7 @@ class HydrationIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([hit["score"] for hit in hits], [.8, .7])
         self.assertEqual((hits[0]["frame_number"], hits[0]["timestamp_ms"]), (5, 200))
         self.assertEqual(hits[0]["image_url"],
-                         "/api/zip-frame/N001-V001/200?frame_number=5&v=6")
+                         "/api/zip-frame/N001-V001/200?frame_number=5&v=7")
         self.assertEqual((hits[1]["frame_number"], hits[1]["timestamp_ms"]), (5, 200))
 
 

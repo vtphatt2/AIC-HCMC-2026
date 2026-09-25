@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
-import { apiUrl, fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript } from "@/lib/api";
+import { fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript, zipFrameImageUrl } from "@/lib/api";
 import ResultCard from "./ResultCard";
 
 interface Props {
@@ -112,7 +112,7 @@ function contextFrameToDisplay(videoId: string, fps: number, frame: ContextFrame
       frame_number: frame.frame_number,
       timestamp_ms: frame.timestamp_ms,
       confidence: 0,
-      frame_image_url: apiUrl(`/api/zip-frame/${videoId}/${frame.timestamp_ms}`),
+      frame_image_url: zipFrameImageUrl(videoId, frame.timestamp_ms, frame.frame_number),
       fps,
     },
     rankInVideo: 0,

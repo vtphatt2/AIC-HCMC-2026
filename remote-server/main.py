@@ -588,8 +588,11 @@ async def zip_frame(video_id: str, timestamp_ms: int, request: Request,
     return Response(
         content=jpeg_bytes,
         media_type="image/webp" if format == "webp" else "image/jpeg",
-        # A frame of an archive that never changes.
-        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        # An N source map can be repaired and republished under the same frame
+        # URL; browser caches must revalidate instead of pinning old pixels.
+        headers={"Cache-Control": ("public, max-age=0, must-revalidate"
+                                    if video_id.startswith("N") else
+                                    "public, max-age=31536000, immutable")},
     )
 
 

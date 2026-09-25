@@ -26,7 +26,13 @@ export function transcriptChunksToFrameResults(
     const computedFrameNumber = Math.floor((midMs / 1000) * 25);
     const frameNumber = chunk.frame_number > 0 ? chunk.frame_number : computedFrameNumber;
     const timestampMs = chunk.nearest_timestamp_ms ?? Math.round(midMs);
-    const fallbackImageUrl = `/api/zip-frame/${encodeURIComponent(chunk.video_id)}/${timestampMs}`;
+    const path = `/api/zip-frame/${encodeURIComponent(chunk.video_id)}/${timestampMs}`;
+    // N is VFR: a nominal frame number derived from the transcript midpoint
+    // cannot identify a source picture. Only a nearest indexed frame can.
+    const fallbackImageUrl = chunk.video_id.startsWith("N")
+      ? (chunk.nearest_timestamp_ms !== null && Number.isSafeInteger(chunk.frame_number) &&
+          chunk.frame_number >= 0 ? `${path}?frame_number=${chunk.frame_number}&v=7` : "")
+      : path;
 
     return {
       video_id: chunk.video_id,
@@ -35,7 +41,8 @@ export function transcriptChunksToFrameResults(
       frame_number: frameNumber,
       timestamp_ms: timestampMs,
       confidence: chunk.score,
-      frame_image_url: chunk.frame_image_url || fallbackImageUrl,
+      frame_image_url: chunk.video_id.startsWith("N") ? fallbackImageUrl :
+        (chunk.frame_image_url || fallbackImageUrl),
       frame_preview_url: chunk.frame_preview_url,
       fps: 25,
     };

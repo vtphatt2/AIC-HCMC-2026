@@ -9,6 +9,17 @@ import main
 
 
 class FrameTimingApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_n_frame_images_revalidate_after_a_source_map_recovery(self):
+        with patch.object(main.local_zip_media, "get_frame_jpeg",
+                          AsyncMock(return_value=b"jpeg")):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                         base_url="http://test") as client:
+                n = await client.get("/api/zip-frame/N001-V001/1000?frame_number=1&v=7")
+                m = await client.get("/api/zip-frame/M01_V001/1000")
+        self.assertEqual(n.status_code, 200)
+        self.assertEqual(n.headers["cache-control"], "public, max-age=0, must-revalidate")
+        self.assertEqual(m.headers["cache-control"], "public, max-age=31536000, immutable")
+
     async def test_n_timeline_and_exact_offset_contract(self):
         data = b"\x00\x00\x00\x00\x40\x9c\x00\x00"
         with (patch.object(main.local_zip_media, "full_frame_timeline_us",

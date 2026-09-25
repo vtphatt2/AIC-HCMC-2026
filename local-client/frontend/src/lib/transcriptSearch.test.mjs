@@ -46,6 +46,21 @@ test("video mode keeps transcript hits that have no pre-resolved thumbnail", () 
   assert.equal(results[0].frame_image_url, "/api/zip-frame/L01_V001/2000");
 });
 
+test("N transcript previews require a nearest indexed source frame", () => {
+  const chunk = {
+    chunk_id: 8, video_id: "N001-V001", youtube_id: "", topic: "", text: "",
+    start_time_ms: 1000, end_time_ms: 3000, score: 0.8,
+    frame_image_url: "", frame_number: 42, nearest_timestamp_ms: 1234,
+  };
+  const [indexed] = transcriptChunksToFrameResults([chunk]);
+  assert.equal(indexed.frame_image_url,
+    "/api/zip-frame/N001-V001/1234?frame_number=42&v=7");
+  const [unresolved] = transcriptChunksToFrameResults([
+    {...chunk, frame_number: 0, nearest_timestamp_ms: null},
+  ]);
+  assert.equal(unresolved.frame_image_url, "");
+});
+
 test("score mode highlights exact, accent-insensitive, and typo-similar query words", () => {
   const parts = highlightTranscriptText(
     "Cách nấu phở trong chương trình truyền hình",
