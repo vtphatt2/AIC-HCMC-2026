@@ -14,19 +14,25 @@ class MediaInfoAliasTests(unittest.TestCase):
             root = Path(scratch)
             with zipfile.ZipFile(root / 'M01_results.zip', 'w') as result:
                 result.writestr('phase1_transnet/videos__M01_V001/scenes.json', '{}')
+                result.writestr('phase1_transnet/videos__S01-V001/scenes.json', '{}')
             with zipfile.ZipFile(root / 'media-info-m.zip', 'w') as archive:
                 archive.writestr('media-info/M01-V001.json', json.dumps({
                     'title': 'Verified M title',
                     'watch_url': 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'}))
-            with zipfile.ZipFile(root / 'media_info-s.zip', 'w') as archive:
-                archive.writestr('media-info/S01-V001.json', json.dumps({
-                    'title': 'Unexpected S record',
+            # The organizer's B2 archive uses this suffix name and mistakenly
+            # spells S JSON members with underscores. Canonical result IDs use
+            # the corrected hyphen form from the organizer clarification.
+            with zipfile.ZipFile(root / 'aic26-b2-media-info.zip', 'w') as archive:
+                archive.writestr('media-info/S01_V001.json', json.dumps({
+                    'title': 'Verified S title',
                     'watch_url': 'https://www.youtube.com/watch?v=9bZkp7q19f0'}))
             info = load_media_info(root)
             self.assertEqual(info['M01_V001']['title'], 'Verified M title')
             self.assertEqual(info['M01_V001']['youtube_id'], 'dQw4w9WgXcQ')
             self.assertNotIn('M01-V001', info)
-            self.assertNotIn('S01-V001', info)
+            self.assertEqual(info['S01-V001']['title'], 'Verified S title')
+            self.assertEqual(info['S01-V001']['youtube_id'], '9bZkp7q19f0')
+            self.assertNotIn('S01_V001', info)
 
     def test_ambiguous_normalized_alias_is_not_guessed(self):
         with tempfile.TemporaryDirectory() as scratch:

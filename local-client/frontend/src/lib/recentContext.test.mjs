@@ -48,13 +48,16 @@ test("returning context displays a cached preview but always fetches fresh score
   assert.deepEqual(seen[1], response(0.9));
 });
 
-test("N frame URLs carry decoded frame identity and the new cache revision", () => {
+test("N and S frame URLs carry decoded frame identity and cache revision", () => {
   const f = fixture();
   assert.equal(f.zipFrameImageUrl("N001-V001", 1234, 42),
     "/api/zip-frame/N001-V001/1234?frame_number=42&v=7");
+  assert.equal(f.zipFrameImageUrl("S01-V001", 1234, 42),
+    "/api/zip-frame/S01-V001/1234?frame_number=42&v=4");
   assert.equal(f.zipFrameImageUrl("M01_V001", 1234, 42),
     "/api/zip-frame/M01_V001/1234");
   assert.throws(() => f.zipFrameImageUrl("N001-V001", 1234), /source frame identity/);
+  assert.throws(() => f.zipFrameImageUrl("S01-V001", 1234), /source frame identity/);
 });
 
 test("cache cannot cross videos, ranges, frame identities, query order, weights or thresholds", async () => {

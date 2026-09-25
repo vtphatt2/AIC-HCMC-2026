@@ -10,6 +10,56 @@ import main
 
 
 class ServerMediaProxyTests(unittest.TestCase):
+    def test_query_video_lookup_preserves_titles_with_slashes(self):
+        payload = {'video_id': 'M01_V001', 'youtube_id': 'aWlose7FZA8',
+                   'frame_id': 'M01_V001_000001', 'frame_number': 1,
+                   'timestamp_ms': 40, 'fps': 25}
+        upstream = AsyncMock(return_value=httpx.Response(200, json=payload))
+        title = 'News - 01/11/2025'
+        with (patch.dict(os.environ, {'ENV_MODE': 'LOCAL',
+                                      'REMOTE_SERVER_URL': 'https://server.test'}),
+              patch.object(main._http_client, 'get', upstream),
+              patch.object(main, 'release_blocked_video_ids', return_value=frozenset())):
+            response = TestClient(main.app).get('/api/video', params={'lookup': title})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), payload)
+        self.assertEqual(upstream.await_args.args[0], 'https://server.test/api/video')
+        self.assertEqual(upstream.await_args.kwargs['params'], {'lookup': title})
+
+    def test_local_search_runs_once_on_server(self):
+        upstream = AsyncMock(return_value=httpx.Response(200, json={
+            'results': [], 'strategy_id': 'raw_visual', 'total': 0,
+            'execution_time_ms': 10,
+        }))
+        with (patch.dict(os.environ, {'ENV_MODE': 'LOCAL',
+                                      'REMOTE_SERVER_URL': 'https://server.test'}),
+              patch.object(main._http_client, 'post', upstream)):
+            response = TestClient(main.app).post('/api/search', json={
+                'strategy_id': 'raw_visual', 'query_groups': [{'query': 'street'}]
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(upstream.await_count, 1)
+        self.assertEqual(upstream.await_args.args[0], 'https://server.test/api/search')
+
+    def test_local_context_scoring_runs_once_on_server(self):
+        payload = {'fps': 25, 'before': [], 'middle': [], 'after': [], 'scores': {}}
+        upstream = AsyncMock(return_value=httpx.Response(200, json=payload))
+        with (patch.dict(os.environ, {'ENV_MODE': 'LOCAL',
+                                      'REMOTE_SERVER_URL': 'https://server.test'}),
+              patch.object(main._http_client, 'post', upstream),
+              patch.object(main, 'release_blocked_video_ids', return_value=frozenset())):
+            response = TestClient(main.app).post('/api/video/S01-V010/context-scores', json={
+                'start_ms': 1000, 'end_ms': 1000, 'expand': 12,
+                'frame_ids': ['S01-V010_000001'],
+                'frame_numbers': {'S01-V010_000001': 1},
+                'query_groups': [{'query': 'cycling'}],
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), payload)
+        self.assertEqual(upstream.await_count, 1)
+        self.assertEqual(upstream.await_args.args[0],
+                         'https://server.test/api/video/S01-V010/context-scores')
+
     def test_proxy_and_n_never_use_unverified_browser_decode_plans(self):
         for mode, video in (('LOCAL', 'M09_V028'), ('ZIP', 'N010-V002')):
             with (self.subTest(mode=mode), patch.dict(os.environ, {'ENV_MODE': mode}),

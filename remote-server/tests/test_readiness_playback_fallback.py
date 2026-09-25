@@ -39,14 +39,14 @@ class PlaybackFallbackTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(ordinary, exceptional)
             self.assertNotEqual(ordinary, changed_path)
 
-    async def test_only_browser_verified_n010_originals_fall_back_to_source(self):
+    async def test_n_originals_never_bypass_validated_playback_copy(self):
         from app.services import playback_copies
         index = SimpleNamespace()
         with patch.object(media, '_get_index', new=AsyncMock(return_value=index)), \
              patch.object(playback_copies, 'serving_copy', return_value=None), \
              patch.object(media, 'lookup', new=AsyncMock(return_value={
                  'size': 8, 'data_offset': 0, 'zip_path': Path('/tmp/source.zip')})):
-            headers, _ = await media.open_range('N010-V001', 'bytes=0-0')
-            self.assertEqual(headers['Content-Range'], 'bytes 0-0/8')
-            with self.assertRaisesRegex(media.LocalZipUnavailable, 'Validated playback'):
-                await media.open_range('N031-V003', 'bytes=0-0')
+            for video_id in ('N010-V001', 'N031-V003'):
+                with self.subTest(video_id=video_id), self.assertRaisesRegex(
+                        media.LocalZipUnavailable, 'Validated playback'):
+                    await media.open_range(video_id, 'bytes=0-0')

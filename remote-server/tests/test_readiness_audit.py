@@ -7,6 +7,7 @@ import numpy as np
 
 from scripts.audit_readiness import (MAX_EXPORT_VECTOR_ABS_ERROR, export_vector_error,
                                      unexpected_export_ids,
+                                     require_browser_playback,
                                      selected_timestamp_ms, verify_packaged_generation,
                                      verify_n_source_identity, verify_scene_association,
                                      verify_result_inventory)
@@ -113,6 +114,12 @@ class ExportVectorAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'undocumented'):
             verify_result_inventory('N001-N010_results.zip', source,
                                     packaged, None, {'N001-V002'})
+
+    def test_every_published_n_video_requires_a_validated_browser_copy(self):
+        require_browser_playback('N001-V001', '/validated/video.mp4')
+        with self.assertRaisesRegex(ValueError, 'browser playback copy'):
+            require_browser_playback('N001-V001', None)
+        require_browser_playback('M01_V001', None)
 
 
 if __name__ == '__main__':

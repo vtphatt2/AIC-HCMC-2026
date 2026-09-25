@@ -7,6 +7,7 @@ import {
   choosePlaybackSource,
   frameAtPlaybackTime,
   frameAtTimelineTime,
+  initialPlaybackSource,
   normalizePlaybackFps,
   otherPlaybackSource,
   timeOfTimelineFrame,
@@ -64,7 +65,9 @@ export default function VideoModal({
   const youtubeId = metadataYoutubeId || resultYoutubeId;
   const fps = normalizePlaybackFps(metadataFps, result.fps);
 
-  // YouTube is tried first whenever a video has a known youtube_id — but
+  // YouTube is normally tried first when a video has a known youtube_id. Long
+  // S broadcasts use the authoritative organizer MP4 first until their
+  // YouTube timelines have been verified to align.
   // "known youtube_id" doesn't guarantee a *working* embed: the uploader may
   // have disabled embedding, or the video may have gone private/been taken
   // down since ingestion. onError below catches that and falls back to
@@ -75,7 +78,9 @@ export default function VideoModal({
   const zipVideoUrl = result.video_id ? apiUrl(`/api/zip-video/${encodeURIComponent(result.video_id)}`) : "";
   const [zipVideoFailed, setZipVideoFailed] = useState(false);
   const [youtubeFailed, setYoutubeFailed] = useState(false);
-  const [preferredSource, setPreferredSource] = useState<PlaybackSource>(resultYoutubeId ? "youtube" : "mp4");
+  const [preferredSource, setPreferredSource] = useState<PlaybackSource>(
+    initialPlaybackSource(result.video_id, resultYoutubeId),
+  );
   const activeSource = choosePlaybackSource(
     preferredSource,
     Boolean(youtubeId) && !youtubeFailed,
@@ -214,7 +219,7 @@ export default function VideoModal({
   useEffect(() => {
     setZipVideoFailed(false);
     setYoutubeFailed(false);
-    setPreferredSource(resultYoutubeId ? "youtube" : "mp4");
+    setPreferredSource(initialPlaybackSource(result.video_id, resultYoutubeId));
     setHasStartedPlaying(false);
     desiredTimeRef.current = startSeconds;
     setCurrentTimeSec(startSeconds);

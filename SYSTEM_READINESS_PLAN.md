@@ -28,53 +28,51 @@ of the format remains unverified.
 
 ## Current checkpoint — 2026-09-25
 
-The remote server, proxy, and frontend are running on ports 8000, 8001, and
-3000; preprocessing is stopped. The proxy initially started in ZIP mode because
-its `.env` overrides shell settings. This was corrected by setting LOCAL mode in
-the ignored local `.env`; `/api/health` now confirms `env_mode=LOCAL`. Before the
-fix, logs recorded 1,643 frame-image requests and 1,488 HTTP 502 responses,
-including retries (not unique frames); 739 were for S01-V010. Organizer byte
-range requests returned HTTP 206, so this does not establish archive corruption.
-After the fix, spot images for L23_V021 and M06_V001 returned HTTP 200 in 2.4 s
-and 2.7 s; S01-V010 returned a cached HTTP 200. This small sample does not
-confirm all slow cards are resolved. Current snapshot: 17 GiB RAM available of
-25 GiB, 25 MiB swap; GPU 3.2/16.3 GiB, 7% utilization. No preprocessing or N
-publication.
+No offline preprocessing job is running. The last known web stack uses ports
+8000, 8001, and 3000. The idle machine has about 20/25 GiB RAM available and no
+swap pressure. No N publication has occurred.
 
 | Area | Status |
 |---|---|
-| Real client flow | Passed: search returned 100; all 100 cards loaded while scrolling. L21-V008, M09-V028 and S01-V005 played from selected pictures; frame submissions matched canonical video/frame IDs. N010-V002 picture and submission used verified source PTS milliseconds correctly. |
-| Proxy media fix | Implemented and focused tests passed. Corrected the running proxy to LOCAL mode in its ignored `.env`; it now forwards all lot media to the search server. Full local suite remains to run. A few L/M/S spot requests returned 200 after the change; broad card recovery is unverified. |
-| Current web/card lag | User reports the results page remains laggy after a quick search; S cards are extremely slow/unavailable, some M cards fail, and L is slower than the prior system. Most observed 502s occurred before LOCAL mode was enabled. Two L/M spot images then took 2.4–2.7 s; one cached S image returned immediately. Need a quick user-facing retest. Whether long video decode scans linearly remains unverified. |
-| N seeking | Open, user-visible: Chrome cannot seek in original N010-V001/002/003 (decode error); start playback works. A lossless remux experiment did not establish a repair and was removed. These are not excluded; prepare verified playback copies and retest random seeks. |
-| Search | Open decision: FLAT returned all 316 exact M/S self-matches; HNSW missed 2. Real proxied warm top-100 p95: FLAT 290 ms, HNSW 270 ms; overlap was 95–100/100 across six text queries. Default not changed. |
-| N derivatives | In progress, resumable: vectors 180/291, verified playback copies 17/288, selected-card audit 29/291. Existing stage has 89,795 selected pictures across 298 N videos. No N release/publication. |
+| Real client flow | Passed for released data: a top-100 search produced 54 L/M/S groups. Activating every group rendered 1,215 cards; all 125 requested images returned HTTP 200, with no broken/unavailable cards and 6 ms UI response. Search-result and nearby S cards now use exact frame IDs. |
+| Display/search lag | Fixed shared causes: LOCAL proxies now forward search, scoring, and media instead of loading a second model; context is centered on the best hit and bounded to about 24 cards rather than thousands across long S videos. Five uncached top-100 searches took 56–246 ms under playback conversion. |
+| Weak-network cards | Constrained connections request 640px WebP cards while retaining the exact video/timestamp/frame identity. Browser simulation requested 10/10 small cards and no originals; representative L/M/S cards were 31–61 KB instead of 78–211 KB originals. |
+| N submissions | Live web round-trip passed: N010-V001 source frame 100 became verified source-PTS position 4199 ms, its exact WebP review card returned HTTP 200, reload preserved both identities, and the temporary session was removed. Review/manual-entry labels distinguish N milliseconds from L/M/S frames. |
+| N seeking | Shared fallback verified: all N originals require validated copies. N010-V001/002/003 copies passed exhaustive source-picture/output-PTS validation and Chrome playback at start, midpoint, and near end through the proxy. |
+| Tests | Remote 183/183, local 65/65, frontend 49/49, production build, and real browser flows pass. The local suite declares deployment mode so LOCAL `.env` does not alter standalone tests. |
+| Search | FLAT is the release default: it returned all 316 exact M/S self-matches while HNSW missed 2. Real proxied warm top-100 p95 was 290 ms for FLAT and 270 ms for HNSW, with 95–100/100 overlap across six text queries. HNSW remains selectable. |
+| N derivatives | Resumable: all 298 videos have a verified vector generation across main/recovery stages. Thirteen decoder-sensitive videos have verified one-thread profiles; four new playback failures need the same profile/recovery (`N027-V002`, `N029-V001`, `N029-V003`, `N030-V003`). All failures retain exact PTS/counts and match the known checksum-only threading pattern; no organizer corruption is established. Playback has 90/298 current validated copies. Only 32 current exact-image manifests remain; earlier 116-video evidence must be rebuilt and checked for JPEG plus WebP. Seventeen videos remain release-blocked through final validation. |
+| Release safety | Final audit now fails when any N video lacks a validated browser copy. Quarantine release is atomic, evidence-bearing, and refuses changed or still-blocked entries. Add an offline evidence-bound clearance for the 17 recovered blocks before index ingestion; clearing them does not expose N until final release. Previous full source-CRC and live-index audits took 97 s and 176 s. Removed 16.5 GB/123 stale playback files from superseded signatures; current copies and active work were preserved. |
 | M/S source-picture audit | In progress at 143/316 source maps; pilot checks passed. |
 | Sources and live data | Earlier structural audits passed for 21 ZIPs and 614 M/N/S videos; N001/N031 redownloads matched. No organizer corruption or new exclusion established. Structural counts do not prove image identity. |
+| Organizer metadata | The supplied B2 archive passed ZIP CRC/JSON checks and contains 304 M plus 12 S entries. Both archive naming conventions and unique underscore/hyphen aliases are supported and tested, so erroneous `S01_V0*.json` names map to canonical `S01-V0*` IDs. PostgreSQL titles/YouTube IDs now match all 316 entries with timing fields unchanged. All 12 authoritative S MP4s passed Chrome start/middle/end seeks; S uses MP4 first because YouTube timeline alignment is not yet proven. N metadata/YouTube absence is expected. |
 
 ## Required work, in priority order
 
-1. **Keep the verified L/M/S flow and resolve N seeking.** L/M/S search, all 100
-   cards, selected-picture playback, and frame submissions passed in the proxied
-   browser. N010-V002 picture and PTS-millisecond submission passed; Chrome
-   random seeking failed on N010-V001/002/003 originals. Prepare verified copies,
-   then retest seeks and check representative N videos through the proxy.
+1. **Finish N derivatives from checkpoints.** Recover the four pending decoder
+   profiles and affected derivatives. Resume selected-card checks and the
+   playback-copy job. Preserve the passing L/M/S and N010 client flow.
 2. **Settle search behavior.** Compare HNSW and FLAT on representative searches;
    verify expected IDs, ranking, and top-100 recall in the client, then measure
    end-to-end latency. Preserve the existing L/M/S baseline; assess added N
    candidates separately.
-3. **Finish N derivatives from checkpoints.** Complete the 291-video vector
-   stage using verified adoption where source pictures, selection rows, scenes,
-   model, and preprocessing match. Recompute missing or mismatched vectors only.
-   Complete all exposed-card checks and prepare browser-compatible 720p H.264,
-   yuv420p playback copies (libx264, veryfast, CRF 23, two encoder threads by
-   default). Preserve presentation timing and source-to-playback origin; validate
-   duration, seeks, PTS, and picture alignment before serving by HTTP Range.
+3. **Complete browser-compatible N playback.** Continue the 720p H.264/yuv420p
+   job (libx264, veryfast, CRF 23, two encoder threads). On this 16-logical-CPU
+   host use four low-priority workers (`nice 8`); concurrency changes scheduling,
+   not artifacts. Preserve VFR timing and source-to-playback origin; validate all
+   source pictures, output PTS, duration and seeking before HTTP Range serving.
+   If the release window is limited to three hours, first benchmark 480p
+   H.264/yuv420p NVENC on ordinary, text/detail, night/motion, and discontinuity
+   sources. Accept it only when exhaustive picture/PTS checks, Chrome seeking,
+   readable medium/large details, and about 220 remaining copies/hour aggregate
+   pass. Keep the 90 valid 720p copies and use exact source-resolution JPEGs when
+   small details must be inspected.
 4. **Finish source-picture checks.** Complete deterministic M/S checks across all
    316 videos, including selected pictures and scene boundaries. For every
    generated or repaired N vector, verify its source picture. Check each N video's
    start, middle, end, and known timestamp discontinuities; audit every exposed
-   selected card. Record sampled versus exhaustive coverage clearly.
+   selected JPEG and weak-network WebP card. Record sampled versus exhaustive
+   coverage clearly.
 5. **Complete display metadata and proxy behavior.** Support both organizer
    metadata archive naming conventions. Resolve underscore/hyphen aliases only
    when unambiguous and preserve canonical IDs. Refresh M/S titles and links only
@@ -98,7 +96,9 @@ publication.
    settings, result ZIPs, NumPy exports, PostgreSQL/vector indexes, cards/caches,
    playback copies, and submission round-trips. Check picture identity separately
    from counts. Validate a candidate generation before atomically publishing it;
-   verify indexes and exports after publication, then clear only evidenced blocks.
+   clear recovered blocks only from complete offline evidence, ingest HNSW and
+   FLAT with bounded batches and one final flush/load, then verify indexes and
+   exports before the atomic release.
    Exercise legacy and versioned artifacts, interrupted/resumed processing, and
    selective invalidation after a settings change.
 8. **Exercise real use under load.** Run two clients during warming, scrolling,
@@ -132,3 +132,9 @@ publication.
 
 Defer model/ranking redesign, OCR/transcript expansion, broad optimization, and
 standalone N ZIP clients until correctness and user-visible readiness are achieved.
+
+With a three-hour release window, defer the unfinished exhaustive M/S semantic
+audit after recording its 143/316 checkpoint: released L/M/S has passed current
+search, card, submission, and playback checks with no known functional defect.
+Prioritize decoder recovery, N playback/cards, candidate publication, and the
+final live browser/submission audit.

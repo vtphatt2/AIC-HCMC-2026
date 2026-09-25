@@ -54,6 +54,8 @@ def block_release(video_id: str, *, reason: str, details: str, evidence: str) ->
             'scope': 'search_only; original video and preprocessing preserved',
             'release_blocked': True,
         }
+        data['videos'][video_id].pop('released', None)
+        data['videos'][video_id].pop('release_evidence', None)
         temporary = path.with_suffix(path.suffix + '.partial')
         temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
         os.replace(temporary, path)
@@ -83,8 +85,44 @@ def clear_release_block(video_id: str, *, reason: str, details: str,
         _read.cache_clear()
 
 
+def release_videos(expected_reasons: dict[str, str], *, evidence: str) -> None:
+    """Atomically make a fully audited N generation visible.
+
+    The caller supplies the reasons it audited so a changed quarantine entry
+    cannot be released accidentally. Source-identity blocks must be cleared
+    after candidate validation and before the final live audit.
+    """
+    if (not expected_reasons or
+            not isinstance(evidence, str) or not evidence.strip() or
+            any(not video.startswith('N') or
+                not isinstance(reason, str) or not reason.strip()
+                for video, reason in expected_reasons.items())):
+        raise ValueError('A verified release requires N videos, expected reasons, and evidence')
+    path = manifest_path()
+    lock_path = path.with_suffix(path.suffix + '.lock')
+    with lock_path.open('a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = json.loads(path.read_text())
+        if data.get('version') != 1 or not isinstance(data.get('videos'), dict):
+            raise ValueError(f'Invalid video quarantine manifest: {path}')
+        for video, expected_reason in expected_reasons.items():
+            entry = data['videos'].get(video)
+            if (not isinstance(entry, dict) or
+                    entry.get('reason') != expected_reason or
+                    entry.get('release_blocked') is True):
+                raise ValueError(f'{video}: quarantine state changed or remains release-blocked')
+        for video in expected_reasons:
+            data['videos'][video]['released'] = True
+            data['videos'][video]['release_evidence'] = evidence
+        temporary = path.with_suffix(path.suffix + '.partial')
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+        os.replace(temporary, path)
+        _read.cache_clear()
+
+
 def excluded_video_ids() -> frozenset[str]:
-    return frozenset(_entries())
+    return frozenset(video for video, entry in _entries().items()
+                     if entry.get('released') is not True)
 
 
 def release_blocked_video_ids() -> frozenset[str]:

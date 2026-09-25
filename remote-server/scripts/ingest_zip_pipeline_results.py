@@ -23,12 +23,10 @@ mechanism changes.
 
 youtube_id/title come from the organizers' media-info archive (one
 media-info/<video_id>.json per video, with a "watch_url"), e.g.
-media-info-aic25-b1.zip under the same --zip-dir. YouTube stays the primary
-player everywhere in the app (VideoModal tries it first whenever a video has
-a youtube_id) — this script does not opt out of that; it just has nothing to
-set for a video_id missing from the media-info archive, and playback for
-those falls back to the zip-video proxy like any other video with no known
-youtube_id would.
+media-info-aic25-b1.zip under the same --zip-dir. This script records the link;
+the client chooses the initial player. Long S broadcasts prefer the organizer
+MP4 until YouTube timeline alignment is verified. Videos missing from organizer
+metadata, including N camera videos, keep an empty youtube_id.
 
 Run from remote-server:
   python scripts/ingest_zip_pipeline_results.py --dry-run
@@ -104,7 +102,8 @@ def load_media_info(zip_dir: Path) -> dict[str, dict[str, str]]:
     """video_id -> {"youtube_id", "title"} from media-info-*.zip archives
     (one media-info/<video_id>.json per video, with a "watch_url" field)."""
     info: dict[str, dict[str, str]] = {}
-    archives = sorted(set(zip_dir.glob("media-info*.zip")) | set(zip_dir.glob("media_info*.zip")))
+    archives = sorted(set(zip_dir.glob("*media-info*.zip")) |
+                      set(zip_dir.glob("*media_info*.zip")))
     # Organizer files use both hyphens and underscores. Resolve aliases only
     # against IDs in the result archives; ambiguous aliases are never guessed.
     canonical_ids: set[str] = set()

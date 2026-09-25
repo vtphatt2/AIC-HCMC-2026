@@ -50,7 +50,8 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
   const imageBoxRef = useRef<HTMLDivElement>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const useCard = Boolean(cardUrl && failedCardUrl !== cardUrl);
-  const useOriginal = useCard && needsOriginal && failedOriginalUrl !== imageUrl;
+  const constrainedConnection = isConstrainedConnection();
+  const useOriginal = useCard && needsOriginal && !constrainedConnection && failedOriginalUrl !== imageUrl;
   const retryUrl = (url: string) => retryCount
     ? `${url}${url.includes("?") ? "&" : "?"}image_retry=${retryCount}` : url;
   const originalRequestUrl = retryUrl(imageUrl);
@@ -137,7 +138,7 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
           {useOriginal && (
             <source srcSet={originalRequestUrl} />
           )}
-          {useCard && isConstrainedConnection() && (
+          {useCard && constrainedConnection && (
             <source type="image/webp" srcSet={retryUrl(cardImageUrl(imageUrl, "webp")!)} />
           )}
           <img

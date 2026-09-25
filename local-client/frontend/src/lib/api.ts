@@ -31,11 +31,12 @@ export function apiUrl(path: string): string {
 export function zipFrameImageUrl(videoId: string, timestampMs: number,
                                  frameNumber?: number): string {
   const path = `/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`;
-  if (!videoId.startsWith("N")) return apiUrl(path);
+  if (!videoId.startsWith("N") && !videoId.startsWith("S")) return apiUrl(path);
   if (frameNumber === undefined || !Number.isSafeInteger(frameNumber) || frameNumber < 0) {
-    throw new Error("N image needs verified source frame identity");
+    throw new Error(`${videoId[0]} image needs verified source frame identity`);
   }
-  return apiUrl(`${path}?frame_number=${frameNumber}&v=7`);
+  const revision = videoId.startsWith("N") ? 7 : 4;
+  return apiUrl(`${path}?frame_number=${frameNumber}&v=${revision}`);
 }
 
 export async function fetchFrameTimeline(videoId: string, signal?: AbortSignal): Promise<FrameTimeline> {
@@ -343,7 +344,7 @@ export async function fetchTranscript(
 // canonical video ID. Exact IDs remain the common fast path (including calls
 // from the submission dashboard).
 export async function fetchVideoById(lookup: string): Promise<SearchResult> {
-  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(lookup)}`));
+  const res = await fetch(apiUrl(`/api/video?lookup=${encodeURIComponent(lookup)}`));
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || "Failed to look up video");

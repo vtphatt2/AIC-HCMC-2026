@@ -22,7 +22,8 @@ class FrameTimingApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_n_timeline_and_exact_offset_contract(self):
         data = b"\x00\x00\x00\x00\x40\x9c\x00\x00"
-        with (patch.object(main.local_zip_media, "full_frame_timeline_us",
+        with (patch.object(main, "release_blocked_video_ids", return_value=frozenset()),
+              patch.object(main.local_zip_media, "full_frame_timeline_us",
                            AsyncMock(return_value=data)) as timeline,
               patch.object(main.local_zip_media, "exact_frame_offset_us",
                            AsyncMock(return_value=547_004_000)) as offset):
@@ -43,8 +44,9 @@ class FrameTimingApiTests(unittest.IsolatedAsyncioTestCase):
         offset.assert_awaited_once_with("N027-V003", 11025)
 
     async def test_unavailable_map_is_reported_without_a_wrong_timestamp(self):
-        with patch.object(main.local_zip_media, "full_frame_timeline_us",
-                          AsyncMock(side_effect=FileNotFoundError("map pending"))):
+        with (patch.object(main, "release_blocked_video_ids", return_value=frozenset()),
+              patch.object(main.local_zip_media, "full_frame_timeline_us",
+                           AsyncMock(side_effect=FileNotFoundError("map pending")))):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
                                          base_url="http://test") as client:
                 response = await client.get("/api/video/N027-V003/frame-timeline")

@@ -55,6 +55,16 @@ def unexpected_export_ids(export_lookup, packaged_ids):
     return set(export_lookup) - set(packaged_ids)
 
 
+def file_identity(path):
+    stat = Path(path).stat()
+    return {'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
+
+
+def require_browser_playback(video_id, copy_path):
+    if video_id.startswith('N') and copy_path is None:
+        raise ValueError(f'{video_id}: validated browser playback copy is missing')
+
+
 def verify_packaged_generation(video_id, keyframes, marker, payloads):
     """A v2 ZIP carries its own verified generation; no scratch output is needed."""
     rows = keyframes['keyframes']
@@ -204,7 +214,11 @@ def audit(crc=False, live=False, output=None, result_dir=None, export_dir=None):
                 frame_id = str(ids[i])
                 if frame_id in export_lookup: issue(report, 'numpy', f'duplicate frame {frame_id}')
                 export_lookup[frame_id] = i
-        report['numpy'] = {'total_rows': len(ids), 'mns_rows': len(export_lookup), 'shape': list(export.shape)}
+        report['numpy'] = {
+            'total_rows': len(ids), 'mns_rows': len(export_lookup), 'shape': list(export.shape),
+            'vectors_file': file_identity(export_dir / 'vectors.f32.npy'),
+            'metadata_file': file_identity(export_dir / 'vectors.meta.npz'),
+        }
     except Exception as exc:
         export = None
         timestamps = None
@@ -216,7 +230,8 @@ def audit(crc=False, live=False, output=None, result_dir=None, export_dir=None):
     release_blocked = release_blocked_video_ids()
     archives = sorted(p for p in result_dir.glob('*_results.zip') if p.name.startswith(('M','N','S')))
     for archive_path in archives:
-        archive_report = {'name': archive_path.name, 'videos': 0, 'crc_ok': None}
+        archive_report = {'name': archive_path.name, 'videos': 0, 'crc_ok': None,
+                          **file_identity(archive_path)}
         try:
             with zipfile.ZipFile(archive_path) as zf:
                 members = zf.namelist()
@@ -315,7 +330,9 @@ def audit(crc=False, live=False, output=None, result_dir=None, export_dir=None):
                                                            'sha256': source_map_sha256(map_path),
                                                            'source': source_fingerprint(index),
                                                            'non_increasing':omitted[:,0].tolist()}
-                                video_report['playback_copy'] = validated_copy(video,index) is not None
+                                copy_path = validated_copy(video,index)
+                                video_report['playback_copy'] = copy_path is not None
+                                require_browser_playback(video, copy_path)
                             except Exception as exc: issue(report,video,f'PTS map failed: {exc}')
                         video_report.update({'scenes':len(ranges),'scene_gaps':gaps,
                                              'scene_transition_omitted_frames':sum(hi-lo+1 for lo,hi in gaps),

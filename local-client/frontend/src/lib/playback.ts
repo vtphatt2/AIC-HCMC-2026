@@ -1,5 +1,13 @@
 export type PlaybackSource = "youtube" | "mp4";
 
+export function initialPlaybackSource(videoId: string, youtubeId: string): PlaybackSource {
+  // Long S broadcasts can have different lead-ins on YouTube. Keep YouTube
+  // available as an alternate, but do not apply source timestamps to it until
+  // alignment has been verified.
+  if (videoId.startsWith("S")) return "mp4";
+  return youtubeId ? "youtube" : "mp4";
+}
+
 export function choosePlaybackSource(
   preferred: PlaybackSource,
   youtubeAvailable: boolean,

@@ -196,6 +196,13 @@ class FrameScoresRequest(BaseModel):
     duplicate_threshold: float = Field(default=0.98, ge=0.0, le=1.0)
 
 
+class ContextScoresRequest(FrameScoresRequest):
+    start_ms: int
+    end_ms: int
+    expand: int = 20
+    frame_numbers: dict[str, int] = Field(default_factory=dict)
+
+
 class TranslationRequest(BaseModel):
     texts: list[str]
 
@@ -304,6 +311,22 @@ async def get_video_info(video_id: str):
     }
 
 
+@app.get("/api/video")
+async def lookup_video_info(lookup: str):
+    """Query-form lookup preserves titles containing slashes and punctuation."""
+    _require_released_video(lookup)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "").upper() == "LOCAL" and remote_base:
+        response = await _http_client.get(
+            f"{remote_base}/api/video", params={"lookup": lookup},
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Remote video metadata unavailable")
+        return response.json()
+    return await get_video_info(lookup)
+
+
 @app.get("/api/video/{video_id}/frame-timeline")
 async def proxy_frame_timeline(video_id: str, version: int = 2):
     _require_released_video(video_id)
@@ -338,14 +361,19 @@ async def proxy_frame_offset(video_id: str, frame_number: int):
 
 @app.get("/api/video/{video_id}/context-frames")
 async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
-    """Up to `expand` indexed keyframes immediately before start_ms, up to
-    `expand` after end_ms, and every indexed frame *between* them —
-    matched frames spread out with gaps of tens of seconds are just as
-    poorly served by only expanding the two edges as a tight 3-frame
-    cluster is. Lets Video view's per-video strip fill itself out with
-    real neighboring frames instead of reading as "that's all there is"
-    when the video has far more indexed nearby."""
+    """Small, bounded display context around a result range."""
     _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" and remote_base:
+        response = await _http_client.get(
+            f"{remote_base}/api/video/{video_id}/context-frames",
+            params={"start_ms": start_ms, "end_ms": end_ms, "expand": expand},
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Server context frames unavailable")
+        return response.json()
+
     from app.db import numpy_vector_store
 
     if not numpy_vector_store.available():
@@ -377,6 +405,16 @@ async def get_frame_scores(req: FrameScoresRequest):
     its own matches, never context-frames' additions). A frame_id missing
     from the response was filtered as a duplicate, not unscored."""
     _require_released_frames(req.frame_ids)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" and remote_base:
+        response = await _http_client.post(
+            f"{remote_base}/api/frame-scores", json=req.model_dump(),
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Server frame scoring unavailable")
+        return response.json()
+
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready.")
     if not req.frame_ids:
@@ -407,6 +445,40 @@ async def get_frame_scores(req: FrameScoresRequest):
         for c in filter_similar_results(candidates, frame_vectors, threshold=req.duplicate_threshold)
     }
     return {"scores": {frame_id: score for frame_id, score in scores.items() if frame_id in kept_ids}}
+
+
+@app.post("/api/video/{video_id}/context-scores")
+async def get_context_scores(video_id: str, req: ContextScoresRequest):
+    """Score bounded context on the server in LOCAL mode, with a ZIP fallback."""
+    _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" and remote_base:
+        response = await _http_client.post(
+            f"{remote_base}/api/video/{video_id}/context-scores",
+            json=req.model_dump(), headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Server context scoring unavailable")
+        return response.json()
+
+    context = await get_context_frames(video_id, req.start_ms, req.end_ms, req.expand)
+    neighbors = context["before"] + context["middle"] + context["after"]
+    numbers = {frame["frame_id"]: frame["frame_number"] for frame in neighbors}
+    numbers.update(req.frame_numbers)
+    frame_ids = list(dict.fromkeys(req.frame_ids + [frame["frame_id"] for frame in neighbors]))
+    frame_ids.sort(key=lambda frame_id: numbers.get(frame_id, 0))
+    try:
+        scored = await get_frame_scores(FrameScoresRequest(
+            query_groups=req.query_groups, frame_ids=frame_ids,
+            event_weights=req.event_weights,
+            duplicate_threshold=req.duplicate_threshold,
+        ))
+        scores = scored["scores"]
+    except Exception:
+        logger.warning("Context scoring failed for %s; retaining context frames",
+                       video_id, exc_info=True)
+        scores = None
+    return {**context, "scores": scores}
 
 
 @app.get("/api/zip-video/{video_id}")
@@ -786,6 +858,23 @@ async def translate(req: TranslationRequest):
 @app.post("/api/search")
 async def search(req: SearchRequest):
     """Run a search with the selected strategy and return ranked results."""
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" and remote_base:
+        # Keep ranking, oversampling, vector lookup and timing in one server
+        # process. Re-running a second copy of the strategy in this proxy caused
+        # version drift, larger candidate requests and latency spikes.
+        response = await _http_client.post(
+            f"{remote_base}/api/search", json=req.model_dump(),
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            try:
+                detail = response.json().get("detail")
+            except Exception:
+                detail = None
+            raise HTTPException(response.status_code, detail or "Server search unavailable")
+        return response.json()
+
     if req.strategy_id not in _strategies:
         raise HTTPException(404, f"Strategy '{req.strategy_id}' not found. Available: {list(_strategies)}")
 

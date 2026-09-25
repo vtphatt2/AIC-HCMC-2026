@@ -97,8 +97,8 @@ export default function SubmissionGridPage() {
                     className="border-2 border-stone-800 dark:border-stone-600 rounded overflow-hidden bg-cream-card dark:bg-stone-800"
                   >
                     <img
-                      src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[row.frames.indexOf(frame)])}
-                      alt={`${row.videoId}, frame ${frame}`}
+                      src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[frameIndex])}
+                      alt={`${row.videoId}, ${row.unit === "milliseconds" ? `${frame} milliseconds` : `frame ${frame}`}`}
                       loading="lazy"
                       className="w-full aspect-video object-cover bg-stone-200 dark:bg-stone-700"
                     />
@@ -109,7 +109,14 @@ export default function SubmissionGridPage() {
                           #{rowIndex + 1}{row.frames.length > 1 ? `.${frameIndex + 1}` : ""}
                         </span>
                       </div>
-                      <p className="font-mono text-sm text-orange-700 dark:text-orange-400">frame {frame}</p>
+                      <p className="font-mono text-sm text-orange-700 dark:text-orange-400">
+                        {row.unit === "milliseconds" ? `${frame} ms` : `frame ${frame}`}
+                      </p>
+                      {row.unit === "milliseconds" && row.sourceFrames?.[frameIndex] !== undefined && (
+                        <p className="font-mono text-[10px] text-stone-500">
+                          source frame {row.sourceFrames[frameIndex]}
+                        </p>
+                      )}
                       {state?.queryType === "qa" && row.answer && (
                         <p className="text-xs mt-1 line-clamp-2" title={row.answer}>{row.answer}</p>
                       )}

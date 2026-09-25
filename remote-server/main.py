@@ -8,6 +8,7 @@ from bisect import bisect_left, bisect_right
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+import numpy as np
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -366,6 +367,12 @@ async def get_video_info(video_id: str):
     }
 
 
+@app.get("/api/video")
+async def lookup_video_info(lookup: str):
+    """Query-form lookup supports organizer titles containing path characters."""
+    return await get_video_info(lookup)
+
+
 @app.get("/api/video/{video_id}/frame-timeline")
 async def get_video_frame_timeline(video_id: str, version: int = Query(default=1, ge=1, le=2)):
     """Decoded-frame presentation times for N videos, as little-endian u32 µs.
@@ -405,42 +412,59 @@ async def get_video_frame_offset(video_id: str, frame_number: int):
     return {"video_id": video_id, "frame_number": frame_number, "offset_us": offset_us}
 
 
-# A video's own indexed keyframe count tops out around 784 in this dataset
-# (see keyframe_selection.md's per-scene sampling caps) — generous enough
-# headroom to fetch a whole video's frames in one query and slice locally.
-_CONTEXT_FRAMES_FETCH_LIMIT = 2000
+_CONTEXT_FRAMES_FETCH_LIMIT = 512
+_CONTEXT_FRAME_RESPONSE_LIMIT = 64
+_CONTEXT_TIME_RADIUS_MS = 90_000
+
+
+def _bounded_context(frames: list[dict], start_ms: int, end_ms: int,
+                     expand: int) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split context while bounding every response, including hours-long S ranges."""
+    timestamps = [frame["timestamp_ms"] for frame in frames]
+    lo = bisect_left(timestamps, start_ms)
+    hi = bisect_right(timestamps, end_ms)
+    middle = frames[lo:hi]
+    reserve_middle = 1 if middle else 0
+    side_limit = min(max(0, int(expand)),
+                     max(0, (_CONTEXT_FRAME_RESPONSE_LIMIT - reserve_middle) // 2))
+    before = frames[max(0, lo - side_limit):lo]
+    after = frames[hi:hi + side_limit]
+    middle_limit = max(0, _CONTEXT_FRAME_RESPONSE_LIMIT - len(before) - len(after))
+    if len(middle) > middle_limit:
+        # Preserve the whole time span without favoring only its beginning.
+        positions = np.linspace(0, len(middle) - 1, middle_limit, dtype=np.int64)
+        middle = [middle[int(position)] for position in positions]
+    return before, middle, after
 
 
 @app.get("/api/video/{video_id}/context-frames")
 async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
-    """Up to `expand` indexed keyframes immediately before start_ms, up to
-    `expand` after end_ms, and every indexed frame *between* them —
-    matched frames spread out with gaps of tens of seconds are just as
-    poorly served by only expanding the two edges as a tight 3-frame
-    cluster is. Lets Video view's per-video strip fill itself out with
-    real neighboring frames instead of reading as "that's all there is"
-    when the video has far more indexed nearby. Mirrors local-backend's
-    endpoint of the same name/response shape; source here is Milvus +
-    PostgreSQL instead of numpy_vector_store."""
+    """Return a small local clip around the requested match range.
+
+    The result grid already owns every real match. This endpoint adds nearby
+    display context and therefore caps its response; it must never expand two
+    far-apart S-video hits into thousands of cards.
+    """
     _require_released_video(video_id)
     rows = await postgres_client.fetch_video_metadata([video_id])
     fps = float(rows[0].get("fps") or 25.0) if rows else 25.0
 
     collection = _data_provider._metadata_collection()
     frames = await _data_provider._run_db(milvus_client.query_frames_in_time_range,
-        collection, video_id, 0, 10**12, limit=_CONTEXT_FRAMES_FETCH_LIMIT
+        collection, video_id,
+        max(0, int(start_ms) - _CONTEXT_TIME_RADIUS_MS),
+        max(int(start_ms), int(end_ms)) + _CONTEXT_TIME_RADIUS_MS,
+        limit=_CONTEXT_FRAMES_FETCH_LIMIT,
     )
-    # query_frames_in_time_range already sorts by timestamp_ms.
-    timestamps = [f["timestamp_ms"] for f in frames]
-    lo = bisect_left(timestamps, start_ms)
-    hi = bisect_right(timestamps, end_ms)
-    expand = max(0, int(expand))
+    before, middle, after = _bounded_context(
+        frames, int(start_ms), max(int(start_ms), int(end_ms)), expand
+    )
 
     return {
         "fps": fps,
-        "before": frames[max(0, lo - expand):lo],
-        "middle": frames[lo:hi],
-        "after": frames[hi:hi + expand],
+        "before": before,
+        "middle": middle,
+        "after": after,
     }
 
 

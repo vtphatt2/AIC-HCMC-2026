@@ -140,8 +140,8 @@ def create_collection_if_missing(
         FieldSchema(name="timestamp_ms", dtype=DataType.INT64),
         FieldSchema(name="image_url",    dtype=DataType.VARCHAR, max_length=256),
         # Denormalized from Postgres on purpose: local-backend's SAMPLE mode
-        # queries Milvus only (no Postgres), so YouTube-primary playback
-        # needs youtube_id available straight from a search hit.
+        # queries Milvus only (no Postgres), so playback source selection needs
+        # youtube_id available straight from a search hit.
         FieldSchema(name="youtube_id",   dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="vector",       dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
     ]

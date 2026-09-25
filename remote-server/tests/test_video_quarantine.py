@@ -31,6 +31,37 @@ class QuarantineTests(unittest.TestCase):
         self.write([])
         self.assertEqual(policy.excluded_video_ids(),frozenset())
 
+    def test_verified_release_is_atomic_and_retains_audit_evidence(self):
+        self.path.write_text(json.dumps({'version':1,'videos':{
+            'N001-V001':{'reason':'browser playback needs conversion'},
+            'N001-V002':{'reason':'browser playback needs conversion'},
+        }}))
+        policy.release_videos(
+            {'N001-V001':'browser playback needs conversion',
+             'N001-V002':'browser playback needs conversion'},
+            evidence='verification/live-pass.json')
+        data=json.loads(self.path.read_text())['videos']
+        self.assertEqual(policy.excluded_video_ids(),frozenset())
+        self.assertTrue(data['N001-V001']['released'])
+        self.assertEqual(data['N001-V002']['release_evidence'],
+                         'verification/live-pass.json')
+
+    def test_verified_release_rejects_changed_or_still_blocked_entries(self):
+        original={'version':1,'videos':{
+            'N001-V001':{'reason':'browser playback needs conversion'},
+            'N001-V002':{'reason':'decoder mismatch','release_blocked':True},
+        }}
+        self.path.write_text(json.dumps(original))
+        with self.assertRaises(ValueError):
+            policy.release_videos(
+                {'N001-V001':'browser playback needs conversion',
+                 'N001-V002':'decoder mismatch'}, evidence='verification/live-pass.json')
+        self.assertEqual(json.loads(self.path.read_text()),original)
+        with self.assertRaises(ValueError):
+            policy.release_videos({'N001-V001':'different reason'},
+                                  evidence='verification/live-pass.json')
+        self.assertEqual(json.loads(self.path.read_text()),original)
+
     def test_only_explicit_source_identity_blocks_offline_release_jobs(self):
         self.path.write_text(json.dumps({'version':1,'videos':{
             'N031-V003':{'reason':'unstable source picture','release_blocked':True},
@@ -41,13 +72,16 @@ class QuarantineTests(unittest.TestCase):
 
     def test_release_block_is_atomic_and_preserves_existing_context(self):
         self.path.write_text(json.dumps({'version':1,'videos':{
-            'N015-V001':{'reason':'browser failure','custom':'keep'},
+            'N015-V001':{'reason':'browser failure','custom':'keep','released':True,
+                         'release_evidence':'old'},
         }}))
         policy.block_release('N015-V001', reason='decoder mismatch',
                              details='complete replay differs', evidence='verification/report.json')
         data=json.loads(self.path.read_text())
         self.assertEqual(data['videos']['N015-V001']['custom'],'keep')
         self.assertTrue(data['videos']['N015-V001']['release_blocked'])
+        self.assertNotIn('released',data['videos']['N015-V001'])
+        self.assertNotIn('release_evidence',data['videos']['N015-V001'])
         self.assertEqual(policy.release_blocked_video_ids(),frozenset({'N015-V001'}))
         self.assertFalse(self.path.with_suffix('.json.partial').exists())
 

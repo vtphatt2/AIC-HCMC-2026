@@ -36,8 +36,8 @@ def write_report(path: Path, report: dict) -> None:
 
 
 async def audit_cards(video_id: str, rows: list[dict], paths: list[Path]) -> dict:
-    max_mae = 0.0
-    max_frame = None
+    max_mae = {'jpeg': 0.0, 'webp': 0.0}
+    max_frame = {'jpeg': None, 'webp': None}
     sizes = set()
     for row, path in zip(rows, paths):
         with Image.open(path) as file:
@@ -48,30 +48,45 @@ async def audit_cards(video_id: str, rows: list[dict], paths: list[Path]) -> dic
                                                frame_number=int(row['frame_number']))
         if original != path.read_bytes():
             raise ValueError(f'{video_id}/{row["frame_number"]}: exposed original differs from verified JPEG')
-        card = await media.get_frame_jpeg(video_id, int(row['timestamp_ms']),
-                                          width=640, frame_number=int(row['frame_number']))
-        with Image.open(io.BytesIO(card)) as file:
-            card_rgb = file.convert('RGB')
-        if card_rgb.size != expected_size:
-            raise ValueError(f'{video_id}/{row["frame_number"]}: card size {card_rgb.size}/{expected_size}')
         expected = source.resize(expected_size, Image.Resampling.LANCZOS)
-        mae = float(np.mean(np.abs(np.asarray(expected, dtype=np.int16) -
-                                   np.asarray(card_rgb, dtype=np.int16))))
-        if mae > 10.0:
-            raise ValueError(f'{video_id}/{row["frame_number"]}: card/source RGB MAE {mae:.2f}')
-        if mae > max_mae:
-            max_mae, max_frame = mae, int(row['frame_number'])
-        sizes.add(card_rgb.size)
-    return {'cards': len(rows), 'max_card_rgb_mae': round(max_mae, 4),
-            'max_mae_frame': max_frame, 'card_sizes': sorted([list(size) for size in sizes])}
+        for image_format in ('jpeg', 'webp'):
+            card = await media.get_frame_jpeg(
+                video_id, int(row['timestamp_ms']), width=640, format=image_format,
+                frame_number=int(row['frame_number']))
+            with Image.open(io.BytesIO(card)) as file:
+                card_rgb = file.convert('RGB')
+            if card_rgb.size != expected_size:
+                raise ValueError(f'{video_id}/{row["frame_number"]}: {image_format} card size '
+                                 f'{card_rgb.size}/{expected_size}')
+            mae = float(np.mean(np.abs(np.asarray(expected, dtype=np.int16) -
+                                       np.asarray(card_rgb, dtype=np.int16))))
+            if mae > 10.0:
+                raise ValueError(f'{video_id}/{row["frame_number"]}: {image_format} '
+                                 f'card/source RGB MAE {mae:.2f}')
+            if mae > max_mae[image_format]:
+                max_mae[image_format] = mae
+                max_frame[image_format] = int(row['frame_number'])
+            sizes.add(card_rgb.size)
+    return {'cards': len(rows), 'webp_cards': len(rows),
+            'max_card_rgb_mae': round(max_mae['jpeg'], 4),
+            'max_mae_frame': max_frame['jpeg'],
+            'max_webp_rgb_mae': round(max_mae['webp'], 4),
+            'max_webp_mae_frame': max_frame['webp'],
+            'card_sizes': sorted([list(size) for size in sizes])}
 
 
 def reusable_image_audit(previous: dict | None, identity: dict, video_id: str,
                          index, frames: list[int]) -> bool:
     return bool(previous and previous.get('status') == 'pass' and
                 previous.get('cards') == len(frames) and
+                previous.get('webp_cards') == len(frames) and
                 all(previous.get(key) == value for key, value in identity.items()) and
                 verified_exact_image_set(video_id, index, frames))
+
+
+def reports_for_manifest(previous: dict[str, dict], jobs: dict[str, dict]) -> dict[str, dict]:
+    """Keep checkpoint evidence only for videos owned by the current manifest."""
+    return {video: row for video, row in previous.items() if video in jobs}
 
 
 async def run(args) -> None:
@@ -91,6 +106,10 @@ async def run(args) -> None:
         report = None
     if report is None:
         report = {'version': 1, 'stage': str(stage), 'videos': {}}
+    else:
+        # A resumed stage can exclude a newly release-blocked source. Its stale
+        # row must not poison the new summary or count as current coverage.
+        report['videos'] = reports_for_manifest(report.get('videos', {}), jobs)
     for number, video in enumerate(sorted(requested), 1):
         job = jobs[video]
         index = media._build_index(video, entries[video])

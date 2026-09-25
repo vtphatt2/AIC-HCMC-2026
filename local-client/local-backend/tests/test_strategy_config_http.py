@@ -36,6 +36,7 @@ class StrategyConfigHttpTests(unittest.TestCase):
 
     def test_save_list_and_search_with_named_config(self):
         with (
+            patch.dict(main.os.environ, {"ENV_MODE": "ZIP"}),
             patch.object(main, "_strategies", {"tunable": self.strategy}),
             patch.object(main, "_strategy_configs", self.store),
         ):
@@ -70,6 +71,7 @@ class StrategyConfigHttpTests(unittest.TestCase):
 
     def test_unknown_config_is_rejected(self):
         with (
+            patch.dict(main.os.environ, {"ENV_MODE": "ZIP"}),
             patch.object(main, "_strategies", {"tunable": self.strategy}),
             patch.object(main, "_strategy_configs", self.store),
         ):

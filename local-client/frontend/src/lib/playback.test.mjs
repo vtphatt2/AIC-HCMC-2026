@@ -5,11 +5,19 @@ import {
   choosePlaybackSource,
   frameAtPlaybackTime,
   frameAtTimelineTime,
+  initialPlaybackSource,
   normalizePlaybackFps,
   otherPlaybackSource,
   parseFrameTimeline,
   timeOfTimelineFrame,
 } from "./playback.ts";
+
+test("long S sources prefer authoritative MP4 until YouTube alignment is verified", () => {
+  assert.equal(initialPlaybackSource("S01-V005", "9tmOvrYgF1Q"), "mp4");
+  assert.equal(initialPlaybackSource("S01-V011", "zO4HxBhAn60"), "mp4");
+  assert.equal(initialPlaybackSource("M01_V001", "aWlose7FZA8"), "youtube");
+  assert.equal(initialPlaybackSource("M01_V001", ""), "mp4");
+});
 
 test("prefers YouTube initially when both playback sources are available", () => {
   assert.equal(choosePlaybackSource("youtube", true, true), "youtube");

@@ -33,6 +33,7 @@ from app.services.video_quarantine import release_blocked_video_ids
 logger = logging.getLogger(__name__)
 
 CHUNK_ROWS = int(os.getenv("NUMPY_SEARCH_CHUNK_ROWS", "65536"))
+CONTEXT_FRAME_LIMIT = 64
 
 _lock = threading.Lock()
 _store: "_VectorStore | None" = None
@@ -170,14 +171,12 @@ def frames_in_range(
 def context_frames(
     video_id: str, start_ms: int, end_ms: int, *, expand: int = 20
 ) -> tuple[list[dict], list[dict], list[dict]]:
-    """Up to `expand` indexed keyframes immediately before start_ms, up to
-    `expand` immediately after end_ms, and *every* indexed frame in between
-    (uncapped — a real gap between two matches is exactly as relevant as
-    the edges, and this dataset's own per-video frame count already bounds
-    it) — for the Video view strip's "expand a sparse result cluster with
-    real neighbors" feature. Not a fixed time window either side (keyframe
-    spacing varies a lot — see docs/archive/keyframe_selection.md), a
-    fixed *count*.
+    """Return bounded indexed context around a search result range.
+
+    Every real search hit is already owned by the caller. This function only
+    supplies display context, so an hours-wide S-video range must not return
+    thousands of intermediate frames. The middle is sampled deterministically
+    when necessary and the complete response is capped.
 
     `middle` includes whatever frames sit exactly at start_ms/end_ms too
     (i.e. the caller's own matched frames, if start_ms/end_ms came from
@@ -207,11 +206,18 @@ def context_frames(
             for row in selected_rows.tolist()
         ]
 
-    return (
-        to_dicts(rows[max(0, lo - expand):lo]),
-        to_dicts(rows[lo:hi]),
-        to_dicts(rows[hi:hi + expand]),
-    )
+    expand = max(0, int(expand))
+    middle_rows = rows[lo:hi]
+    reserve_middle = 1 if len(middle_rows) else 0
+    side_limit = min(expand, max(0, (CONTEXT_FRAME_LIMIT - reserve_middle) // 2))
+    before_rows = rows[max(0, lo - side_limit):lo]
+    after_rows = rows[hi:hi + side_limit]
+    middle_limit = max(0, CONTEXT_FRAME_LIMIT - len(before_rows) - len(after_rows))
+    if len(middle_rows) > middle_limit:
+        positions = np.linspace(0, len(middle_rows) - 1, middle_limit, dtype=np.int64)
+        middle_rows = middle_rows[positions]
+
+    return to_dicts(before_rows), to_dicts(middle_rows), to_dicts(after_rows)
 
 
 def vector_search(

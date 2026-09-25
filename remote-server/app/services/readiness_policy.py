@@ -75,5 +75,6 @@ def exceptional_decode_provenance(video_id, index):
     return decode_provenance(video_id, index)
 
 
-# Browser audit before conversion: these original N010 sources played correctly.
-BROWSER_COMPATIBLE_N_SOURCES = frozenset({'N010-V001', 'N010-V002', 'N010-V003'})
+# Browser start playback succeeded for these sources, but random seeks later
+# failed in Chrome. No original N source bypasses validated playback copies.
+BROWSER_COMPATIBLE_N_SOURCES = frozenset()

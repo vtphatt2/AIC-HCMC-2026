@@ -163,7 +163,7 @@ export default function SubmissionPanel({ onClose }: Props) {
     catch (error: any) { window.alert(error.message); return; }
     if (frames.length === 0) return;
     if (state.queryType !== "trake" && frames.length > 1) {
-      window.alert("kis/qa rows take exactly one frame.");
+      window.alert("KIS/QA rows take one position: N milliseconds, L/M/S frames.");
       return;
     }
     try {
@@ -397,7 +397,7 @@ export default function SubmissionPanel({ onClose }: Props) {
                           <span className="text-xs">{row.unit === "milliseconds" ? "ms" : "frames"}{row.timingStatus === "unresolved" ? " · timing unresolved" : ""}</span>
                           {row.frames.map((frame, fi) => (
                             <div key={fi} className="flex items-center gap-1 border border-stone-300 dark:border-stone-700 rounded p-1">
-                              <img src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[row.frames.indexOf(frame)])} alt="" className="w-14 h-8 object-cover rounded" />
+                              <img src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[fi])} alt="" className="w-14 h-8 object-cover rounded" />
                               <input
                                 key={frame}
                                 type="number"
