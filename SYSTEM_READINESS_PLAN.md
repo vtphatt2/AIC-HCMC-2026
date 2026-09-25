@@ -29,20 +29,23 @@ of the format remains unverified.
 ## Current checkpoint — 2026-09-25
 
 The remote server, proxy, and frontend are running on ports 8000, 8001, and
-3000; preprocessing is stopped. The proxy reports `ENV_MODE=ZIP` and
-`ZIP_MEDIA_SOURCE=remote`: its `.env` overrides shell variables, so the attempted
-process-only LOCAL setting did not take effect. Fresh search returned 100
-results. Logs show 1,643 frame-image requests and 1,488 HTTP 502 responses, with
-739 failures for S01-V010; these include retries and are not unique-frame counts.
-Organizer archive range requests returned HTTP 206, so this check does not show
-archive corruption. RAM snapshot: 14 GiB available of 25 GiB, 25 MiB swap used;
-GPU: 5.6/16.3 GiB, 6% utilization. No preprocessing or N publication.
+3000; preprocessing is stopped. The proxy initially started in ZIP mode because
+its `.env` overrides shell settings. This was corrected by setting LOCAL mode in
+the ignored local `.env`; `/api/health` now confirms `env_mode=LOCAL`. Before the
+fix, logs recorded 1,643 frame-image requests and 1,488 HTTP 502 responses,
+including retries (not unique frames); 739 were for S01-V010. Organizer byte
+range requests returned HTTP 206, so this does not establish archive corruption.
+After the fix, spot images for L23_V021 and M06_V001 returned HTTP 200 in 2.4 s
+and 2.7 s; S01-V010 returned a cached HTTP 200. This small sample does not
+confirm all slow cards are resolved. Current snapshot: 17 GiB RAM available of
+25 GiB, 25 MiB swap; GPU 3.2/16.3 GiB, 7% utilization. No preprocessing or N
+publication.
 
 | Area | Status |
 |---|---|
 | Real client flow | Passed: search returned 100; all 100 cards loaded while scrolling. L21-V008, M09-V028 and S01-V005 played from selected pictures; frame submissions matched canonical video/frame IDs. N010-V002 picture and submission used verified source PTS milliseconds correctly. |
-| Proxy media fix | Implemented and focused tests passed when configured in LOCAL mode. Current running instance is ZIP mode because the local `.env` takes precedence over shell settings; media is fetched from organizer ZIP endpoints. Restart with actual LOCAL configuration before evaluating the proxy fix. Full local suite remains to run. |
-| Current slow/missing cards | User reports S cards are extremely slow/unavailable and some M cards fail; L is slower than the prior system. Current proxy log confirms repeated 502 frame responses (many for S01-V010 and S01-V007; also M06_V001 and one L23_V021). Quick check only: cause may be the active ZIP/remote decode path and request volume; linear full-video decoding is not established. |
+| Proxy media fix | Implemented and focused tests passed. Corrected the running proxy to LOCAL mode in its ignored `.env`; it now forwards all lot media to the search server. Full local suite remains to run. A few L/M/S spot requests returned 200 after the change; broad card recovery is unverified. |
+| Current slow/missing cards | User reports S cards are extremely slow/unavailable and some M cards fail; L is slower than the prior system. Most observed 502s occurred before LOCAL mode was enabled. Two L/M spot images then took 2.4–2.7 s; one cached S image returned immediately. Need a quick user-facing retest. Whether long video decode scans linearly remains unverified. |
 | N seeking | Open, user-visible: Chrome cannot seek in original N010-V001/002/003 (decode error); start playback works. A lossless remux experiment did not establish a repair and was removed. These are not excluded; prepare verified playback copies and retest random seeks. |
 | Search | Open decision: FLAT returned all 316 exact M/S self-matches; HNSW missed 2. Real proxied warm top-100 p95: FLAT 290 ms, HNSW 270 ms; overlap was 95–100/100 across six text queries. Default not changed. |
 | N derivatives | In progress, resumable: vectors 180/291, verified playback copies 17/288, selected-card audit 29/291. Existing stage has 89,795 selected pictures across 298 N videos. No N release/publication. |
