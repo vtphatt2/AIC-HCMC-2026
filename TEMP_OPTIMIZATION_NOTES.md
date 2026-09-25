@@ -1,27 +1,11 @@
 # Readiness checkpoint — 2026-09-25
 
-Work is temporarily paused at the user's request. All active preprocessing,
-image-audit and playback jobs were stopped; no conversion remains running.
-Four incomplete playback scratch files (about 601 MB) were removed. Verified
-sources, staged derivatives and completed playback copies were retained.
+Work stopped at the user's request. Remote server, proxy and frontend are stopped; Docker databases remain up. No data generation was published. RAM: ~19 GiB available after stopping.
 
-- Full independent replay passed for all 298 N videos. Seven verified decoder
-  profiles remain release-blocked pending complete derivatives; no organizer
-  corruption or new exclusion is established. Official N001 and N031 ZIP
-  redownloads matched the originals, and redundant downloads were removed.
-- The duration-aware N stage paused at 170/291 videos; M/S source maps at
-  143/316; exposed N card audit at 19/291. Playback paused at 13/288 early
-  and 4/145 late validated copies. Five unpublished N result ZIPs pass
-  packaging checks (153 videos/45,518 vectors); the first passes every
-  ingest row and exact vector comparison. No live N generation was published.
-- Structural/live audits cover all 21 source/result ZIPs and 614 M/N/S videos.
-  Exact stored-vector search found two HNSW top-100 misses in 316 M/S queries;
-  FLAT found all 316. Search behavior needs a final choice and client test.
-- Validation: 172 remote, 56 local and 48 frontend tests plus the frontend
-  build passed before the latest small audit/buffer edits; 17 focused tests
-  passed after them. Memory had about 17–18 GiB available, zero pressure and
-  negligible swap use during bounded jobs.
+- Browser verified search, all 100 cards, L/M/S playback and frame submissions. N010 picture and source-PTS-millisecond submission passed; Chrome random seeking fails on N010-V001/002/003 originals.
+- Fixed LOCAL proxy routing so every lot's cards and Range playback use the search server. Focused proxy tests passed; full suite pending. Temporary env edit was restored.
+- Resume stages: N vectors 180/291; playback copies 17/288; N card audit 29/291; M/S source maps 143/316. Resume from existing checkpoints; do not publish until validated.
+- FLAT exact self-search found 316/316 vs HNSW 314/316. Real p95: 290 ms vs 270 ms; choose whether recall gain warrants default change.
+- No source corruption/exclusion established. Organizer says S01 metadata filename uses hyphens; N KIS/QA use source PTS milliseconds; N TRAKE excluded.
 
-Resume the checkpointed jobs, complete M/S picture and N derivative
-verification, evaluate FLAT search, then validate clients, indexes and exports
-before publication. Full tracking and evidence: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).
+Next: finish N copies and verify Chrome seeking; rerun full proxy/client suites; decide search backend; finish picture identity and submission checks; publish only a validated consistent generation. Details and remaining release gates: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +12,7 @@ import main
 class ZipFrameHttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_includes_waiting_for_decode_slot(self):
         with (
+            patch.dict(os.environ, {"ENV_MODE": "ZIP"}),
             patch.object(main, "_zip_frame_semaphore", asyncio.Semaphore(0)),
             patch.object(main, "ZIP_FRAME_TIMEOUT_SEC", 0.01, create=True),
         ):

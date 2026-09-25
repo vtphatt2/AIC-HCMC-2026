@@ -249,6 +249,7 @@ static/frames/
 /challenge_resources/pe_text_tower/
 
 # data files
+challenge_resources/runtime-logs/
 challenge_resources/data/*
 # ...except the ingest/data-org doc — track it, keep everything else in
 # zip_embeddings/ (the heavy *.zip archives) ignored.

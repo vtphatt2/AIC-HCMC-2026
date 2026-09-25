@@ -20,26 +20,28 @@ verified edge case. If media appears defective, compare a fresh organizer downlo
 and test suitable processing before exclusion. Exclude its data only when the
 source problem remains reproducible and cannot be fixed without assumptions.
 
+Organizer metadata clarification: media-info entries for `S01-V0*.mp4` should be named `S01-V0*.json`; the supplied table incorrectly uses `S01_V0*.json`. Resolve underscore/hyphen aliases only when unique; preserve canonical IDs.
+
 Organizer rule: N videos are VFR. Submit source PTS × 1000 milliseconds for KIS
 and QA; reject N in TRAKE. Keep L/M/S submissions in frames. Organizer acceptance
 of the format remains unverified.
 
 ## Current checkpoint — 2026-09-25
 
-Work is paused. At the last local check, backend and frontend were not running and
-no real client session had been verified. No new N generation was published.
+Services and background jobs are stopped at the user's request. Docker databases
+remain running. No N generation was published. The ignored local backend `.env`
+was restored; temporary remux test output was removed. RAM after stopping was
+about 19 GiB available, with 26 MiB swap used.
 
 | Area | Status |
 |---|---|
-| Source inventory and integrity | Complete: 21 source ZIPs pass CRC; 614 videos are inventoried. All 298 N videos passed independent replay and timing audit. Official N001 and N031 archive redownloads matched local copies; no organizer corruption or new exclusion is established. |
-| N timeline and sampling | Complete: source PTS/time-base maps and configurable two-second presentation-time selections are staged for 298 N videos (89,795 pictures). Selections deduplicate source IDs and reuse valid scene boundaries without rerunning scene detection. N031 non-increasing timestamps are explicitly omitted while source IDs remain stable; N selection never relies on nominal frame/FPS seeking. |
-| Shared processing policy | Implemented: source maps, selected images, embeddings, and playback use the same verified decoder setting. N duration comes from MP4 timing. |
-| N vectors and result packages | In progress: duration-aware main stage paused at 170/291 videos. Five unpublished result ZIPs pass packaging checks (153 videos/45,518 vectors); the first also passed every ingest row and exact vector comparison. Seven source-profile videos remain release-blocked pending complete derivatives. |
-| N cards and playback | In progress: exposed-card audit paused at 19/291 videos. Playback validation paused at 17 copies across two partitions (13/288 and 4/145). |
-| M/S picture identity | In progress: source maps paused at 143/316 videos. Pilot source-picture and PE-Core checks passed; full coverage remains. |
-| Search recall | Open: HNSW missed two exact self-matches in 316 M/S queries; FLAT found all 316. Compare real client recall, ranking, and latency before changing the default. |
-| Structural and live records | Complete for current artifacts: all 21 source/result ZIPs and 614 videos were audited; exports and live PostgreSQL/populated Milvus records agree structurally. Picture semantics, playback, client flow, and final candidate publication remain open. |
-| Memory | During background processing, 17–18 GiB was available with negligible swap. Memory under real client load is unmeasured. |
+| Real client flow | Passed: search returned 100; all 100 cards loaded while scrolling. L21-V008, M09-V028 and S01-V005 played from selected pictures; frame submissions matched canonical video/frame IDs. N010-V002 picture and submission used verified source PTS milliseconds correctly. |
+| Proxy media fix | Implemented and focused tests passed: LOCAL mode now routes L/M/S/N pictures and Range playback through the search server, preserving relevant headers. Browser-only frame plans are blocked for LOCAL and N so derived cards use the authoritative picture endpoint. Full local suite remains to run. |
+| N seeking | Open, user-visible: Chrome cannot seek in original N010-V001/002/003 (decode error); start playback works. A lossless remux experiment did not establish a repair and was removed. These are not excluded; prepare verified playback copies and retest random seeks. |
+| Search | Open decision: FLAT returned all 316 exact M/S self-matches; HNSW missed 2. Real proxied warm top-100 p95: FLAT 290 ms, HNSW 270 ms; overlap was 95–100/100 across six text queries. Default not changed. |
+| N derivatives | In progress, resumable: vectors 180/291, verified playback copies 17/288, selected-card audit 29/291. Existing stage has 89,795 selected pictures across 298 N videos. No N release/publication. |
+| M/S source-picture audit | In progress at 143/316 source maps; pilot checks passed. |
+| Sources and live data | Earlier structural audits passed for 21 ZIPs and 614 M/N/S videos; N001/N031 redownloads matched. No organizer corruption or new exclusion established. Structural counts do not prove image identity. |
 
 ## Required work, in priority order
 

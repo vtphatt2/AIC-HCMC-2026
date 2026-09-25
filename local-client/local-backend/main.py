@@ -49,6 +49,20 @@ def _require_released_frames(frame_ids: list[str]) -> None:
     blocked = release_blocked_video_ids()
     if any(str(frame_id).rsplit('_', 1)[0] in blocked for frame_id in frame_ids):
         raise HTTPException(404, "A requested video is unavailable")
+
+
+def _server_media_base(video_id: str) -> str:
+    """Search and media must use the same server in LOCAL mode for every lot."""
+    proxy_mode = os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL"
+    if not proxy_mode and not video_id.startswith("N"):
+        return ""
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if not remote_base:
+        raise HTTPException(503 if proxy_mode else 404,
+                            "Media requires a configured server proxy")
+    return remote_base
+
+
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
@@ -406,21 +420,22 @@ async def zip_video(video_id: str, request: Request):
     back to YouTube."""
     _require_released_video(video_id)
     try:
-        remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
-        if video_id.startswith("N"):
-            if not remote_base:
-                raise HTTPException(404, "N playback requires a validated server copy")
+        remote_base = _server_media_base(video_id)
+        if remote_base:
             upstream_request = _zip_upstream_client.build_request(
                 "GET", f"{remote_base}/api/zip-video/{video_id}",
                 headers={"Range": request.headers.get("range", "bytes=0-"),
                          "ngrok-skip-browser-warning": "1"},
             )
             upstream = await _zip_upstream_client.send(upstream_request, stream=True)
-            if upstream.status_code != 206:
+            if upstream.status_code not in (200, 206):
+                error_headers = {name: upstream.headers[name] for name in
+                                 ("content-range", "accept-ranges") if name in upstream.headers}
                 await upstream.aclose()
-                raise HTTPException(upstream.status_code, "Validated N playback unavailable")
+                raise HTTPException(upstream.status_code, "Server playback unavailable", headers=error_headers)
             headers = {name: upstream.headers[name] for name in
-                       ("content-range", "accept-ranges", "content-length", "content-type")
+                       ("content-range", "accept-ranges", "content-length", "content-type",
+                        "cache-control", "etag", "last-modified")
                        if name in upstream.headers}
             async def remote_body():
                 try:
@@ -428,7 +443,7 @@ async def zip_video(video_id: str, request: Request):
                         yield chunk
                 finally:
                     await upstream.aclose()
-            return StreamingResponse(remote_body(), status_code=206, headers=headers)
+            return StreamingResponse(remote_body(), status_code=upstream.status_code, headers=headers)
         if _ZIP_MEDIA_SOURCE == "local":
             headers, body_gen = await local_zip_media.open_range(
                 video_id, request.headers.get("range")
@@ -515,19 +530,20 @@ async def zip_frame(video_id: str, timestamp_ms: int, request: Request):
     catches anything unexpected so a client is never left waiting with
     nothing coming back."""
     _require_released_video(video_id)
-    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
-    if video_id.startswith("N"):
-        if not remote_base:
-            raise HTTPException(404, "N pictures require the verified server proxy")
+    remote_base = _server_media_base(video_id)
+    if remote_base:
         suffix = f"?{request.url.query}" if request.url.query else ""
         response = await _zip_upstream_client.get(
             f"{remote_base}/api/zip-frame/{video_id}/{timestamp_ms}{suffix}",
             headers={"ngrok-skip-browser-warning": "1"},
         )
         if response.status_code != 200:
-            raise HTTPException(response.status_code, "Verified N picture unavailable")
+            raise HTTPException(response.status_code, "Server picture unavailable")
         return Response(content=response.content,
-                        media_type=response.headers.get("content-type", "image/jpeg"))
+                        media_type=response.headers.get("content-type", "image/jpeg"),
+                        headers={name: response.headers[name] for name in
+                                 ("cache-control", "etag", "last-modified")
+                                 if name in response.headers})
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_jpeg
 
     async def decode():
@@ -566,6 +582,8 @@ async def zip_frame_plan(video_id: str, timestamp_ms: int):
     Cheap enough not to need the decode semaphore — after the first frame of a
     video the moov index is cached, so this is pure arithmetic."""
     _require_released_video(video_id)
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" or video_id.startswith("N"):
+        raise HTTPException(404, "Use the server picture route for this video")
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_plan
 
     plan_call = (
@@ -595,6 +613,8 @@ async def zip_bytes(video_id: str, region_start: int, length: int):
     Not a general proxy: fetch_region checks the range against this video's own
     extent inside the archive, so it can't be aimed anywhere else."""
     _require_released_video(video_id)
+    if os.getenv("ENV_MODE", "ZIP").upper() == "LOCAL" or video_id.startswith("N"):
+        raise HTTPException(404, "Use the server picture route for this video")
     from app.services.zip_frame_source import ZipFrameUnavailable, fetch_region
 
     fetch_call = (
