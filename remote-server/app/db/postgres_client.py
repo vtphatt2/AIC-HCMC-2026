@@ -1,5 +1,6 @@
 import os
 import asyncpg
+from app.services.video_quarantine import excluded_video_ids
 
 _pool: asyncpg.Pool | None = None
 
@@ -121,10 +122,11 @@ async def search_ocr_text(query: str, limit: int = 100) -> list[dict]:
         SELECT *, ts_rank(to_tsvector('english', ocr_text), plainto_tsquery('english', $1)) AS rank
         FROM ocr_frames
         WHERE to_tsvector('english', ocr_text) @@ plainto_tsquery('english', $1)
+          AND NOT (video_id = ANY($3::text[]))
         ORDER BY rank DESC
         LIMIT $2
         """,
-        query, limit,
+        query, limit, sorted(excluded_video_ids()),
     )
     return [dict(r) for r in rows]
 
@@ -136,10 +138,11 @@ async def search_transcript_text(query: str, limit: int = 100) -> list[dict]:
         SELECT *, ts_rank(to_tsvector('english', text), plainto_tsquery('english', $1)) AS rank
         FROM transcripts
         WHERE to_tsvector('english', text) @@ plainto_tsquery('english', $1)
+          AND NOT (video_id = ANY($3::text[]))
         ORDER BY rank DESC
         LIMIT $2
         """,
-        query, limit,
+        query, limit, sorted(excluded_video_ids()),
     )
     return [dict(r) for r in rows]
 
@@ -217,6 +220,7 @@ async def search_transcript_chunks_text(
         WHERE to_tsvector('simple', c.raw_text) @@ plainto_tsquery('simple', $1)
           AND ($3 = 'All' OR $3 = '' OR v.genre = $3)
           AND ($4 = '' OR c.topic = $4)
+          AND NOT (c.video_id = ANY($5::text[]))
         ORDER BY score DESC
         LIMIT $2
         """,
@@ -224,6 +228,7 @@ async def search_transcript_chunks_text(
         limit,
         video_genre,
         topic_filter,
+        sorted(excluded_video_ids()),
     )
     return [dict(row) for row in rows]
 
@@ -235,9 +240,11 @@ async def fetch_all_transcript_chunks(topic_filter: str | None = None) -> list[d
         SELECT chunk_id, video_id, topic, start_time_ms, end_time_ms, raw_text
         FROM transcript_chunks_metadata
         WHERE ($1 = '' OR topic = $1)
+          AND NOT (video_id = ANY($2::text[]))
         ORDER BY chunk_id
         """,
         topic_filter or "",
+        sorted(excluded_video_ids()),
     )
     return [dict(row) for row in rows]
 

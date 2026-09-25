@@ -23,12 +23,10 @@ mechanism changes.
 
 youtube_id/title come from the organizers' media-info archive (one
 media-info/<video_id>.json per video, with a "watch_url"), e.g.
-media-info-aic25-b1.zip under the same --zip-dir. YouTube stays the primary
-player everywhere in the app (VideoModal tries it first whenever a video has
-a youtube_id) — this script does not opt out of that; it just has nothing to
-set for a video_id missing from the media-info archive, and playback for
-those falls back to the zip-video proxy like any other video with no known
-youtube_id would.
+media-info-aic25-b1.zip under the same --zip-dir. This script records the link;
+the client chooses the initial player. Long S broadcasts prefer the organizer
+MP4 until YouTube timeline alignment is verified. Videos missing from organizer
+metadata, including N camera videos, keep an empty youtube_id.
 
 Run from remote-server:
   python scripts/ingest_zip_pipeline_results.py --dry-run
@@ -60,8 +58,37 @@ sys.path.insert(0, str(REMOTE_ROOT))
 from scripts.ingest_embeddings_to_milvus import upsert_vectors, upsert_videos  # noqa: E402
 
 logger = logging.getLogger("ingest_zip_pipeline_results")
-VIDEO_DIR_PATTERN = re.compile(r"^video__(?P<video_id>.+)$")
+VIDEO_DIR_PATTERN = re.compile(r"^videos?__(?P<video_id>.+)$")
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def selected_timestamp_ms(video_id: str, item: dict[str, Any], fps: float,
+                          metadata_version: int = 1) -> int:
+    """Keep ingest, export and audit on the same source presentation clock."""
+    if video_id.startswith("N") and (metadata_version >= 2 or "source_pts" in item):
+        if not all(key in item for key in ("source_pts", "source_timebase", "source_checksum")):
+            raise ValueError(f"{video_id}: missing verified source identity")
+        scale = int(item["source_timebase"])
+        if scale <= 0:
+            raise ValueError(f"{video_id}: invalid source time base")
+        timestamp_ms = (int(item["source_pts"]) * 1000 + scale // 2) // scale
+        if metadata_version >= 2 and ("timestamp_ms" not in item or
+                                      int(item["timestamp_ms"]) != timestamp_ms):
+            raise ValueError(f"{video_id}: selected presentation timestamp differs from source PTS")
+        return timestamp_ms
+    return int(int(item["frame_number"]) / fps * 1000)
+
+
+def source_duration_ms(video_id: str, keyframes: dict[str, Any], scenes: dict[str, Any]) -> int:
+    """Use the source MP4 track duration for VFR N when the verified field exists."""
+    if video_id.startswith('N') and keyframes.get('version', 1) >= 2 and \
+            'source_duration_ms' in keyframes:
+        duration = keyframes['source_duration_ms']
+        if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
+            raise ValueError(f'{video_id}: invalid source duration')
+        return duration
+    # Old artifacts retain their established nominal-duration behavior.
+    return int(int(scenes['num_frames']) / float(scenes['fps']) * 1000)
 
 
 def youtube_id_from_watch_url(url: str) -> str:
@@ -75,13 +102,30 @@ def load_media_info(zip_dir: Path) -> dict[str, dict[str, str]]:
     """video_id -> {"youtube_id", "title"} from media-info-*.zip archives
     (one media-info/<video_id>.json per video, with a "watch_url" field)."""
     info: dict[str, dict[str, str]] = {}
-    archives = sorted(zip_dir.glob("media-info*.zip"))
+    archives = sorted(set(zip_dir.glob("*media-info*.zip")) |
+                      set(zip_dir.glob("*media_info*.zip")))
+    # Organizer files use both hyphens and underscores. Resolve aliases only
+    # against IDs in the result archives; ambiguous aliases are never guessed.
+    canonical_ids: set[str] = set()
+    for result in zip_dir.glob("*_results.zip"):
+        with zipfile.ZipFile(result) as zf:
+            canonical_ids.update(video_id for video_id, _ in video_directories(set(zf.namelist())))
+    aliases: dict[str, set[str]] = {}
+    for video_id in canonical_ids:
+        aliases.setdefault(video_id.replace("_", "-").casefold(), set()).add(video_id)
     for archive in archives:
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if not name.endswith(".json"):
                     continue
                 video_id = Path(name).stem
+                if canonical_ids and video_id not in canonical_ids:
+                    matches = aliases.get(video_id.replace("_", "-").casefold(), set())
+                    if len(matches) != 1:
+                        if matches:
+                            logger.warning("Ambiguous organizer alias %s: %s", video_id, sorted(matches))
+                        continue
+                    video_id = next(iter(matches))
                 data = json.loads(zf.read(name))
                 youtube_id = youtube_id_from_watch_url(data.get("watch_url", ""))
                 if not YOUTUBE_ID_PATTERN.fullmatch(youtube_id):
@@ -90,7 +134,10 @@ def load_media_info(zip_dir: Path) -> dict[str, dict[str, str]]:
                         video_id, data.get("watch_url"),
                     )
                     continue
-                info[video_id] = {"youtube_id": youtube_id, "title": data.get("title") or video_id}
+                item = {"youtube_id": youtube_id, "title": data.get("title") or video_id}
+                if video_id in info and info[video_id] != item:
+                    raise ValueError(f"Conflicting organizer metadata for {video_id} across media-info archives")
+                info[video_id] = item
     if archives:
         logger.info("Loaded youtube_id/title for %s videos from %s media-info archive(s)", len(info), len(archives))
     return info
@@ -132,26 +179,40 @@ def iter_result_archives(zip_dir: Path) -> list[Path]:
     return archives
 
 
+def video_directories(names: set[str]) -> list[tuple[str, str]]:
+    """Return (video_id, archive directory) for both supported ZIP layouts."""
+    directories: dict[str, str] = {}
+    for name in names:
+        parts = name.split("/")
+        if len(parts) != 3 or parts[0] != "phase1_transnet" or parts[2] != "scenes.json":
+            continue
+        match = VIDEO_DIR_PATTERN.fullmatch(parts[1])
+        if match is None:
+            continue
+        video_id = match.group("video_id")
+        previous = directories.setdefault(video_id, parts[1])
+        if previous != parts[1]:
+            raise ValueError(f"Ambiguous archive directories for {video_id}: {previous}, {parts[1]}")
+    return sorted(directories.items())
+
+
 def iter_video_records(
     zip_path: Path,
     media_info: dict[str, dict[str, str]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
     import numpy as np
+    from app.services.video_quarantine import release_blocked_video_ids
 
+    release_blocked = release_blocked_video_ids()
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
-        video_ids = sorted({
-            match.group("video_id")
-            for name in names
-            if name.startswith("phase1_transnet/")
-            for match in [VIDEO_DIR_PATTERN.match(name.split("/", 2)[1])]
-            if match
-        })
-
-        for video_id in video_ids:
-            scenes_path = f"phase1_transnet/video__{video_id}/scenes.json"
-            keyframes_path = f"phase1_transnet/video__{video_id}/keyframes.json"
-            embeddings_path = f"phase2_embeddings/video__{video_id}/embeddings.npy"
+        for video_id, directory in video_directories(names):
+            if video_id in release_blocked:
+                logger.info("%s: release-blocked source, skipping ingest", video_id)
+                continue
+            scenes_path = f"phase1_transnet/{directory}/scenes.json"
+            keyframes_path = f"phase1_transnet/{directory}/keyframes.json"
+            embeddings_path = f"phase2_embeddings/{directory}/embeddings.npy"
 
             if embeddings_path not in names:
                 logger.warning("%s: no embeddings.npy in %s, skipping", video_id, zip_path.name)
@@ -179,7 +240,8 @@ def iter_video_records(
                 norm = float(np.linalg.norm(vector))
                 if norm == 0.0:
                     raise ValueError(f"{video_id} frame {frame_number}: zero-norm vector")
-                timestamp_ms = int(frame_number / fps * 1000)
+                timestamp_ms = selected_timestamp_ms(
+                    video_id, item, fps, keyframes.get("version", 1))
                 records.append({
                     "frame_id": f"{video_id}_{frame_number:06d}",
                     "video_id": video_id,
@@ -195,7 +257,7 @@ def iter_video_records(
                 "title": known.get("title") or video_id,
                 "youtube_id": known.get("youtube_id", ""),
                 "fps": fps,
-                "duration_ms": int(int(scenes["num_frames"]) / fps * 1000),
+                "duration_ms": source_duration_ms(video_id, keyframes, scenes),
                 "frame_count": len(records),
             }
             yield video, records
@@ -253,7 +315,7 @@ async def main() -> None:
     # A small multiple of the Milvus batch size amortizes Python call/progress
     # overhead while keeping peak RAM bounded. With the default batch_size=256,
     # this holds at most ~1024 vector records plus one video's temporary records.
-    stream_buffer_size = batch_size * 120
+    stream_buffer_size = batch_size * 4
     pending_records: list[dict[str, Any]] = []
     indexed_by_algorithm = {vector_index: 0 for vector_index in target_indexes}
 

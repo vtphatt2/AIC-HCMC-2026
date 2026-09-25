@@ -6,7 +6,7 @@ import torch
 from transnetv2_pytorch import TransNetV2
 
 from ..io_utils import atomic_json
-from ..keyframe_selection import selection_metadata
+from ..keyframe_selection import selection_metadata, protect_verified_metadata
 from .decode import TRANSNET_H, TRANSNET_W, TransNetDecodedVideo, select_keyframes
 
 
@@ -58,6 +58,7 @@ def _finalize_transnet_video(
     num_frames_override: int | None = None,
 ) -> None:
     video_out = args.out_dir / item.video_id
+    protect_verified_metadata(video_out)
     video_out.mkdir(parents=True, exist_ok=True)
     scenes_path = video_out / "scenes.json"
     keyframes_path = video_out / "keyframes.json"

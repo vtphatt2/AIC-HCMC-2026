@@ -4,12 +4,17 @@ import type { NextApiRequest, NextApiResponse } from "next";
 
 import type { SubmissionQueryType, SubmissionRow, SubmissionSessionSummary, SubmissionState } from "@/types";
 import { fillKisRows } from "@/lib/submission/fillFrames";
+import { parseSubmissionCsv, serializeSubmissionRow, submissionUnit, validateSubmissionRow } from "@/lib/submission/format";
+import { resolveNRow } from "@/lib/submission/timing";
+import { parseVersionedTimeline, type FrameTimeline } from "@/lib/playback";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const QUERY_TYPES: SubmissionQueryType[] = ["kis", "qa", "trake"];
 const ROOT = path.join(process.cwd(), ".runtime", "submissions");
 
 interface Meta {
+  version?: 2;
+  rows?: SubmissionRow[];
   queryType: SubmissionQueryType;
   draftRowIndex: number;
   createdAt: number;
@@ -24,43 +29,21 @@ function metaFile(session: string): string {
 }
 
 function isNonNegativeInt(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
-}
-
-// The on-disk CSV *is* the export file (see buildSubmissionCsv on the
-// frontend for the inverse) — no auto-quoting, fields exactly as typed, so a
-// QA answer containing a comma is genuinely ambiguous on read-back the same
-// way it is in the exported file. That's the user's call to make, not
-// something this parser can recover.
-function parseLine(queryType: SubmissionQueryType, line: string): SubmissionRow | { error: string } {
-  const fields = line.split(",");
-  const videoId = fields[0];
-  if (!ID.test(videoId)) return { error: `invalid video id "${videoId}"` };
-
-  if (queryType === "kis") {
-    if (fields.length !== 2) return { error: "kis rows need exactly 2 fields: video,frame" };
-    const frame = Number.parseInt(fields[1], 10);
-    if (!isNonNegativeInt(frame)) return { error: `invalid frame "${fields[1]}"` };
-    return { videoId, frames: [frame] };
-  }
-  if (queryType === "qa") {
-    if (fields.length < 3) return { error: "qa rows need at least 3 fields: video,frame,answer" };
-    const frame = Number.parseInt(fields[1], 10);
-    if (!isNonNegativeInt(frame)) return { error: `invalid frame "${fields[1]}"` };
-    const answer = fields.slice(2).join(",");
-    if (answer.length > 100) return { error: "answer must be 100 characters or fewer" };
-    return { videoId, frames: [frame], answer };
-  }
-  // trake
-  if (fields.length < 2) return { error: "trake rows need at least 2 fields: video,frame1,..." };
-  const frames = fields.slice(1).map((f) => Number.parseInt(f, 10));
-  if (frames.some((f) => !isNonNegativeInt(f))) return { error: `invalid frame in "${line}"` };
-  return { videoId, frames };
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function serializeRow(queryType: SubmissionQueryType, row: SubmissionRow): string {
-  if (queryType === "qa") return [row.videoId, row.frames[0], row.answer ?? ""].join(",");
-  return [row.videoId, ...row.frames].join(",");
+  return serializeSubmissionRow(queryType, row);
+}
+
+async function timelineFor(videoId: string): Promise<FrameTimeline> {
+  const configured = process.env.SUBMISSION_TIMING_API_URL || process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
+  const base = configured.startsWith("http") ? configured.replace(/\/$/, "") : "http://127.0.0.1:8000";
+  const response = await fetch(`${base}/api/video/${encodeURIComponent(videoId)}/frame-timeline?version=2`, { signal: AbortSignal.timeout(15000) });
+  if (!response.ok) throw new Error(`Verified timeline unavailable for ${videoId}`);
+  const payload = await response.json();
+  if (payload.video_id !== videoId) throw new Error("Timeline identity mismatch");
+  return parseVersionedTimeline(payload);
 }
 
 function readState(session: string): SubmissionState | null {
@@ -72,39 +55,45 @@ function readState(session: string): SubmissionState | null {
     throw error;
   }
   const csvText = existsSync(csvFile(session)) ? readFileSync(csvFile(session), "utf8") : "";
-  const rows = csvText
-    .split(/\r?\n/)
-    .filter((line) => line.length > 0)
-    .map((line) => parseLine(meta.queryType, line))
-    .filter((r): r is SubmissionRow => !("error" in r));
-  return { session, queryType: meta.queryType, draftRowIndex: meta.draftRowIndex, rows, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
+  // Version 2 metadata is the atomic session snapshot. CSV is its organizer
+  // export, so a crash between the two renames cannot mix row units/order.
+  const rows: SubmissionRow[] = meta.version === 2 && Array.isArray(meta.rows)
+    ? meta.rows : parseSubmissionCsv(meta.queryType, csvText).map(row => ({
+        ...row, unit: "frames", ...(row.videoId.startsWith("N") ? {
+          timingStatus: "unresolved" as const, timingError: "Legacy N frame needs verified migration",
+        } : {}),
+      }));
+  return { version: 2, session, queryType: meta.queryType, draftRowIndex: meta.draftRowIndex, rows, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
 }
 
-// DRES sends exactly one stored row. Read its physical CSV line so a malformed
-// preceding line cannot shift the index that the operator reviewed in the UI.
+// DRES sends exactly one reviewed row. Version-2 metadata retains source timing;
+// the CSV is checked against it to avoid sending a stale or malformed export.
 export function readCandidateForDres(session: string, rowIndex: number): {
   queryType: SubmissionQueryType;
   row: SubmissionRow;
 } | null {
-  if (!ID.test(session) || !isNonNegativeInt(rowIndex) || !existsSync(metaFile(session))) return null;
-  const meta: Meta = JSON.parse(readFileSync(metaFile(session), "utf8"));
-  if (!QUERY_TYPES.includes(meta.queryType)) return null;
-  const lines = existsSync(csvFile(session))
-    ? readFileSync(csvFile(session), "utf8").split(/\r?\n/).filter((line) => line.length > 0)
-    : [];
-  if (rowIndex >= lines.length) return null;
-  const rows: SubmissionRow[] = [];
-  for (const line of lines) {
-    const row = parseLine(meta.queryType, line);
-    if ("error" in row || serializeRow(meta.queryType, row) !== line) return null;
-    rows.push(row);
+  if (!ID.test(session) || !isNonNegativeInt(rowIndex)) return null;
+  try {
+    const state = readState(session);
+    if (!state || !state.rows[rowIndex]) return null;
+    const csvRows = parseSubmissionCsv(state.queryType, readFileSync(csvFile(session), "utf8"));
+    if (csvRows.length !== state.rows.length || csvRows.some((row, i) =>
+      serializeSubmissionRow(state.queryType, row) !== serializeSubmissionRow(state.queryType, state.rows[i]))) {
+      return null;
+    }
+    const row = state.rows[rowIndex];
+    validateSubmissionRow(state.queryType, row, true);
+    return { queryType: state.queryType, row };
+  } catch {
+    return null;
   }
-  return { queryType: meta.queryType, row: rows[rowIndex] };
 }
 
 function writeState(state: SubmissionState): void {
   mkdirSync(ROOT, { recursive: true });
   const meta: Meta = {
+    version: 2,
+    rows: state.rows,
     queryType: state.queryType,
     draftRowIndex: state.draftRowIndex,
     createdAt: state.createdAt,
@@ -112,7 +101,7 @@ function writeState(state: SubmissionState): void {
   };
   const metaTmp = `${metaFile(state.session)}.${process.pid}.tmp`;
   writeFileSync(metaTmp, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
-  renameSync(metaTmp, metaFile(state.session));
+
 
   const csvContent = state.rows.length
     ? `${state.rows.map((r) => serializeRow(state.queryType, r)).join("\r\n")}\r\n`
@@ -120,6 +109,7 @@ function writeState(state: SubmissionState): void {
   const csvTmp = `${csvFile(state.session)}.${process.pid}.tmp`;
   writeFileSync(csvTmp, csvContent, "utf8");
   renameSync(csvTmp, csvFile(state.session));
+  renameSync(metaTmp, metaFile(state.session));
 }
 
 function removeSessionFiles(session: string): void {
@@ -150,7 +140,31 @@ function listSessions(): SubmissionSessionSummary[] {
     .sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+// The frontend server owns this file store. Reserve all affected session names
+// before awaiting timing lookups, so concurrent clients cannot overwrite each
+// other's rows or race a rename/delete against a pending save.
+const sessionTails = new Map<string, Promise<void>>();
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  const keys = [req.query.session, req.body?.session, req.body?.action === 'rename' ? req.body?.newSession : undefined]
+    .filter((key): key is string => typeof key === 'string')
+    .map(key => req.body?.action === 'rename' ? key.trim() : key)
+    .filter(key => ID.test(key));
+  const names = Array.from(new Set(keys));
+  const previous = names.map(name => sessionTails.get(name));
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  names.forEach(name => sessionTails.set(name, pending));
+  await Promise.all(previous);
+  try {
+    return await handleSessionRequest(req, res);
+  } finally {
+    release();
+    names.forEach(name => { if (sessionTails.get(name) === pending) sessionTails.delete(name); });
+  }
+}
+
+async function handleSessionRequest(req: NextApiRequest, res: NextApiResponse) {
   res.setHeader("Cache-Control", "no-store");
   const session = typeof req.query.session === "string" ? req.query.session : "";
 
@@ -159,6 +173,13 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (!ID.test(session)) return res.status(400).json({ error: "Invalid session name" });
     const state = readState(session);
     if (!state) return res.status(404).json({ error: "Session not found" });
+    for (let i = 0; i < state.rows.length; i++) {
+      const row = state.rows[i];
+      if (row.videoId.startsWith("N") && row.unit !== "milliseconds") {
+        try { state.rows[i] = resolveNRow(row, await timelineFor(row.videoId)); }
+        catch (error: any) { row.timingStatus = "unresolved"; row.timingError = error.message; }
+      }
+    }
     return res.status(200).json(state);
   }
 
@@ -211,7 +232,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (!isNonNegativeInt(frame)) return res.status(400).json({ error: "Invalid frame" });
 
     if (current.queryType !== "trake") {
-      current.rows.push({ videoId, frames: [frame], answer: current.queryType === "qa" ? "" : undefined });
+      current.rows.push({ videoId, unit: submissionUnit(videoId), frames: [frame], answer: current.queryType === "qa" ? "" : undefined });
     } else {
       const targetIndex = isNonNegativeInt(req.body?.rowIndex) ? req.body.rowIndex : current.draftRowIndex;
       const target = current.rows[targetIndex];
@@ -242,6 +263,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (answer.length > 100) return res.status(400).json({ error: "Answer must be 100 characters or fewer" });
     current.rows.push({
       videoId,
+      unit: submissionUnit(videoId),
       frames: [...frames].sort((a, b) => a - b),
       answer: current.queryType === "qa" ? answer : undefined,
     });
@@ -250,7 +272,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     const videoId = typeof req.body?.videoId === "string" ? req.body.videoId : "";
     if (!row) return res.status(404).json({ error: "Row not found" });
     if (!ID.test(videoId)) return res.status(400).json({ error: "Invalid videoId" });
+    if (submissionUnit(row.videoId) !== submissionUnit(videoId)) return res.status(400).json({ error: "Changing position units requires a new row" });
     row.videoId = videoId;
+    row.sourceFrames = undefined;
+    row.timingStatus = undefined;
   } else if (action === "editFrame") {
     const row = rowAt(req.body?.rowIndex);
     const frameIndex = req.body?.frameIndex;
@@ -313,14 +338,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     // Raw CSV textarea save — replaces every row at once.
     const content = req.body?.content;
     if (typeof content !== "string") return res.status(400).json({ error: "Invalid content" });
-    const lines = content.split(/\r?\n/).filter((line) => line.length > 0);
-    const rows: SubmissionRow[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const parsed = parseLine(current.queryType, lines[i]);
-      if ("error" in parsed) return res.status(400).json({ error: `Line ${i + 1}: ${parsed.error}` });
-      rows.push(parsed);
-    }
-    current.rows = rows;
+    try { current.rows = parseSubmissionCsv(current.queryType, content); }
+    catch (error: any) { return res.status(400).json({ error: error.message }); }
+    const rows = current.rows;
     current.draftRowIndex = Math.min(current.draftRowIndex, rows.length);
   } else if (action === "fillNeighbors") {
     if (current.queryType !== "kis") {
@@ -329,11 +349,28 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     if (current.rows.length === 0) {
       return res.status(400).json({ error: "Add at least one KIS candidate before using filler" });
     }
-    current.rows = fillKisRows(current.rows, 100, 15);
+    try {
+      const timelines: Record<string, FrameTimeline> = {};
+      for (const row of current.rows) if (row.videoId.startsWith("N") && !timelines[row.videoId]) timelines[row.videoId] = await timelineFor(row.videoId);
+      current.rows = current.rows.map(row => timelines[row.videoId] ? resolveNRow(row, timelines[row.videoId]) : row);
+      current.rows = fillKisRows(current.rows, 100, 15, timelines);
+    } catch (error: any) { return res.status(422).json({ error: error.message }); }
   } else {
     return res.status(400).json({ error: "Unknown action" });
   }
 
+  try {
+    const timelines = new Map<string, FrameTimeline>();
+    for (let i = 0; i < current.rows.length; i++) {
+      const row = current.rows[i];
+      validateSubmissionRow(current.queryType, row);
+      if (row.videoId.startsWith("N")) {
+        let timeline = timelines.get(row.videoId);
+        if (!timeline) { timeline = await timelineFor(row.videoId); timelines.set(row.videoId, timeline); }
+        current.rows[i] = resolveNRow(row, timeline, action === "add" && i === current.rows.length - 1 && req.body?.sourceFrameInput === true);
+      } else { row.unit = "frames"; }
+    }
+  } catch (error: any) { return res.status(422).json({ error: error.message }); }
   current.updatedAt = Date.now();
   writeState(current);
   if (current.session !== session) removeSessionFiles(session);

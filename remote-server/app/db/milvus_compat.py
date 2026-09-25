@@ -7,7 +7,7 @@ from pymilvus.client import entity_helper
 
 
 _bulk_decode = ContextVar("bulk_frame_vector_decode", default=False)
-_original_extract = entity_helper.extract_row_data_from_fields_data
+_original_extract = getattr(entity_helper, "extract_row_data_from_fields_data", None)
 
 
 def _extract_frame_vectors(fields_data, index, dynamic_output_fields=None):
@@ -39,7 +39,7 @@ def _extract_frame_vectors(fields_data, index, dynamic_output_fields=None):
     return row
 
 
-if pymilvus.__version__ == "2.3.7":
+if pymilvus.__version__ == "2.3.7" and _original_extract is not None:
     entity_helper.extract_row_data_from_fields_data = _extract_frame_vectors
 
 

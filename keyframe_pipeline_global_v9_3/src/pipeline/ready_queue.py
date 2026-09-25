@@ -1,6 +1,7 @@
 """Filesystem-backed hand-off from TransNet producers to embedding consumers."""
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from .io_utils import safe_video_id
@@ -33,6 +34,26 @@ class ReadyEntryQueue:
     def take_missing(self) -> list:
         missing, self._pending = self._pending, []
         return missing
+
+    def __iter__(self):
+        """Yield ready entries until the producer is done and none remain ready.
+
+        A caller can spend minutes processing entries yielded by one filesystem
+        scan.  Always begin another scan after those entries are consumed before
+        consulting the completion sentinel; more artifacts may have appeared in
+        the meantime.
+        """
+        while self:
+            ready = self.take_ready()
+            if ready:
+                yield from ready
+                continue
+            if self.producer_finished:
+                # The final publish can race the scan above. The sentinel is
+                # written after all metadata, so this scan observes that publish.
+                yield from self.take_ready()
+                return
+            time.sleep(0.1)
 
     def __bool__(self) -> bool:
         return bool(self._pending)

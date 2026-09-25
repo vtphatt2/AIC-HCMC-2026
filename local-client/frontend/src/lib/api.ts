@@ -16,6 +16,7 @@ import type {
 } from "@/types";
 import { buildTranscriptSearchPayload } from "@/lib/transcriptSearch";
 import { RecentContextCache } from "@/lib/recentContext";
+import { parseFrameTimeline, parseVersionedTimeline, type FrameTimeline } from "@/lib/playback";
 
 type ScoredContext = ContextFramesResponse & { scores: Record<string, number> | null };
 const recentContexts = new RecentContextCache<ScoredContext>();
@@ -25,6 +26,40 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
 
 export function apiUrl(path: string): string {
   return `${API_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export function zipFrameImageUrl(videoId: string, timestampMs: number,
+                                 frameNumber?: number): string {
+  const path = `/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`;
+  if (!videoId.startsWith("N") && !videoId.startsWith("S")) return apiUrl(path);
+  if (frameNumber === undefined || !Number.isSafeInteger(frameNumber) || frameNumber < 0) {
+    throw new Error(`${videoId[0]} image needs verified source frame identity`);
+  }
+  const revision = videoId.startsWith("N") ? 7 : 4;
+  return apiUrl(`${path}?frame_number=${frameNumber}&v=${revision}`);
+}
+
+export async function fetchFrameTimeline(videoId: string, signal?: AbortSignal): Promise<FrameTimeline> {
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/frame-timeline?version=2`), { signal });
+  if (!res.ok) throw new Error(`Frame timeline unavailable for ${videoId} (${res.status})`);
+  if (res.headers.get("content-type")?.includes("application/json")) {
+    const payload = await res.json();
+    if (payload.video_id !== videoId) throw new Error("Timeline video identity mismatch");
+    return parseVersionedTimeline(payload);
+  }
+  return parseFrameTimeline(await res.arrayBuffer());
+}
+
+export async function fetchExactFrameOffset(videoId: string, frameNumber: number,
+                                            signal?: AbortSignal): Promise<number> {
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/frame-offset/${frameNumber}`), { signal });
+  if (!res.ok) throw new Error(`Exact frame offset unavailable for ${videoId}/${frameNumber} (${res.status})`);
+  const payload = await res.json();
+  if (payload.video_id !== videoId || payload.frame_number !== frameNumber ||
+      !Number.isSafeInteger(payload.offset_us) || payload.offset_us < 0) {
+    throw new Error("Invalid exact frame offset response");
+  }
+  return payload.offset_us / 1_000_000;
 }
 
 export async function fetchStrategies(): Promise<Strategy[]> {
@@ -309,7 +344,7 @@ export async function fetchTranscript(
 // canonical video ID. Exact IDs remain the common fast path (including calls
 // from the submission dashboard).
 export async function fetchVideoById(lookup: string): Promise<SearchResult> {
-  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(lookup)}`));
+  const res = await fetch(apiUrl(`/api/video?lookup=${encodeURIComponent(lookup)}`));
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || "Failed to look up video");
@@ -322,7 +357,7 @@ export async function fetchVideoById(lookup: string): Promise<SearchResult> {
     frame_number: info.frame_number,
     timestamp_ms: info.timestamp_ms,
     confidence: 1,
-    frame_image_url: apiUrl(`/api/zip-frame/${info.video_id}/${info.timestamp_ms}`),
+    frame_image_url: zipFrameImageUrl(info.video_id, info.timestamp_ms, info.frame_number),
     fps: info.fps,
   };
 }

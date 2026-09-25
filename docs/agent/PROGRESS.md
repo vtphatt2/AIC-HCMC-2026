@@ -29,10 +29,12 @@
 - Added [final-round setup and operator guide](../DRES.md). Existing CSV/ZIP export remains available.
 - Pre-merge guard: reject `N` video DRES payloads until verified PTS timing is available. Frontend build PASS; `npm test` 36/36 PASS; Agent backend tests 18/18 PASS; fake DRES/VORTA smoke PASS; `git diff --check` PASS. No BTC request made.
 - Agent-only integration: fast-forwarded `main` from `4a77cf9` to `7a1fb19` and pushed it; remote `main` and `agent-competition-mvp` matched at `7a1fb19` immediately after the merge. `zip-decode/fix` was not merged; the existing dirty build/paper files were preserved.
+- Merged `zip-decode/fix` at `570bee8` into the Agent-based `main`: combined the frontend test commands, adapted DRES candidate loading to version-2 metadata plus CSV consistency checks, and used verified source PTS milliseconds for N KIS/Q&A. N TRAKE and unresolved N timing still fail closed. The local backend proxy client is now initialized independently of import-time ENV_MODE so LOCAL tests run under the existing ZIP-mode venv.
+- Merge checks: frontend `npm run build` PASS; `npm test` 53/53 PASS; Agent tests 18/18 PASS; local-backend tests 66/66 PASS; fake DRES smoke PASS including N PTS; 44 focused remote timeline/readiness tests PASS. No dependency installed and no BTC submission made.
 
 # DOING
 
-- No further merge work in this pass. Host-dependent acceptance checks remain.
+- Host-dependent acceptance checks remain after the merge.
 
 # NEXT
 
@@ -47,6 +49,7 @@
 - No browser automation executable is installed; two actual browser sessions remain unverified under the no-install constraint.
 - M7 retrieval replay and M8 deployment/restart checks cannot run on the occupied main host. Planning-only replay and local startup/build checks passed.
 - Live DRES rehearsal requires BTC session credentials, a running evaluation/task, and host access. The fake-server test proves local wiring only.
+- Full remote-server suite under the only available backend `.venv` is not green: PyMilvus 3.0.1 differs from the remote server's pinned 2.3.7 API, and several cache/hardware tests also fail on the standalone `zip-decode/fix` baseline. Focused timing/readiness tests pass. No package was installed to change the environment.
 
 # DECISIONS
 
@@ -60,3 +63,4 @@
 - Verify uses a separate ephemeral Codex context, one serialized in-memory queue and bounded evidence from a single video. Its visual verdicts remain UNKNOWN; no automatic submission is implemented.
 - DRES submission is a separate human action on one dashboard row. Team session ID stays on the Next.js server; the submit PIN is configured there and entered per browser tab. The DRES payload includes the active task ID. TRAKE uses numeric frame numbers (operator confirmed). Duplicate protection is in memory for one Next.js process.
 - `main` does not contain `zip-decode/fix`; per operator direction merge Agent alone. Block DRES submission for `N001–N100` in this branch until verified source PTS timing is integrated. A future merge with `zip-decode/fix` still needs to combine test scripts and adapt `readCandidateForDres` to version-2 session metadata and millisecond rows.
+- The operator subsequently requested merging `zip-decode/fix` into `main`. DRES now reads version-2 timing metadata and sends N positions already expressed as verified source PTS milliseconds; it never divides N positions by FPS.

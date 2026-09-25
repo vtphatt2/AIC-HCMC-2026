@@ -90,7 +90,7 @@ def _scan_archives() -> dict[str, dict]:
 
         found = 0
         for info in infos:
-            if not info.filename.lower().endswith(".mp4"):
+            if not info.filename.lower().endswith((".mp4", ".mov")):
                 continue
             if info.compress_type != ZIP_STORED:
                 logger.warning(

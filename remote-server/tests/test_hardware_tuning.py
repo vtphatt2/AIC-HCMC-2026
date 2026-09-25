@@ -86,6 +86,7 @@ class ThumbnailCacheTests(unittest.IsolatedAsyncioTestCase):
         media._jpeg_cache.clear()
         media._jpeg_cache_bytes = 0
         media._jpeg_inflight.clear()
+        media._jpeg_waiters.clear()
 
     async def test_simultaneous_viewers_decode_once_and_reuse_result(self):
         async def decode(*args):

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
-import { apiUrl, fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript } from "@/lib/api";
+import { fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript, zipFrameImageUrl } from "@/lib/api";
 import ResultCard from "./ResultCard";
 import VerifyAction from "./VerifyAction";
 
@@ -29,22 +29,15 @@ interface Props {
 // from outlier frames far from the actual match.
 const BEST_FRAME_TRANSCRIPT_RADIUS_MS = 15000;
 
-// A strip this thin (rankInVideo 0 excluded — real matches only) reads as
-// "that's genuinely all this video has," which is often just an artifact of
-// duplicate filtering or a narrow query rather than the video actually
-// being sparse — so fill it out with real neighboring keyframes instead of
-// leaving it looking barer than the video actually is. Target a total
-// count rather than a fixed expand-by-N: a video with 45 matches needs
-// only a handful of neighbors to stop looking sparse, where one with 2
-// needs a lot more — a flat "+20 each side" either barely helps the first
-// case or wastefully overshoots the second.
-const CONTEXT_TARGET_TOTAL = 50;
+// Keep the video strip useful without turning a multi-hour video's sparse
+// matches into thousands of cards. Every real search hit stays visible; these
+// are only supplementary frames around the best hit. Roughly 24 cards gives a
+// readable local clip while keeping decode, DOM and rescoring work bounded.
+const CONTEXT_TARGET_TOTAL = 24;
 
 // However many neighbors each side needs to bring `matchedCount` up to
 // CONTEXT_TARGET_TOTAL, split evenly. A side that runs out (e.g. matches
-// already sit near the video's start) just returns fewer than asked —
-// no redistribution to the other side's request, so a starved video can
-// land short of the target; acceptable for "about 48-50", not exact.
+// already sit near the video's start) can leave the strip slightly short.
 function contextExpandPerSide(matchedCount: number): number {
   return Math.max(0, Math.ceil((CONTEXT_TARGET_TOTAL - matchedCount) / 2));
 }
@@ -114,7 +107,7 @@ function contextFrameToDisplay(videoId: string, fps: number, frame: ContextFrame
       frame_number: frame.frame_number,
       timestamp_ms: frame.timestamp_ms,
       confidence: 0,
-      frame_image_url: apiUrl(`/api/zip-frame/${videoId}/${frame.timestamp_ms}`),
+      frame_image_url: zipFrameImageUrl(videoId, frame.timestamp_ms, frame.frame_number),
       fps,
     },
     rankInVideo: 0,
@@ -150,10 +143,9 @@ function VideoGroupSection({ videoId, frames, onCardClick, onVerify, showTranscr
   const bestScore = Math.max(...frames.map((f) => f.result.confidence));
   const bestFrame = frames.find((f) => f.rankInVideo === 1);
 
-  // Fills out a sparse strip with real neighboring keyframes — not more
-  // search hits, just what the system already has around the matched
-  // cluster, so a 3-frame result doesn't read as "that's genuinely all
-  // there is" when the video has far more indexed nearby.
+  // Fill a sparse strip around the best match. Using the earliest-to-latest
+  // match span is unsafe for S videos: two hits hours apart used to pull every
+  // indexed frame between them into the page. Real hits remain in `frames`.
   const framesKey = JSON.stringify(frames.map(f => [
     f.result.frame_id, f.result.timestamp_ms, f.result.frame_number,
   ]));
@@ -163,8 +155,9 @@ function VideoGroupSection({ videoId, frames, onCardClick, onVerify, showTranscr
   useEffect(() => {
     if (!needsContext) return;
     const controller = new AbortController();
-    const startMs = Math.min(...frames.map(f => f.result.timestamp_ms));
-    const endMs = Math.max(...frames.map(f => f.result.timestamp_ms));
+    const focusMs = bestFrame?.result.timestamp_ms ?? frames[0].result.timestamp_ms;
+    const startMs = focusMs;
+    const endMs = focusMs;
     const matchedIds = new Set(frames.map(f => f.result.frame_id));
     const applyContext = (res: Awaited<ReturnType<typeof fetchScoredContext>>) => {
       if (controller.signal.aborted) return;

@@ -10,7 +10,7 @@ It converts one organizer video ZIP into a compact, challenge-compatible
 `*_results.zip` without extracting the whole ZIP or persisting frame images.
 It can concurrently collect YouTube captions from media-info metadata and
 clean them with Gemini.
-
+v
 Archive names are normalized before output paths are made: historical
 \`Videos_L26_c.zip\` becomes \`L26_c\`, while current
 \`Video_N001-N010.zip\` becomes \`N001-N010\`. The latter therefore defaults to

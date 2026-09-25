@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState } from "react";
 import type { SearchResult } from "@/types";
 import { apiUrl } from "@/lib/api";
 import { useFrameImage } from "@/lib/useFrameImage";
-import { cardImageUrl, isConstrainedConnection, prefetchOriginalFrame, rememberCardImage } from "@/lib/frameImages";
+import { cardImageUrl, isConstrainedConnection, needsOriginalFrame, prefetchOriginalFrame, rememberCardImage } from "@/lib/frameImages";
 
 interface Props {
   result: SearchResult;
@@ -42,13 +42,63 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
   const imageUrl = useFrameImage(serverImageUrl, result.frame_image_url);
   const cardUrl = imageUrl === serverImageUrl ? cardImageUrl(imageUrl) : null;
   const [failedCardUrl, setFailedCardUrl] = useState<string | null>(null);
+  const [failedOriginalUrl, setFailedOriginalUrl] = useState<string | null>(null);
+  const [needsOriginal, setNeedsOriginal] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [recovering, setRecovering] = useState(false);
+  const [imageUnavailable, setImageUnavailable] = useState(false);
+  const imageBoxRef = useRef<HTMLDivElement>(null);
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const useCard = Boolean(cardUrl && failedCardUrl !== cardUrl);
+  const constrainedConnection = isConstrainedConnection();
+  const useOriginal = useCard && needsOriginal && !constrainedConnection && failedOriginalUrl !== imageUrl;
+  const retryUrl = (url: string) => retryCount
+    ? `${url}${url.includes("?") ? "&" : "?"}image_retry=${retryCount}` : url;
+  const originalRequestUrl = retryUrl(imageUrl);
+  const cardRequestUrl = cardUrl ? retryUrl(cardUrl) : null;
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function cancelPrefetch() {
     if (hoverTimer.current !== null) clearTimeout(hoverTimer.current);
     hoverTimer.current = null;
   }
   useEffect(() => cancelPrefetch, [serverImageUrl]);
+  useEffect(() => {
+    setFailedCardUrl(null);
+    setFailedOriginalUrl(null);
+    setRetryCount(0);
+    setRecovering(false);
+    setImageUnavailable(false);
+    return () => {
+      if (retryTimer.current !== null) clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    };
+  }, [imageUrl]);
+  function retryLater() {
+    if (retryCount >= 2) {
+      setImageUnavailable(true);
+      return;
+    }
+    if (retryTimer.current !== null) return;
+    retryTimer.current = setTimeout(() => {
+      retryTimer.current = null;
+      setFailedCardUrl(null);
+      setFailedOriginalUrl(null);
+      setRetryCount((count) => count + 1);
+    }, 300 * (retryCount + 1));
+  }
+  useEffect(() => {
+    const box = imageBoxRef.current;
+    if (!box) return;
+    const measure = () => setNeedsOriginal(needsOriginalFrame(
+      box.getBoundingClientRect().width,
+      window.devicePixelRatio || 1,
+    ));
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
   function prefetch() {
     if (useCard) prefetchOriginalFrame(serverImageUrl);
   }
@@ -73,7 +123,7 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
       }`}
     >
       {/* Frame image */}
-      <div className="relative aspect-video bg-stone-200 dark:bg-stone-700 overflow-hidden">
+      <div ref={imageBoxRef} className="relative aspect-video bg-stone-200 dark:bg-stone-700 overflow-hidden">
         {/* Fast blurry placeholder — shown until the sharp image finishes loading */}
         {showPreview && (
           <img
@@ -85,34 +135,43 @@ const ResultCard = forwardRef<HTMLButtonElement, Props>(function ResultCard(
           />
         )}
         <picture>
-          {useCard && (
-            <source
-              // Use the original whenever the card could exceed 640 device pixels.
-              media={compact ? "(min-resolution: 3.5dppx)" :
-                "(min-resolution: 2.01dppx), (min-width: 1281px) and (min-resolution: 1.01dppx), (min-width: 2561px)"}
-              srcSet={imageUrl}
-            />
+          {useOriginal && (
+            <source srcSet={originalRequestUrl} />
           )}
-          {useCard && isConstrainedConnection() && (
-            <source type="image/webp" srcSet={cardImageUrl(imageUrl, "webp")!} />
+          {useCard && constrainedConnection && (
+            <source type="image/webp" srcSet={retryUrl(cardImageUrl(imageUrl, "webp")!)} />
           )}
           <img
             key={imageUrl}
-            src={useCard ? cardUrl! : imageUrl}
+            src={useCard ? cardRequestUrl! : originalRequestUrl}
             alt={`Frame ${result.frame_number} of ${result.video_id}`}
             onLoad={(event) => {
+              setRecovering(false);
+              setImageUnavailable(false);
               setLoadedUrl(imageUrl);
               rememberCardImage(serverImageUrl, event.currentTarget.currentSrc || event.currentTarget.src);
             }}
-            onError={() => { if (useCard) setFailedCardUrl(cardUrl); }}
+            onError={(event) => {
+              // A <picture> source can fail even when the <img> fallback works.
+              // Try the other size, then retry transient tunnel/decode errors.
+              setRecovering(true);
+              const attemptedOriginal = event.currentTarget.currentSrc ===
+                new URL(originalRequestUrl, document.baseURI).href;
+              if (attemptedOriginal) {
+                if (failedCardUrl === cardUrl || !cardUrl) retryLater();
+                else setFailedOriginalUrl(imageUrl);
+              } else if (failedOriginalUrl === imageUrl) retryLater();
+              else setFailedCardUrl(cardUrl);
+            }}
             className={`relative w-full h-full object-cover group-hover:scale-105 transition-all duration-300 ${
-              showPreview ? "opacity-0" : "opacity-100"
+              showPreview || recovering ? "opacity-0" : "opacity-100"
             }`}
             loading={loading}
             fetchPriority={imagePriority ?? (loading === "eager" && rank >= 0 && rank <= 6 ? "high" : "auto")}
             decoding="async"
           />
         </picture>
+        {imageUnavailable && <span className="absolute inset-0 flex items-center justify-center text-xs text-stone-600 dark:text-stone-300">Frame unavailable</span>}
         {/* Rank / step badge */}
         {!hideBadge && (
           <span className="font-retro absolute top-1 left-1 bg-stone-900/80 text-white text-[10px] font-bold px-1.5 py-0.5 rounded">

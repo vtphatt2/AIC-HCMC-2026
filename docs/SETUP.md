@@ -118,6 +118,111 @@ Open http://localhost:3000.
 
 ## 2. Remote server — GPU workstation
 
+### Restart the configured WSL workstation
+
+Use this procedure for the existing installation at
+`/workspace/AIC-HCMC-2026`. Docker must be running. The Python environment,
+Node dependencies, dataset, and `.env` files are
+already present on this workstation; restarting does not require installing
+packages or ingesting the data again. On another machine, substitute its
+repository path and complete the first-time setup below first.
+
+The primary system command is the remote-server launcher below. Run the web
+components in separate WSL terminals and keep those terminals open.
+
+**Terminal 1 — backend and databases (port 8000):**
+
+```bash
+cd /workspace/AIC-HCMC-2026/remote-server
+bash ../scripts/start-remote.sh --skip-databases
+```
+
+This reuses the Docker databases that are already running, reads
+`remote-server/.env`, and runs the optimized `remote-server` backend. The
+current `.env` supplies `WEB_CONCURRENCY=2` and the hardware/search/media
+tuning, so no environment prefix is required. Wait for `Application startup
+complete`. If the database containers are not already running, omit
+`--skip-databases` once so the launcher starts and checks them. Do not add
+`--reload` for a demo: reload mode ignores the two-worker setting.
+
+**Terminal 2 — frontend (port 3000):**
+
+```bash
+cd /workspace/AIC-HCMC-2026/local-client/frontend
+npm run build   # repeat after frontend source or .env.local changes
+npm run start
+```
+
+`local-client/frontend/.env.local` uses `NEXT_PUBLIC_API_URL=/`, so API
+requests go through the same hostname as the page. The production server
+avoids development compilation during searches. Rebuild after frontend code
+or public environment variables change. Use `npm run dev` only while editing
+the frontend.
+
+**Terminal 3 — shared web proxy (port 3001):**
+
+```bash
+cd /workspace/AIC-HCMC-2026
+node scripts/share-proxy.cjs
+```
+
+Open **http://localhost:3001** on this machine. The proxy sends page requests
+to the frontend and backend API/media requests to port 8000. These first
+three terminals are sufficient for local use.
+
+**Terminal 4 — public Cloudflare tunnel (optional for local use):**
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:3001
+```
+
+Share the printed `https://…trycloudflare.com` URL with other users, including
+those on Wi-Fi or mobile data. Both local and public access use the proxy:
+
+```text
+Local browser  → localhost:3001 → proxy → frontend / backend
+Public browser → Cloudflare URL → tunnel → localhost:3001 → proxy → frontend / backend
+```
+
+Check `http://localhost:3001/api/health` and
+`https://<your-tunnel-hostname>/api/health` in a browser; both should return
+JSON with `"status":"ok"`. Then try a search and confirm the images load.
+The temporary public URL usually changes when the tunnel restarts; see §5b
+for named tunnels. Closing a service terminal or shutting down WSL stops that
+service. Use Ctrl+C to stop it; Docker databases stay running when the backend
+exits. If a port is already occupied, use the existing service or stop it
+before starting another copy.
+
+Exact 640px result cards are stored separately from full-size images for all
+indexed L/M/N/S archives. The optional background warmer prioritizes N/S/M,
+then fills older L cards. It is installed as the user
+service `aic-prewarm-cards.service`; it resumes missing cards after a reboot and
+first builds exact decoded-frame timestamps for N/S. It uses low-priority
+workers with a twelve-core CPU quota, 8 GiB soft
+memory limit and 10 GiB hard limit so live searches retain priority. It checks completed cards without rereading their
+JPEG bytes on restart. Search remains available while it runs. Check it with
+`systemctl --user status aic-prewarm-cards.service` and
+`tail -f challenge_resources/data/zip_embeddings/prewarm_new_thumbnails.log`
+from the repository root. A successful run writes
+`/home/collab/.cache/aic2026/cards/.prewarm-result-thumbnails-complete`.
+When a browser abandons an image from a previous search, the backend cancels
+that decode unless another viewer is still waiting for the same frame. The
+warmer pauses new decodes while live image requests are active, then resumes
+after two seconds of inactivity.
+
+For N sources where a short seek cannot reproduce the verified frame, the
+warmer performs one sequential pass per video (at most two concurrently) and
+saves exact selected JPEGs under
+`challenge_resources/data/zip_embeddings/exact_n_frames/`. Every published
+image must match the decoded timeline's pixel checksum. The live route then
+reads that image instead of repeating a full-video decode. This does not
+rewrite source videos, change their FPS/audio, or change vector IDs, ranking,
+sampling, or model settings. Unrecoverable images are recorded in
+`/home/collab/.cache/aic2026/cards/.prewarm-result-thumbnails-failures.json`;
+exit status 2 stops automatic retries so bad sources can be reviewed.
+
+### First-time setup
+
 ```bash
 cd remote-server
 python -m venv .venv
@@ -491,6 +596,10 @@ Full variable-by-variable reference lives as comments in each
 ---
 
 ## Common issues
+
+For source-picture disagreements during offline processing, follow the
+[verified decoder recovery workflow](DECODER_RECOVERY.md). Recovery keeps the
+video release-blocked until its source and derived artifacts pass validation.
 
 | Symptom | Fix |
 |---|---|

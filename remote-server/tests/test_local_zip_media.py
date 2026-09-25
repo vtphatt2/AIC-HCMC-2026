@@ -15,6 +15,7 @@ Skips when raw_zip_videos/ has no archive, so it is safe to run anywhere.
 from __future__ import annotations
 
 import asyncio
+import io
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,9 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+
+import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -138,6 +142,73 @@ class LocalZipMediaTests(unittest.TestCase):
     def test_unknown_video_is_reported_not_guessed(self):
         with self.assertRaises(media.LocalZipUnavailable):
             asyncio.run(media.lookup("ZZ_V999"))
+
+    def test_new_archive_frames_match_full_decode(self):
+        """Check actual indexed pictures for fast-start MP4, MOV HEVC and AV1."""
+        for video_id, frame_number in (
+            ("M08_V006", 18), ("N011-V001", 100),
+            ("N031-V001", 1484), ("S01-V001", 25),
+        ):
+            with self.subTest(video_id=video_id):
+                try:
+                    entry = asyncio.run(media.lookup(video_id))
+                except media.LocalZipUnavailable:
+                    continue
+                fps = media.ingest_fps(video_id)
+                timestamp_ms = int(frame_number / fps * 1000)
+                jpeg = asyncio.run(media.get_frame_jpeg(
+                    video_id, timestamp_ms,
+                    frame_number=frame_number if video_id.startswith(("N", "S")) else None,
+                ))
+                displayed = np.asarray(
+                    Image.open(io.BytesIO(jpeg)).convert("RGB").resize((64, 36))
+                ).astype(np.int16)
+                source = (
+                    f"subfile,,start,{entry['data_offset']},"
+                    f"end,{entry['data_offset'] + entry['size']},,:{entry['zip_path']}"
+                )
+                reference = subprocess.run(
+                    [self.ffmpeg, "-loglevel", "error", "-i", source,
+                     "-vf", f"select=eq(n\\,{frame_number}),scale=64:36",
+                     "-vsync", "0", "-frames:v", "1", "-pix_fmt", "rgb24",
+                     "-f", "rawvideo", "pipe:1"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=True, timeout=60,
+                ).stdout
+                self.assertEqual(len(reference), 64 * 36 * 3)
+                expected = np.frombuffer(reference, dtype=np.uint8).reshape(36, 64, 3)
+                difference = np.abs(displayed - expected).mean()
+                self.assertLess(difference, 10, f"wrong frame: MAE={difference:.2f}")
+
+    def test_late_mov_search_frames_match_full_decode_exactly(self):
+        """Catch seek-time PTS shifts that can show a nearby, wrong frame."""
+        for video_id, frame_number in (
+            ("N001-V001", 13184), ("N027-V003", 11025),
+            ("N010-V001", 13725), ("N031-V001", 13357),
+            ("S01-V012", 3021),
+        ):
+            with self.subTest(video_id=video_id):
+                try:
+                    entry = asyncio.run(media.lookup(video_id))
+                except media.LocalZipUnavailable:
+                    continue
+                fps = media.ingest_fps(video_id)
+                displayed = asyncio.run(media.get_frame_jpeg(
+                    video_id, int(frame_number / fps * 1000), frame_number=frame_number
+                ))
+                source = (
+                    f"subfile,,start,{entry['data_offset']},"
+                    f"end,{entry['data_offset'] + entry['size']},,:{entry['zip_path']}"
+                )
+                reference = subprocess.run(
+                    ["/usr/bin/ffmpeg" if video_id.startswith("N") else media._ffmpeg_path(),
+                     "-loglevel", "error", "-threads", "2", "-i", source,
+                     "-map", "0:v:0", "-vf", f"select=eq(n\\,{frame_number})",
+                     "-vsync", "0", "-frames:v", "1", "-q:v", "4",
+                     "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1"],
+                    capture_output=True, check=True, timeout=90,
+                ).stdout
+                self.assertEqual(displayed, reference)
 
 
 if __name__ == "__main__":

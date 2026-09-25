@@ -22,7 +22,7 @@ class TranslationServiceTest(unittest.TestCase):
         self.assertEqual(json.loads(request_text), {"queries": ["xe hơi đỏ", "người chạy"]})
 
     def test_requires_gemini_key(self):
-        with self.assertRaises(TranslationNotConfigured):
+        with patch.dict('os.environ', {'GEMINI_API_KEY': ''}), self.assertRaises(TranslationNotConfigured):
             TranslationService(api_key="").translate(["xin chào"])
 
     def test_rejects_empty_text(self):

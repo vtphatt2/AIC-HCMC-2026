@@ -27,12 +27,10 @@ storage, so they always agree.
 ## Storage
 
 `.runtime/submissions/{session}.csv` + `{session}.meta.json` — gitignored,
-local to whichever machine is running the frontend. The `.csv` **is** the
-literal export file (no header, comma-delimited, CRLF), not a derived view
-of some other model — row order on disk is rank order, and what you'd get
-from "Download CSV" is a byte-for-byte copy. The `.meta.json` sidecar only
-holds what a CSV can't: `queryType`, `draftRowIndex` (TRAKE's in-progress
-candidate pointer), timestamps.
+local to whichever machine is running the frontend. The `.csv` is the
+organizer export (no header, comma-delimited, CRLF); row order is rank order.
+The version 2 `.meta.json` is the editable session snapshot. It also retains
+the row units, source frame IDs and timing verification that CSV cannot hold.
 
 One row = one CSV line = one candidate:
 - **KIS** — `video_id,frame`
@@ -41,6 +39,12 @@ One row = one CSV line = one candidate:
 - **TRAKE** — `video_id,frame_1,...,frame_N`, all frames from one video —
   a row has exactly one `videoId` field, so mixing videos into a candidate
   is impossible by construction, not just a warning
+
+For N001–N100, KIS/QA use **source PTS milliseconds** in the position column;
+L/M/S keep frame units. N videos cannot be added to TRAKE. This follows the
+[organizer's VFR clarification](ORGANIZER_TIMING_GUIDANCE.md). The column count
+stays unchanged. Version 2 sidecars preserve units, verified source frame IDs,
+and timing status; N rows with unresolved timing cannot be exported.
 
 ## Editing a session — two modes, same data
 
@@ -71,6 +75,10 @@ frames and duplicate `video_id,frame` pairs, and never changes the original
 rank order. The operation is deliberately unavailable for QA and TRAKE:
 duplicating a QA answer is not necessarily valid, while TRAKE requires an
 exact event/frame count per candidate.
+
+For N candidates the filler instead finds verified source pictures near
+`-500, +500, -1000, +1000, ...` milliseconds, respecting timeline bounds and
+deduplicating source pictures. It never estimates N timing from nominal FPS.
 
 **Review grid ↗** opens that session in a separate browser tab and displays
 every CSV frame as a responsive thumbnail grid in CSV rank order. It works

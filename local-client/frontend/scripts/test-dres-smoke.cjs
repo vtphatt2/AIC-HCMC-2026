@@ -3,6 +3,8 @@
 const assert = require("node:assert/strict");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
+const { mkdirSync, writeFileSync } = require("node:fs");
+const path = require("node:path");
 
 function serve(handler) {
   const server = http.createServer(handler);
@@ -63,6 +65,7 @@ async function request(base, path, method = "GET", body, pin) {
   });
   const base = `http://127.0.0.1:${nextPort}`;
   const session = `dres-smoke-${process.pid}`;
+  const nSession = `${session}-n`;
   try {
     let ready = false;
     for (let i = 0; i < 60; i++) {
@@ -102,11 +105,32 @@ async function request(base, path, method = "GET", body, pin) {
     ]);
     assert.deepEqual(parallel.map((result) => result.status).sort(), [200, 409]);
     assert.equal(submissions.length, 2);
+    const nRow = { videoId: "N001-V001", unit: "milliseconds", frames: [1743], sourceFrames: [42], timingStatus: "verified" };
+    const submissionDir = path.join(process.cwd(), ".runtime", "submissions");
+    mkdirSync(submissionDir, { recursive: true });
+    writeFileSync(path.join(submissionDir, `${nSession}.csv`), "N001-V001,1743\r\n");
+    writeFileSync(path.join(submissionDir, `${nSession}.meta.json`), JSON.stringify({
+      version: 2, rows: [nRow], queryType: "kis", draftRowIndex: 0, createdAt: Date.now(), updatedAt: Date.now(),
+    }));
+    videoAvailable = false;
+    writeFileSync(path.join(submissionDir, `${nSession}.csv`), "N001-V001,1744\r\n");
+    assert.equal((await request(base, "/api/dres-submit", "POST", {
+      evaluationId: "eval-a", taskId, session: nSession, rowIndex: 0, expectedRow: JSON.stringify(nRow),
+    }, "fake-pin")).status, 404);
+    writeFileSync(path.join(submissionDir, `${nSession}.csv`), "N001-V001,1743\r\n");
+    const nAccepted = await request(base, "/api/dres-submit", "POST", {
+      evaluationId: "eval-a", taskId, session: nSession, rowIndex: 0, expectedRow: JSON.stringify(nRow),
+    }, "fake-pin");
+    assert.equal(nAccepted.status, 200, JSON.stringify(nAccepted.data));
+    assert.deepEqual(submissions[2], {
+      answerSets: [{ taskId: "task-a", answers: [{ mediaItemName: "N001-V001", start: 1743, end: 1743 }] }],
+    });
     taskId = "task-b";
     assert.equal((await request(base, "/api/dres-submit", "POST", body, "fake-pin")).status, 409);
-    console.log("PASS: DRES status, PIN, stale candidate/task, missing media, payload, concurrent duplicate guard, task rollover");
+    console.log("PASS: DRES status, PIN, stale candidate/task, missing media, CFR and N-PTS payloads, concurrent duplicate guard");
   } finally {
     await request(base, `/api/submission?session=${session}`, "DELETE").catch(() => {});
+    await request(base, `/api/submission?session=${nSession}`, "DELETE").catch(() => {});
     next.kill("SIGTERM");
     await close(dres);
     await close(backend);

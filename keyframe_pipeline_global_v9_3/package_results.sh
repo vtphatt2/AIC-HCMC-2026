@@ -39,5 +39,12 @@ with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=
     zf.writestr('manifest.json',json.dumps({'format_version':3,'num_videos':len(videos),'videos':videos},indent=2,ensure_ascii=False))
 print(f'Created {archive} with {len(videos)} complete videos')
 PY
-unzip -t "$ARCHIVE" >/dev/null
+"$PYTHON_BIN" - "$ARCHIVE" <<'PYZIPCHECK'
+import sys, zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    bad_member = archive.testzip()
+if bad_member is not None:
+    raise SystemExit(f"ERROR: corrupt ZIP member: {bad_member}")
+PYZIPCHECK
 ls -lh "$ARCHIVE"

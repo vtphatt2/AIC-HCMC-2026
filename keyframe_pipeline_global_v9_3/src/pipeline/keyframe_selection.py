@@ -10,6 +10,17 @@ from pathlib import Path
 KEYFRAME_STRATEGIES = ("tiered", "linear")
 
 
+def protect_verified_metadata(video_dir: Path) -> None:
+    """Verified source identities may only be replaced in a new generation."""
+    path = video_dir / "keyframes.json"
+    if not path.exists():
+        return
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (payload.get("source_identity") or
+            any("source_pts" in row for row in payload.get("keyframes", []))):
+        raise ValueError(f"Verified metadata is protected: {path}; use a separate staging output directory")
+
+
 def selection_metadata(
     *, strategy: str, keyframes_per_second: float,
     min_keyframes_per_scene: int, max_keyframes_per_scene: int,
@@ -54,6 +65,7 @@ def invalidate_mismatched_selection(
     invalidated: list[str] = []
     if not out_dir.is_dir():
         return invalidated
+    candidates = []
     for keyframes_path in sorted(out_dir.glob("*/keyframes.json")):
         try:
             payload = json.loads(keyframes_path.read_text(encoding="utf-8"))
@@ -61,6 +73,10 @@ def invalidate_mismatched_selection(
             payload = None
         if _selection_matches(payload, expected):
             continue
+        protect_verified_metadata(keyframes_path.parent)
+        candidates.append(keyframes_path)
+    # Preflight the entire generation before deleting any artifacts.
+    for keyframes_path in candidates:
         video_dir = keyframes_path.parent
         for name in (
             "keyframes.json", "embeddings.npy", "embeddings.partial.npy",

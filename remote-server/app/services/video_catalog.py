@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from app.services.video_quarantine import excluded_video_ids
 
 
 def _search_text(value: object) -> str:
@@ -36,8 +37,11 @@ def search_video_catalog(
         return []
 
     ranked: list[tuple[int, str, dict]] = []
+    blocked = excluded_video_ids()
     for video in videos:
         video_id = str(video.get("video_id") or "")
+        if video_id in blocked:
+            continue
         title = str(video.get("title") or video_id)
         compact_id = _compact_id(video_id)
         normalized_title = _search_text(title)

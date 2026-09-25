@@ -1,3 +1,4 @@
+import { frameAtSubmissionMilliseconds, submissionMilliseconds, type FrameTimeline } from "../playback";
 export interface FillableSubmissionRow {
   videoId: string;
   frames: number[];
@@ -8,6 +9,7 @@ interface Anchor {
   videoId: string;
   frame: number;
   attempt: number;
+  exhausted?: boolean;
 }
 
 function neighborFrame(anchor: Anchor, step: number): number {
@@ -27,6 +29,7 @@ export function fillKisRows<T extends FillableSubmissionRow>(
   rows: readonly T[],
   targetRows: number = 100,
   step: number = 15,
+  timelines: Record<string, FrameTimeline> = {},
 ): T[] {
   if (!Number.isInteger(targetRows) || targetRows < 0) {
     throw new Error("Filler target must be a non-negative integer.");
@@ -41,6 +44,7 @@ export function fillKisRows<T extends FillableSubmissionRow>(
   const seen = new Set<string>();
   const anchors: Anchor[] = [];
   for (const row of rows) {
+    if (row.videoId.startsWith("N") && !timelines[row.videoId]?.sourcePts) throw new Error("N neighbor filling requires a verified timeline");
     const frame = row.frames[0];
     if (!Number.isInteger(frame) || frame < 0 || !row.videoId) continue;
     const key = `${row.videoId}:${frame}`;
@@ -51,20 +55,32 @@ export function fillKisRows<T extends FillableSubmissionRow>(
   }
   if (anchors.length === 0) return result;
 
-  while (result.length < targetRows) {
+  while (result.length < targetRows && anchors.some(anchor => !anchor.exhausted)) {
     for (const anchor of anchors) {
-      let frame: number;
-      let key: string;
+      if (anchor.exhausted) continue;
+      const timeline = timelines[anchor.videoId];
+      let frame: number, sourceFrame: number | undefined;
       do {
-        frame = neighborFrame(anchor, step);
-        key = `${anchor.videoId}:${frame}`;
-      } while (frame < 0 || seen.has(key));
-
-      seen.add(key);
-      result.push({ videoId: anchor.videoId, frames: [frame] } as T);
+        frame = neighborFrame(anchor, timeline ? 500 : step);
+        if (timeline) {
+          const min = submissionMilliseconds(timeline, timeline.frameIds![0]);
+          const max = submissionMilliseconds(timeline, timeline.frameIds![timeline.length - 1]);
+          if (Math.floor(anchor.attempt / 2) * 500 > Math.max(anchor.frame - min, max - anchor.frame) + 500) {
+            anchor.exhausted = true; break;
+          }
+          if (frame < min || frame > max) continue;
+          sourceFrame = frameAtSubmissionMilliseconds(timeline, frame);
+          frame = submissionMilliseconds(timeline, sourceFrame);
+        }
+        if (frame >= 0 && !seen.has(`${anchor.videoId}:${frame}`)) break;
+      } while (true);
+      if (anchor.exhausted) continue;
+      seen.add(`${anchor.videoId}:${frame!}`);
+      result.push({ videoId: anchor.videoId, frames: [frame!], ...(timeline ? {
+        unit: 'milliseconds', sourceFrames: [sourceFrame!], timingStatus: 'verified',
+      } : {}) } as unknown as T);
       if (result.length === targetRows) break;
     }
   }
-
   return result;
 }

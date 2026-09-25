@@ -36,7 +36,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-sys.path.insert(0, str(REPO_ROOT / "remote-server"))
 
 import numpy as np
 from dotenv import load_dotenv
@@ -47,17 +46,27 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env", override=True)
 # per-row assembly is rewritten here, because iter_video_records() calls
 # .tolist() on every vector — fine for a gRPC upsert, but 193k x 1280 Python
 # floats is several GB when the destination is a numpy array anyway.
-from scripts.ingest_zip_pipeline_results import (  # noqa: E402
-    VIDEO_DIR_PATTERN,
-    iter_result_archives,
-    load_media_info,
-)
+# Import the shared archive reader without leaving remote-server's `app`
+# package ahead of this backend's own `app` package in sys.path.
+_local_import_path = list(sys.path)
+try:
+    sys.path.insert(0, str(REPO_ROOT / "remote-server"))
+    from scripts.ingest_zip_pipeline_results import (  # noqa: E402
+        iter_result_archives,
+        load_media_info,
+        selected_timestamp_ms,
+        video_directories,
+    )
+finally:
+    sys.path[:] = _local_import_path
+from app.services.video_quarantine import release_blocked_video_ids  # noqa: E402
 
 META_FIELDS = ["frame_id", "video_id", "video_genre", "frame_number", "timestamp_ms", "youtube_id"]
 
 
 def export(zip_dir: Path, out_dir: Path) -> int:
     media_info = load_media_info(zip_dir)
+    release_blocked = release_blocked_video_ids()
     archives = iter_result_archives(zip_dir)
     print(f"reading {len(archives)} archives from {zip_dir}")
 
@@ -68,22 +77,19 @@ def export(zip_dir: Path, out_dir: Path) -> int:
     for archive in archives:
         with zipfile.ZipFile(archive) as zf:
             names = set(zf.namelist())
-            video_ids = sorted({
-                match.group("video_id")
-                for name in names
-                if name.startswith("phase1_transnet/")
-                for match in [VIDEO_DIR_PATTERN.match(name.split("/", 2)[1])]
-                if match
-            })
+            videos = video_directories(names)
             before = sum(len(b) for b in blocks)
-            for video_id in video_ids:
-                embeddings_path = f"phase2_embeddings/video__{video_id}/embeddings.npy"
+            for video_id, directory in videos:
+                if video_id in release_blocked:
+                    print(f"  {video_id}: release-blocked source, skipped")
+                    continue
+                embeddings_path = f"phase2_embeddings/{directory}/embeddings.npy"
                 if embeddings_path not in names:
                     print(f"  {video_id}: no embeddings.npy, skipped")
                     continue
 
-                scenes = json.loads(zf.read(f"phase1_transnet/video__{video_id}/scenes.json"))
-                keyframes = json.loads(zf.read(f"phase1_transnet/video__{video_id}/keyframes.json"))
+                scenes = json.loads(zf.read(f"phase1_transnet/{directory}/scenes.json"))
+                keyframes = json.loads(zf.read(f"phase1_transnet/{directory}/keyframes.json"))
                 fps = float(scenes["fps"])
                 selected = keyframes["keyframes"]
 
@@ -102,11 +108,14 @@ def export(zip_dir: Path, out_dir: Path) -> int:
                 meta["video_id"].extend([video_id] * len(selected))
                 meta["video_genre"].extend([""] * len(selected))
                 meta["frame_number"].extend(frame_numbers.tolist())
-                meta["timestamp_ms"].extend((frame_numbers / fps * 1000).astype("int64").tolist())
+                meta["timestamp_ms"].extend([
+                    selected_timestamp_ms(video_id, item, fps, keyframes.get("version", 1))
+                    for item in selected
+                ])
                 meta["youtube_id"].extend([youtube_id] * len(selected))
 
             added = sum(len(b) for b in blocks) - before
-            print(f"  {archive.name:<26} {len(video_ids):>4} videos, {added:>7} keyframes "
+            print(f"  {archive.name:<26} {len(videos):>4} videos, {added:>7} keyframes "
                   f"({time.time() - t0:.0f}s)")
 
     mat = np.vstack(blocks)

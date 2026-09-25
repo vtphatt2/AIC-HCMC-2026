@@ -102,7 +102,7 @@ def index_zip(client: httpx.Client, url: str) -> dict[str, dict]:
     entries: dict[str, dict] = {}
     zf = zipfile.ZipFile(RangeReadFile(client, url))
     for info in zf.infolist():
-        if not info.filename.lower().endswith(".mp4"):
+        if not info.filename.lower().endswith((".mp4", ".mov")):
             continue
         if info.compress_type != ZIP_STORED:
             print(f"  ! skip {info.filename}: not ZIP_STORED (compress_type={info.compress_type})")

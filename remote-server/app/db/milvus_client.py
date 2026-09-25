@@ -9,6 +9,7 @@ import numpy as np
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
 from app.db.milvus_compat import query_frame_vector_rows
+from app.services import video_quarantine
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +140,8 @@ def create_collection_if_missing(
         FieldSchema(name="timestamp_ms", dtype=DataType.INT64),
         FieldSchema(name="image_url",    dtype=DataType.VARCHAR, max_length=256),
         # Denormalized from Postgres on purpose: local-backend's SAMPLE mode
-        # queries Milvus only (no Postgres), so YouTube-primary playback
-        # needs youtube_id available straight from a search hit.
+        # queries Milvus only (no Postgres), so playback source selection needs
+        # youtube_id available straight from a search hit.
         FieldSchema(name="youtube_id",   dtype=DataType.VARCHAR, max_length=32),
         FieldSchema(name="vector",       dtype=DataType.FLOAT_VECTOR, dim=VECTOR_DIM),
     ]
@@ -232,7 +233,7 @@ def vector_search(
         anns_field="vector",
         param={"metric_type": METRIC_TYPE, "params": search_params},
         limit=top_k,
-        expr=expr,
+        expr=video_quarantine.milvus_expr(expr),
         output_fields=output_fields,
     )
     hits = []
@@ -258,6 +259,8 @@ def query_frames_in_time_range(
     end_ms: int,
     limit: int = 100,
 ) -> list[dict]:
+    if video_id in video_quarantine.excluded_video_ids():
+        return []
     expr = (
         f'video_id == "{video_id}" '
         f"and timestamp_ms >= {int(start_ms)} "
@@ -382,7 +385,7 @@ def search_transcript_chunks(
 ) -> list[dict]:
     top_k = max(1, int(top_k))
     search_params = {"ef": max(int(TRANSCRIPT_SEARCH_PARAMS["ef"]), top_k)}
-    expr = f'topic == "{topic_filter}"' if topic_filter else None
+    expr = video_quarantine.milvus_expr(f'topic == "{topic_filter}"' if topic_filter else None)
 
     results = collection.search(
         data=[query_vector],

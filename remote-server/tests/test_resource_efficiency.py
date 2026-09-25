@@ -31,7 +31,8 @@ class CompactFrameIndexTests(unittest.TestCase):
         keys = keys or [0]
         base = min(pts)
         return VideoFrameIndex(
-            zip_path=Path("unused.zip"), data_offset=2**33, timescale=timescale,
+            zip_path=Path("unused.zip"), data_offset=2**33,
+            video_size=2**34, codec=b"avc1", timescale=timescale,
             fps=fps, base_pts=base, sample_offsets=array("Q", (2**34+i*100 for i in range(len(pts)))),
             sample_sizes=array("Q", [100]*len(pts)), sample_pts=array("q", pts),
             keyframe_samples=keys,

@@ -12,18 +12,26 @@ export function buildDresAnswer(
       row.frames.some((frame) => !Number.isSafeInteger(frame) || frame < 0)) {
     throw new Error("Candidate needs valid frame numbers");
   }
-  if (row.videoId.startsWith("N")) {
-    throw new Error("N videos need verified source PTS timing before DRES submission");
-  }
+  const isNVideo = row.videoId.startsWith("N");
 
   if (queryType === "trake") {
+    if (isNVideo) throw new Error("N videos are unavailable for TRAKE");
     if (new Set(row.frames).size !== row.frames.length) throw new Error("TRAKE frames must be distinct");
     return { text: `TR-${row.videoId}-${row.frames.join(",")}` };
   }
 
   if (row.frames.length !== 1) throw new Error("KIS and Q&A need exactly one frame");
-  if (!Number.isFinite(fps) || !fps || fps <= 0) throw new Error("Video FPS is unavailable");
-  const timestampMs = Math.round((row.frames[0] / fps) * 1000);
+  let timestampMs: number;
+  if (isNVideo) {
+    if (row.unit !== "milliseconds" || row.timingStatus !== "verified") {
+      throw new Error("N videos need verified source PTS timing before DRES submission");
+    }
+    timestampMs = row.frames[0];
+  } else {
+    if (row.unit === "milliseconds") throw new Error("Frame unit does not match video timing");
+    if (!Number.isFinite(fps) || !fps || fps <= 0) throw new Error("Video FPS is unavailable");
+    timestampMs = Math.round((row.frames[0] / fps) * 1000);
+  }
   if (!Number.isSafeInteger(timestampMs)) throw new Error("Frame timestamp is invalid");
 
   if (queryType === "kis") {

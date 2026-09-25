@@ -1,3 +1,4 @@
+import { parsePosition } from "@/lib/submission/format";
 import Head from "next/head";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -178,9 +179,13 @@ export default function SubmissionsDashboard() {
   // the zip-video fallback and a wrong frame counter even for a video with a
   // real YouTube embed. getVideoInfo's own cache makes this instant once
   // useVideoInfo has already warmed it, which is the common case.
-  async function openEntry(session: string, rowIndex: number, videoId: string, frame: number) {
+  async function openEntry(session: string, rowIndex: number, videoId: string,
+                           frame: number, frameIndex: number) {
     const info = await getVideoInfo(videoId);
-    setActiveResult(rowFrameToSearchResult(videoId, frame, info.fps, info.youtubeId));
+    const row = states[session]?.rows[rowIndex];
+    const sourceFrame = row?.sourceFrames?.[frameIndex];
+    try { setActiveResult(rowFrameToSearchResult(videoId, frame, info.fps, info.youtubeId, sourceFrame)); }
+    catch (error: any) { window.alert(error.message); return; }
     setActiveContext({ session, rowIndex });
   }
 
@@ -228,7 +233,9 @@ export default function SubmissionsDashboard() {
       ? `QA-${row.answer || "<missing answer>"}-${row.videoId}-<time(ms)>`
       : state.queryType === "trake"
         ? `TR-${row.videoId}-${row.frames.join(",")}`
-        : `${row.videoId} at frame ${row.frames[0]} (converted to ms)`;
+        : row.unit === "milliseconds"
+          ? `${row.videoId} at verified source ${row.frames[0]} ms`
+          : `${row.videoId} at frame ${row.frames[0]} (converted to ms)`;
     if (!window.confirm(`Submit this ${state.queryType.toUpperCase()} candidate to DRES?\n\n` +
       `Evaluation: ${evaluationId}\nTask: ${taskId}\nAnswer: ${label}\n\n` +
       "A wrong answer can reduce your score. Only continue if you selected the correct current task.")) return;
@@ -268,7 +275,8 @@ export default function SubmissionsDashboard() {
   }
 
   async function handleEditFrame(session: string, rowIndex: number, frameIndex: number, raw: string) {
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!Number.isFinite(frame) || frame < 0) return;
     updateState(session, await editRowFrame(session, rowIndex, frameIndex, frame));
   }
@@ -284,7 +292,8 @@ export default function SubmissionsDashboard() {
   async function handleAddFrameToRow(session: string, rowIndex: number, videoId: string) {
     const raw = window.prompt("Add frame number to this candidate:");
     if (!raw) return;
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!Number.isFinite(frame) || frame < 0) return;
     try {
       updateState(session, await addSubmissionRowFrame(session, videoId, frame, rowIndex));
@@ -297,13 +306,12 @@ export default function SubmissionsDashboard() {
     const draft = newRowDraft[session] || { videoId: "", frames: "" };
     const videoId = draft.videoId.trim();
     if (!videoId) return;
-    const frames = draft.frames
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n) && n >= 0);
+    let frames: number[];
+    try { frames = draft.frames.split(",").map(parsePosition); }
+    catch (error: any) { window.alert(error.message); return; }
     if (frames.length === 0) return;
     if (queryType !== "trake" && frames.length > 1) {
-      window.alert("kis/qa rows take exactly one frame.");
+      window.alert("KIS/QA rows take one position: N milliseconds, L/M/S frames.");
       return;
     }
     try {
@@ -402,7 +410,7 @@ export default function SubmissionsDashboard() {
     if (state.rows.length === 0) return window.alert("Add at least one KIS candidate first.");
     if (!window.confirm(
       `Append ${remaining} nearby KIS candidates to reach 100 rows?\n\n` +
-      "Candidates are distributed evenly across the current rows at -15, +15, -30, +30… frames. Existing ranks stay unchanged.",
+      "Candidates are distributed evenly around current rows: ±15-frame steps for L/M/S and verified ~500 ms selected pictures for N. Existing ranks stay unchanged.",
     )) return;
 
     try {
@@ -556,7 +564,7 @@ export default function SubmissionsDashboard() {
                           ? "Add at least one candidate first"
                           : state.rows.length >= 100
                             ? "This session already has 100 rows"
-                            : "Fill to 100 rows using nearby frames at 15-frame steps"}
+                            : "Fill to 100 rows using verified nearby positions"}
                         onClick={() => handleFillNeighbors(state)}
                       >
                         ✦ Filler to 100
@@ -628,7 +636,7 @@ export default function SubmissionsDashboard() {
                       />
                       <input
                         className={`${SMALL_INPUT} w-32`}
-                        placeholder={state.queryType === "trake" ? "frame,frame,…" : "frame"}
+                        placeholder={draft.videoId.startsWith("N") ? "source milliseconds" : state.queryType === "trake" ? "frame,frame,…" : "frame"}
                         value={draft.frames}
                         onChange={(e) => setNewRowDraft((prev) => ({ ...prev, [summary.session]: { ...draft, frames: e.target.value } }))}
                         onKeyDown={(e) => { if (e.key === "Enter") handleAddRow(summary.session, state.queryType); }}
@@ -689,11 +697,12 @@ export default function SubmissionsDashboard() {
                                 </button>
                               </div>
                               <div className="flex flex-wrap gap-1.5 pl-6">
+                                <span className="text-xs">{row.unit === "milliseconds" ? "ms" : "frames"}{row.timingStatus === "unresolved" ? " · timing unresolved" : ""}</span>
                                 {row.frames.map((frame, fi) => (
                                   <div key={fi} className="flex items-center gap-1 border border-stone-300 dark:border-stone-700 rounded p-1">
-                                    <button type="button" onClick={() => openEntry(summary.session, i, row.videoId, frame)}>
+                                    <button type="button" onClick={() => openEntry(summary.session, i, row.videoId, frame, fi)}>
                                       <img
-                                        src={rowThumbUrl(row.videoId, frame, fps)}
+                                        src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[fi])}
                                         alt=""
                                         className="w-16 h-9 object-cover rounded hover:ring-2 hover:ring-orange-600 transition"
                                       />

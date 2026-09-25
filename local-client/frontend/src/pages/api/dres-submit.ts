@@ -96,7 +96,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   let fps: number | undefined;
-  if (saved.queryType !== "trake") {
+  if (saved.queryType !== "trake" && !row.videoId.startsWith("N")) {
     try {
       const response = await fetch(`${BACKEND}/api/video/${encodeURIComponent(row.videoId)}`, {
         signal: AbortSignal.timeout(5000),

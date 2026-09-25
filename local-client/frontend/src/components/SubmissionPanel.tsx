@@ -1,3 +1,4 @@
+import { parsePosition } from "@/lib/submission/format";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmissionQueryType, SubmissionSessionSummary, SubmissionState } from "@/types";
 import {
@@ -157,13 +158,12 @@ export default function SubmissionPanel({ onClose }: Props) {
     if (!session || !state) return;
     const videoId = newVideoId.trim();
     if (!videoId) return;
-    const frames = newFrames
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n) && n >= 0);
+    let frames: number[];
+    try { frames = newFrames.split(",").map(parsePosition); }
+    catch (error: any) { window.alert(error.message); return; }
     if (frames.length === 0) return;
     if (state.queryType !== "trake" && frames.length > 1) {
-      window.alert("kis/qa rows take exactly one frame.");
+      window.alert("KIS/QA rows take one position: N milliseconds, L/M/S frames.");
       return;
     }
     try {
@@ -179,7 +179,8 @@ export default function SubmissionPanel({ onClose }: Props) {
     if (!session) return;
     const raw = window.prompt("Add frame number to this candidate:");
     if (!raw) return;
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!Number.isFinite(frame) || frame < 0) return;
     try {
       setState(await addSubmissionRowFrame(session, videoId, frame, rowIndex));
@@ -198,7 +199,8 @@ export default function SubmissionPanel({ onClose }: Props) {
   }
 
   async function handleEditFrame(rowIndex: number, frameIndex: number, raw: string) {
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!session || !Number.isFinite(frame) || frame < 0) return;
     setState(await editRowFrame(session, rowIndex, frameIndex, frame));
   }
@@ -321,7 +323,7 @@ export default function SubmissionPanel({ onClose }: Props) {
                 />
                 <input
                   className={`${SMALL_INPUT} w-32`}
-                  placeholder={state.queryType === "trake" ? "frame,frame,…" : "frame"}
+                  placeholder={newVideoId.startsWith("N") ? "source milliseconds" : state.queryType === "trake" ? "frame,frame,…" : "frame"}
                   value={newFrames}
                   onChange={(e) => setNewFrames(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") handleAddRow(); }}
@@ -392,9 +394,10 @@ export default function SubmissionPanel({ onClose }: Props) {
                           </button>
                         </div>
                         <div className="flex flex-wrap gap-1.5 pl-6">
+                          <span className="text-xs">{row.unit === "milliseconds" ? "ms" : "frames"}{row.timingStatus === "unresolved" ? " · timing unresolved" : ""}</span>
                           {row.frames.map((frame, fi) => (
                             <div key={fi} className="flex items-center gap-1 border border-stone-300 dark:border-stone-700 rounded p-1">
-                              <img src={rowThumbUrl(row.videoId, frame, fps)} alt="" className="w-14 h-8 object-cover rounded" />
+                              <img src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[fi])} alt="" className="w-14 h-8 object-cover rounded" />
                               <input
                                 key={frame}
                                 type="number"
