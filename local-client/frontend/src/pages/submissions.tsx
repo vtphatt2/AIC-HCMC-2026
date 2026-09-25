@@ -54,6 +54,16 @@ const SMALL_INPUT =
 const ANSWER_INPUT =
   "w-full bg-cream-card dark:bg-stone-800 border-2 border-stone-800 dark:border-stone-500 rounded px-2.5 py-1.5 text-sm text-stone-900 dark:text-stone-50 focus:outline-none focus:ring-2 focus:ring-orange-600";
 
+interface DresInfo {
+  evaluations: { id: string; name: string }[];
+  selectedEvaluationId: string;
+  state: { taskId?: string; taskStatus: string; timeLeft?: number } | null;
+}
+
+function dresCandidateKey(session: string, taskId: string | undefined, row: SubmissionState["rows"][number]): string {
+  return JSON.stringify([session, taskId, row]);
+}
+
 // Local draft while typing, saved on blur — see SubmissionPanel.tsx for why
 // (saving on every keystroke round-trips to the server before React
 // re-renders the controlled value, which breaks Vietnamese IME composition).
@@ -149,6 +159,11 @@ export default function SubmissionsDashboard() {
   const [dragOverRow, setDragOverRow] = useState<{ session: string; row: number } | null>(null);
   const [showSessionManager, setShowSessionManager] = useState(false);
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
+  const [dresInfo, setDresInfo] = useState<DresInfo | null>(null);
+  const [dresError, setDresError] = useState<string | null>(null);
+  const [dresSubmitting, setDresSubmitting] = useState<string | null>(null);
+  const [dresResults, setDresResults] = useState<Record<string, string>>({});
+  const [dresPin, setDresPin] = useState("");
 
   const loadedStates = Object.values(states).filter(
     (state): state is SubmissionState => Boolean(state && Array.isArray(state.rows)),
@@ -188,6 +203,56 @@ export default function SubmissionsDashboard() {
     const interval = setInterval(refreshAll, 5000);
     return () => clearInterval(interval);
   }, [refreshAll]);
+
+  async function refreshDres(evaluationId?: string) {
+    try {
+      const query = evaluationId ? `?evaluationId=${encodeURIComponent(evaluationId)}` : "";
+      const response = await fetch(`/api/dres-submit${query}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "DRES status unavailable");
+      setDresInfo(data);
+      setDresError(null);
+    } catch (error) {
+      setDresError(error instanceof Error ? error.message : "DRES status unavailable");
+    }
+  }
+
+  useEffect(() => { refreshDres(); }, []);
+
+  async function handleDresSubmit(state: SubmissionState, rowIndex: number) {
+    const evaluationId = dresInfo?.selectedEvaluationId;
+    const taskId = dresInfo?.state?.taskId;
+    const row = state.rows[rowIndex];
+    if (!evaluationId || !taskId || dresInfo?.state?.taskStatus !== "RUNNING" || !row) return;
+    const label = state.queryType === "qa"
+      ? `QA-${row.answer || "<missing answer>"}-${row.videoId}-<time(ms)>`
+      : state.queryType === "trake"
+        ? `TR-${row.videoId}-${row.frames.join(",")}`
+        : `${row.videoId} at frame ${row.frames[0]} (converted to ms)`;
+    if (!window.confirm(`Submit this ${state.queryType.toUpperCase()} candidate to DRES?\n\n` +
+      `Evaluation: ${evaluationId}\nTask: ${taskId}\nAnswer: ${label}\n\n` +
+      "A wrong answer can reduce your score. Only continue if you selected the correct current task.")) return;
+    const key = dresCandidateKey(state.session, taskId, row);
+    setDresSubmitting(key);
+    setDresResults((previous) => ({ ...previous, [key]: "Sending to DRES…" }));
+    try {
+      const response = await fetch("/api/dres-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-dres-submit-pin": dresPin },
+        body: JSON.stringify({ evaluationId, taskId, session: state.session, rowIndex, expectedRow: JSON.stringify(row) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "DRES submission failed");
+      setDresResults((previous) => ({
+        ...previous,
+        [key]: `DRES ${data.verdict}: ${data.description} · ${JSON.stringify(data.answer)}`,
+      }));
+    } catch (error) {
+      setDresResults((previous) => ({ ...previous, [key]: error instanceof Error ? error.message : "DRES submission failed" }));
+    } finally {
+      setDresSubmitting(null);
+    }
+  }
 
   function updateState(session: string, updated: SubmissionState) {
     setStates((prev) => ({ ...prev, [session]: updated }));
@@ -374,6 +439,42 @@ export default function SubmissionsDashboard() {
               <a href="/" className="font-retro text-sm text-orange-700 dark:text-orange-400 hover:underline">Back to search</a>
             </div>
           </header>
+
+          <section className="border-2 border-stone-800 dark:border-stone-500 rounded p-3 bg-cream-card dark:bg-stone-800 text-sm space-y-2">
+            <div className="flex flex-wrap items-center gap-3">
+              <strong className="font-retro uppercase text-xs">DRES live submission</strong>
+              {dresInfo && dresInfo.evaluations.length > 0 && (
+                <select
+                  className={SMALL_INPUT}
+                  value={dresInfo.selectedEvaluationId}
+                  onChange={(event) => refreshDres(event.target.value)}
+                  aria-label="DRES evaluation"
+                >
+                  <option value="">Select evaluation</option>
+                  {dresInfo.evaluations.map((evaluation) => (
+                    <option key={evaluation.id} value={evaluation.id}>{evaluation.name} ({evaluation.id})</option>
+                  ))}
+                </select>
+              )}
+              <button className={BTN} onClick={() => refreshDres(dresInfo?.selectedEvaluationId)}>↻ Refresh DRES</button>
+              <input
+                type="password"
+                className={`${SMALL_INPUT} w-32`}
+                placeholder="Submit PIN"
+                aria-label="DRES submit PIN"
+                autoComplete="off"
+                value={dresPin}
+                onChange={(event) => setDresPin(event.target.value)}
+              />
+            </div>
+            {dresError && <p className="text-red-600">{dresError}</p>}
+            {dresInfo && dresInfo.evaluations.length === 0 && <p>No active DRES evaluation.</p>}
+            {dresInfo?.state && (
+              <p>Task: <strong>{dresInfo.state.taskId || "none"}</strong> · {dresInfo.state.taskStatus}
+              </p>
+            )}
+            <p className="text-xs text-stone-500">Only a confirmed click on a candidate sends an answer. CSV export remains available.</p>
+          </section>
 
           {sessions.length === 0 && (
             <p className="text-sm text-stone-500 italic">No submission sessions yet.</p>
@@ -626,6 +727,18 @@ export default function SubmissionsDashboard() {
                                   />
                                 </div>
                               )}
+                              <div className="pl-6 space-y-1">
+                                <button
+                                  className={`${BTN} disabled:opacity-40 disabled:cursor-not-allowed`}
+                                  disabled={!dresPin || !dresInfo?.selectedEvaluationId || !dresInfo.state?.taskId || dresInfo.state.taskStatus !== "RUNNING" || Boolean(dresSubmitting)}
+                                  onClick={() => handleDresSubmit(state, i)}
+                                >
+                                  {dresSubmitting === dresCandidateKey(state.session, dresInfo?.state?.taskId, row) ? "Sending…" : "Submit to DRES"}
+                                </button>
+                                {dresResults[dresCandidateKey(state.session, dresInfo?.state?.taskId, row)] && (
+                                  <p className="text-xs break-all" role="status">{dresResults[dresCandidateKey(state.session, dresInfo?.state?.taskId, row)]}</p>
+                                )}
+                              </div>
                             </div>
                           );
                         })}

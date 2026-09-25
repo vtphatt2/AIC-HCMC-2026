@@ -24,10 +24,13 @@
 - M8 local proxy smoke with the real agent service and unavailable VORTA backend: production Next.js `/api/agent-verify` accepted a request, reached `done` with only visual UNKNOWN checks, and reset to idle; page `/` stayed HTTP 200. After stopping agent service, Verify proxy returned HTTP 503 while page `/` stayed HTTP 200. The UI now marks missing VORTA evidence explicitly.
 - Added `docs/agent/USAGE.md` with existing-venv/Codex checks, one-command and manual startup, Windows, LAN/tunnel wiring, UI steps, smoke commands and failure recovery. Routed the two agent API paths through Next.js in `scripts/share-proxy.cjs` so tunnel users can reach them.
 - Documentation/routing check: Node stdlib proxy smoke with fake frontend/backend returned the expected upstream for 6/6 paths (`/api/agent-search`, `/api/agent-verify`, manual search/media, submission, page) — PASS. No package installation.
+- Final-round DRES: read `HD-ChungKet-2026.pdf` from `origin/zip-decode/fix`; added operator-triggered candidate submission from `/submissions`, server-only DRES session token, submit PIN, active task check, FPS-based KIS/Q&A timestamps, TRAKE frame-number format, duplicate guard, and explicit DRES result. Search/Verify Agents still never submit.
+- DRES tests: `npm run build` PASS; `npm test` PASS 36/36; `node scripts/test-dres-smoke.cjs` PASS with fake DRES/VORTA (status, PIN, stale row/task, missing metadata, exact payload, duplicate guard and task rollover). No request was sent to BTC.
+- Added [final-round setup and operator guide](../DRES.md). Existing CSV/ZIP export remains available.
 
 # DOING
 
-- Feature freeze for this pass: no further features; only host-dependent acceptance checks remain.
+- DRES integration review and local-only test completion; host-dependent acceptance checks remain.
 
 # NEXT
 
@@ -41,6 +44,7 @@
 - The main hosting device is occupied; M4 live visual transport test is temporarily deferred.
 - No browser automation executable is installed; two actual browser sessions remain unverified under the no-install constraint.
 - M7 retrieval replay and M8 deployment/restart checks cannot run on the occupied main host. Planning-only replay and local startup/build checks passed.
+- Live DRES rehearsal requires BTC session credentials, a running evaluation/task, and host access. The fake-server test proves local wiring only.
 
 # DECISIONS
 
@@ -52,3 +56,4 @@
 - Run only one `agent.server` process because state is in memory. The agent service is optional; the Next.js proxy reports its failure without affecting manual search.
 - Per operator request, defer only the host-dependent M4 live test. Keep visual checks `UNKNOWN` until real image transport is proven; transcript/metadata work can continue.
 - Verify uses a separate ephemeral Codex context, one serialized in-memory queue and bounded evidence from a single video. Its visual verdicts remain UNKNOWN; no automatic submission is implemented.
+- DRES submission is a separate human action on one dashboard row. Team session ID stays on the Next.js server; the submit PIN is configured there and entered per browser tab. The DRES payload includes the active task ID. TRAKE uses numeric frame numbers (operator confirmed). Duplicate protection is in memory for one Next.js process.

@@ -1,9 +1,13 @@
 # Submission Dashboard
 
 How the team builds and exports AIC26 submission CSVs during the contest.
+Final-round, operator-triggered DRES submission: [DRES.md](DRES.md).
 Contest rules (filename format, row format, packaging) are
 [SUBMISSION_RULES.md](SUBMISSION_RULES.md) — this page is about the tool,
 not the rules.
+
+The CSV/ZIP workflow below is for the earlier upload format. In the final round,
+use the DRES panel on this dashboard to submit one reviewed candidate at a time.
 
 ## Sessions = files
 

@@ -80,6 +80,28 @@ function readState(session: string): SubmissionState | null {
   return { session, queryType: meta.queryType, draftRowIndex: meta.draftRowIndex, rows, createdAt: meta.createdAt, updatedAt: meta.updatedAt };
 }
 
+// DRES sends exactly one stored row. Read its physical CSV line so a malformed
+// preceding line cannot shift the index that the operator reviewed in the UI.
+export function readCandidateForDres(session: string, rowIndex: number): {
+  queryType: SubmissionQueryType;
+  row: SubmissionRow;
+} | null {
+  if (!ID.test(session) || !isNonNegativeInt(rowIndex) || !existsSync(metaFile(session))) return null;
+  const meta: Meta = JSON.parse(readFileSync(metaFile(session), "utf8"));
+  if (!QUERY_TYPES.includes(meta.queryType)) return null;
+  const lines = existsSync(csvFile(session))
+    ? readFileSync(csvFile(session), "utf8").split(/\r?\n/).filter((line) => line.length > 0)
+    : [];
+  if (rowIndex >= lines.length) return null;
+  const rows: SubmissionRow[] = [];
+  for (const line of lines) {
+    const row = parseLine(meta.queryType, line);
+    if ("error" in row || serializeRow(meta.queryType, row) !== line) return null;
+    rows.push(row);
+  }
+  return { queryType: meta.queryType, row: rows[rowIndex] };
+}
+
 function writeState(state: SubmissionState): void {
   mkdirSync(ROOT, { recursive: true });
   const meta: Meta = {

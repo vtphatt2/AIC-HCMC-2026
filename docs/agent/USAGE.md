@@ -88,7 +88,7 @@ Với ngrok/Cloudflare, dùng `NEXT_PUBLIC_API_URL=/`, để `AGENT_SERVER_URL` 
 1. Operator có thể tìm kiếm thủ công như trước, kể cả khi agent đang chạy.
 2. Dán official query vào ô **Search Agent** (hoặc chọn **Use manual text**), rồi bấm **Agent Search**. Kết quả xuất hiện trong panel agent; **Cancel** hủy job, **Reset** xóa query và cả trạng thái Verify liên quan.
 3. Trên một kết quả thủ công hoặc agent, bấm **Verify with Agent**. Verify chỉ xử lý candidate được người bấm chọn; hai operator dùng chung một queue. **Cancel Verify** và **Reset Verify** chỉ tác động đến Verify.
-4. Đọc từng điều kiện `MATCH`, `MISMATCH`, `UNKNOWN`, mở video để kiểm tra và tự quyết định. Hiện Verify chỉ dùng transcript/metadata; mọi điều kiện cần nhìn ảnh luôn là `UNKNOWN` cho tới khi test truyền ảnh thật hoàn tất. Không có tự động gửi DRES.
+4. Đọc từng điều kiện `MATCH`, `MISMATCH`, `UNKNOWN`, mở video để kiểm tra và tự quyết định. Hiện Verify chỉ dùng transcript/metadata; mọi điều kiện cần nhìn ảnh luôn là `UNKNOWN` cho tới khi test truyền ảnh thật hoàn tất. Agent không tự gửi DRES; cách operator gửi thủ công xem [DRES.md](../DRES.md).
 
 Khi bắt đầu official query mới bằng Agent Search, hệ thống hủy/bỏ qua job cũ, xóa kết quả agent và queue Verify. Yêu cầu Verify mang query cũ bị từ chối bằng HTTP `409`. Đừng chạy nhiều agent service process vì chúng không chia sẻ RAM.
 

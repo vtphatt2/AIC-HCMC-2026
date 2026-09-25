@@ -21,7 +21,7 @@ const API = { host: "127.0.0.1", port: Number(process.env.BACKEND_PORT) || 8000 
 // optional agent service. All other /api paths keep going straight to VORTA.
 function upstreamFor(url) {
   const path = url.split("?", 1)[0];
-  if (["/api/tuning-draft", "/api/submission", "/api/agent-search", "/api/agent-verify"].includes(path)) return NEXT;
+  if (["/api/tuning-draft", "/api/submission", "/api/dres-submit", "/api/agent-search", "/api/agent-verify"].includes(path)) return NEXT;
   if (url.startsWith("/api/") || url.startsWith("/static/")) return API;
   return NEXT;
 }
