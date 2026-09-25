@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 import numpy as np
-from app.services.staged_artifacts import metadata_generation, reusable_vectors, atomic_json
+from app.services.staged_artifacts import (metadata_generation, reusable_vectors,
+                                           adopt_source_verified_vectors, atomic_json)
 
 
 class StagedArtifactTests(unittest.TestCase):
@@ -75,6 +76,43 @@ class StagedArtifactTests(unittest.TestCase):
         folder, _ = metadata_generation(self.root, 'N001', self.payload, self.scenes)
         self.assertNotEqual(folder, self.folder)
         self.assertFalse((self.folder / 'scenes.json').exists())
+
+    def test_adopts_only_source_verified_vectors_with_identical_selected_rows(self):
+        atomic_json(self.folder / 'verified.json', self.marker())
+        old_bytes = (self.folder / 'embeddings.npy').read_bytes()
+        new_payload = {**self.payload, 'generation': 'b' * 64,
+                       'source_duration_ms': 600000,
+                       'decode_provenance': {'source_map_threads': 4,
+                                             'verified_embed_threads': 4}}
+        new_folder, new_payload = metadata_generation(
+            self.root, 'N001', new_payload, self.scenes)
+        new_provenance = {**self.provenance,
+                          'decode_provenance': new_payload['decode_provenance']}
+        self.assertTrue(adopt_source_verified_vectors(
+            self.root, 'N001', new_folder, new_payload, self.scenes, new_provenance))
+        self.assertEqual((new_folder / 'embeddings.npy').read_bytes(), old_bytes)
+        self.assertEqual((self.folder / 'embeddings.npy').read_bytes(), old_bytes)
+        self.assertTrue(reusable_vectors(new_folder, new_payload, new_provenance))
+        self.assertEqual(json.loads((new_folder / 'verified.json').read_text())[
+            'adopted_from_generation'], self.payload['generation'])
+
+    def test_changed_picture_or_encoder_setting_cannot_adopt(self):
+        atomic_json(self.folder / 'verified.json', self.marker())
+        changed = {**self.payload, 'generation': 'c' * 64,
+                   'decode_provenance': {'source_map_threads': 4},
+                   'keyframes': [{'frame_number': 0, 'source_pts': 200,
+                                  'source_checksum': 456}]}
+        folder, changed = metadata_generation(self.root, 'N001', changed, self.scenes)
+        self.assertFalse(adopt_source_verified_vectors(
+            self.root, 'N001', folder, changed, self.scenes, self.provenance))
+        self.assertFalse((folder / 'embeddings.npy').exists())
+        same_picture = {**changed, 'generation': 'd' * 64,
+                        'keyframes': self.payload['keyframes']}
+        folder, same_picture = metadata_generation(
+            self.root, 'N001', same_picture, self.scenes)
+        self.assertFalse(adopt_source_verified_vectors(
+            self.root, 'N001', folder, same_picture, self.scenes,
+            {**self.provenance, 'model': 'different'}))
 
 
 if __name__ == '__main__':

@@ -18,8 +18,22 @@ sys.path.insert(0, str(ROOT / 'remote-server'))
 from dotenv import load_dotenv
 load_dotenv(ROOT / 'remote-server/.env')
 from app.services import local_zip_media as media
+from app.services.exact_frame_pts import index_path
+from app.services.readiness_policy import source_map_decoder_threads
+from app.services.source_timeline import source_fingerprint, source_map_sha256
 from app.services.video_quarantine import clear_release_block
 from scripts.audit_decoder_agreement import audit_video, write_report
+
+
+def replay_identity(video: str, index, map_path: Path, threads: int) -> dict:
+    """Require a repeat of this source's current authoritative map setting."""
+    if (map_path.resolve() != index_path(video, index).resolve() or
+            threads != source_map_decoder_threads(video, index)):
+        raise ValueError(f'{video}: stability replay must use the current source map and decoder')
+    stat = map_path.stat()
+    return {'source': source_fingerprint(index), 'map_path': str(map_path.resolve()),
+            'map_size': stat.st_size, 'map_mtime_ns': stat.st_mtime_ns,
+            'map_sha256': source_map_sha256(map_path), 'decoder_threads': threads}
 
 
 def main() -> None:
@@ -49,15 +63,20 @@ def main() -> None:
     for number, (video, source_row) in enumerate(sorted(candidates.items()), 1):
         index = media._build_index(video, entries[video])
         map_path = Path(source_row['map_path'])
+        identity = replay_identity(video, index, map_path, args.threads)
+        if any(source_row.get(key) != identity[key] for key in
+               ('source', 'map_path', 'map_size', 'map_mtime_ns')):
+            raise ValueError(f'{video}: cross-setting report belongs to an old source map')
         saved = report['videos'].get(video)
-        if saved and saved.get('source_map_path') == str(map_path) and \
+        if saved and saved.get('identity') == identity and \
+                saved.get('cross_setting_mismatch') == source_row and \
                 saved.get('classification') in ('stable_current_map', 'unstable_current_map'):
             result = saved
         else:
             replay = audit_video(video, index, args.threads, map_path=map_path)
             classification = ('stable_current_map' if replay['status'] == 'exact'
                               else 'unstable_current_map')
-            result = {'classification': classification, 'source_map_path': str(map_path),
+            result = {'classification': classification, 'identity': identity,
                       'cross_setting_mismatch': source_row, 'same_setting_replay': replay}
             report['videos'][video] = result
             write_report(args.report, report)

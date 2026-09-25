@@ -516,6 +516,7 @@ class VideoFrameIndex:
     nal_length_size: int = 4
     presentation_samples: np.ndarray | None = None
     exact_frame_pts: np.ndarray | None = None
+    duration_ticks: int | None = None  # video track duration in source time-base ticks
 
     def nearest_keyframe_sample(self, frame_id: int) -> int:
         i = bisect_right(self.keyframe_frames, frame_id) - 1
@@ -629,6 +630,7 @@ def _build_index(video_id: str, entry: dict) -> VideoFrameIndex:
         timescale=timescale,
         fps=fps,
         base_pts=base_pts,
+        duration_ticks=duration,
         # Numeric columns avoid a dictionary and three boxed integers per frame.
         # Keep timestamps signed: composition offsets may precede decode time.
         sample_offsets=array("Q", offsets),

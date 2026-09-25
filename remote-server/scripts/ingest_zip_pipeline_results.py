@@ -81,6 +81,18 @@ def selected_timestamp_ms(video_id: str, item: dict[str, Any], fps: float,
     return int(int(item["frame_number"]) / fps * 1000)
 
 
+def source_duration_ms(video_id: str, keyframes: dict[str, Any], scenes: dict[str, Any]) -> int:
+    """Use the source MP4 track duration for VFR N when the verified field exists."""
+    if video_id.startswith('N') and keyframes.get('version', 1) >= 2 and \
+            'source_duration_ms' in keyframes:
+        duration = keyframes['source_duration_ms']
+        if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
+            raise ValueError(f'{video_id}: invalid source duration')
+        return duration
+    # Old artifacts retain their established nominal-duration behavior.
+    return int(int(scenes['num_frames']) / float(scenes['fps']) * 1000)
+
+
 def youtube_id_from_watch_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.netloc.endswith("youtu.be"):
@@ -246,7 +258,7 @@ def iter_video_records(
                 "title": known.get("title") or video_id,
                 "youtube_id": known.get("youtube_id", ""),
                 "fps": fps,
-                "duration_ms": int(int(scenes["num_frames"]) / fps * 1000),
+                "duration_ms": source_duration_ms(video_id, keyframes, scenes),
                 "frame_count": len(records),
             }
             yield video, records

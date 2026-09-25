@@ -63,13 +63,20 @@ def timeline_response(video_id, index, table=None):
     if scale <= 0:
         raise ValueError('Invalid source time base')
     origin = int(kept[0, 1])
-    return {'version': 2, 'video_id': video_id, 'submission_unit': 'milliseconds',
+    result = {'version': 2, 'video_id': video_id, 'submission_unit': 'milliseconds',
             'verified_timing': True, 'time_base': {'num': 1, 'den': scale},
             'playback_origin_pts': origin, 'source_fingerprint': source_fingerprint(index),
             'frame_ids': kept[:, 0].tolist(), 'source_pts': kept[:, 1].tolist(),
             'presentation_us': ((kept[:, 1] - origin) * 1_000_000 // scale).tolist(),
             'omitted_frame_ids': omitted[:, 0].tolist(),
             'omission_reason': 'non-increasing source presentation timestamp'}
+    duration_ticks = getattr(index, 'duration_ticks', None)
+    if duration_ticks is not None:
+        if not int(kept[-1, 1]) - origin <= duration_ticks <= \
+                int(kept[-1, 1]) - origin + scale:
+            raise ValueError('Source MP4 duration disagrees with decoded presentation timeline')
+        result['source_duration_ms'] = (duration_ticks * 1000 + scale // 2) // scale
+    return result
 
 
 def select_pictures(table, timescale, scenes, existing, policy=SelectionPolicy()):

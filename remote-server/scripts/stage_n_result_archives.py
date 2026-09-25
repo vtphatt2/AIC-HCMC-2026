@@ -24,6 +24,7 @@ load_dotenv(ROOT / 'remote-server/.env')
 import numpy as np
 from app.services import local_zip_media as media
 from app.services.source_timeline import load_timeline, source_fingerprint, monotonic_entries
+from app.services.readiness_policy import decode_provenance
 from app.services.staged_artifacts import artifact_digests, atomic_json, file_digest
 from app.services.video_quarantine import release_blocked_video_ids
 from scripts.ingest_zip_pipeline_results import video_directories
@@ -49,17 +50,27 @@ def validate_video(video_id, index, folder: Path, generation: str):
     scenes = json.loads((folder / 'scenes.json').read_text())
     verified = json.loads((folder / 'verified.json').read_text())
     rows = keyframes['keyframes']
+    decoder = decode_provenance(video_id, index)
     if (keyframes.get('version') != 2 or keyframes.get('generation') != generation or
             verified.get('generation') != generation or verified.get('rows') != len(rows) or
             verified.get('source_checksums') != 'exhaustive' or
             verified.get('source_time_base_verified') is not True or
             verified.get('published') is not False or
+            keyframes.get('decode_provenance') != decoder or
+            verified.get('decode_provenance') != decoder or
             keyframes.get('source_identity') != source_fingerprint(index) or
             keyframes.get('num_keyframes') != len(rows)):
         raise ValueError(f'{video_id}: incomplete or stale verified generation')
     if any(verified.get(name) != digest for name, digest in artifact_digests(folder).items()):
         raise ValueError(f'{video_id}: verified artifact digest missing or changed')
     table = load_timeline(video_id, index)
+    span = int(table[-1, 1]) - int(table[0, 1])
+    duration_ticks = index.duration_ticks
+    if (duration_ticks is None or duration_ticks <= 0 or index.timescale <= 0 or
+            not span <= duration_ticks <= span + index.timescale or
+            keyframes.get('source_duration_ms') !=
+            (duration_ticks * 1000 + index.timescale // 2) // index.timescale):
+        raise ValueError(f'{video_id}: source duration differs from the MP4 presentation track')
     kept, omitted = monotonic_entries(table)
     frame_ids = [int(row['frame_number']) for row in rows]
     if (not frame_ids or len(frame_ids) != len(set(frame_ids)) or
@@ -185,14 +196,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     root = ROOT / 'challenge_resources/data/zip_embeddings'
     parser.add_argument('--stage', type=Path, default=root / 'readiness/n')
-    parser.add_argument('--audit-stage', type=Path, default=root / 'readiness/n031_audit')
+    parser.add_argument('--audit-stage', type=Path, action='append',
+                        help='Additional verified recovery stage; repeat for each separate archive')
     parser.add_argument('--source-dir', type=Path, default=root)
     parser.add_argument('--output-dir', type=Path, default=root / 'readiness/publication')
     parser.add_argument('--archive', help='Stage only this result ZIP filename')
     parser.add_argument('--recover', nargs='*', default=[],
                         help='Include independently verified blocked videos in staged archive only')
     args = parser.parse_args()
-    stages = stage_entries(args.stage, args.audit_stage)
+    audit_stages = args.audit_stage if args.audit_stage is not None else [
+        root / 'readiness/n001_recovery', root / 'readiness/n031_audit']
+    stages = stage_entries(args.stage, *audit_stages)
     blocked = release_blocked_video_ids()
     recover = frozenset(args.recover)
     if recover - blocked:

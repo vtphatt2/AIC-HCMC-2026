@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -109,3 +110,48 @@ def reusable_vectors(folder: Path, payload: dict, provenance: dict, *, adopt_leg
         return True
     except (OSError, ValueError, KeyError):
         return False
+
+
+def adopt_source_verified_vectors(stage: Path, video_id: str, folder: Path,
+                                  payload: dict, scenes: dict,
+                                  provenance: dict) -> bool:
+    """Reuse vectors whose every selected picture matched the same source map.
+
+    A decoder policy change can alter an unselected frame while leaving every
+    PE-Core input picture identical. The previous exhaustive checksum marker,
+    unchanged selected rows, metadata and encoder settings establish reuse.
+    Keep the old generation intact and write a complete marker only after the
+    copied vectors pass the normal verification gate.
+    """
+    if (folder / 'verified.json').exists():
+        return False
+    # Duration describes the same video track but does not enter the encoder.
+    comparable = lambda value: {key: item for key, item in value.items()
+                                if key not in ('generation', 'decode_provenance',
+                                               'source_duration_ms')}
+    for candidate in sorted((stage / video_id).iterdir()):
+        if candidate == folder or not candidate.is_dir():
+            continue
+        try:
+            old_payload = json.loads((candidate / 'keyframes.json').read_text())
+            if (comparable(old_payload) != comparable(payload) or
+                    json.loads((candidate / 'scenes.json').read_text()) != scenes):
+                continue
+            old_provenance = {**provenance,
+                              'decode_provenance': old_payload.get('decode_provenance')}
+            if not reusable_vectors(candidate, old_payload, old_provenance):
+                continue
+            temporary = folder / 'embeddings.adopting.npy'
+            shutil.copyfile(candidate / 'embeddings.npy', temporary)
+            os.replace(temporary, folder / 'embeddings.npy')
+            marker = {'version': 1, 'generation': payload['generation'],
+                      'rows': payload['num_keyframes'],
+                      'source_checksums': 'exhaustive',
+                      'source_time_base_verified': True,
+                      **provenance, **artifact_digests(folder), 'published': False,
+                      'adopted_from_generation': old_payload['generation']}
+            atomic_json(folder / 'verified.json', marker)
+            return reusable_vectors(folder, payload, provenance, adopt_legacy=False)
+        except (OSError, ValueError, KeyError):
+            continue
+    return False

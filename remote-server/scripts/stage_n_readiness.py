@@ -26,7 +26,8 @@ from app.services.source_timeline import load_timeline, source_fingerprint, sele
 from app.services.readiness_policy import (SelectionPolicy, selection_policy,
     decode_provenance, verified_embed_decoder_threads)
 from app.services.video_quarantine import release_blocked_video_ids
-from app.services.staged_artifacts import metadata_generation, reusable_vectors, artifact_digests
+from app.services.staged_artifacts import (metadata_generation, reusable_vectors,
+                                            adopt_source_verified_vectors, artifact_digests)
 from pipeline.io_utils import atomic_json
 
 
@@ -66,6 +67,11 @@ def main():
             scenes = json.loads((source_dir / 'scenes.json').read_text())
             index = media._build_index(video, entry)
             table = load_timeline(video, index)
+            if (index.duration_ticks is None or index.duration_ticks <= 0 or
+                    index.timescale <= 0 or
+                    index.duration_ticks < int(table[-1, 1]) - int(table[0, 1]) or
+                    index.duration_ticks - (int(table[-1, 1]) - int(table[0, 1])) > index.timescale):
+                raise ValueError(f'{video}: MP4 duration disagrees with decoded presentation timeline')
             rows, omitted = select_pictures(table, index.timescale, scenes['scenes'], old['keyframes'], policy)
             identity = source_fingerprint(index)
             decoder = decode_provenance(video, index)
@@ -73,6 +79,7 @@ def main():
             payload = {**old, 'version': 2, 'selection': {'strategy': 'presentation_interval', **asdict(policy)},
                        'source_identity': identity, 'generation': signature,
                        'source_time_base': {'num': 1, 'den': index.timescale},
+                       'source_duration_ms': (index.duration_ticks * 1000 + index.timescale // 2) // index.timescale,
                        'playback_origin_pts': int(table[0, 1]), 'keyframes': rows,
                        'num_keyframes': len(rows), 'omitted_entries': omitted,
                        'source_frame_count': len(table), 'submission_unit': 'milliseconds'}
@@ -114,6 +121,10 @@ def main():
                       'decode_provenance': decode_provenance(video, index)}
         if reusable_vectors(folder, payload, provenance):
             print(f'{number}/{len(jobs)} reused {video}', flush=True)
+            continue
+        if adopt_source_verified_vectors(args.stage, video, folder, payload,
+                                         json.loads((folder / 'scenes.json').read_text()), provenance):
+            print(f'{number}/{len(jobs)} adopted source-verified {video}', flush=True)
             continue
         try:
             options.verified_decoder_threads = verified_embed_decoder_threads(video, index)

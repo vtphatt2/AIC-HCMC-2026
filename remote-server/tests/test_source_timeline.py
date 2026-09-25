@@ -1,13 +1,26 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 import numpy as np
-from app.services.source_timeline import monotonic_entries, select_pictures, generation_signature
+from app.services.source_timeline import (monotonic_entries, select_pictures,
+                                          generation_signature, timeline_response)
 from app.services.readiness_policy import (SelectionPolicy, decode_provenance,
                                            exceptional_decode_provenance,
                                            source_map_decoder_threads, verified_embed_decoder_threads)
 
 
 class SourceTimelineTests(unittest.TestCase):
+    def test_versioned_timeline_exposes_verified_track_duration(self):
+        table = np.array([[0, 200, 1], [1, 700, 2], [2, 1200, 3]], dtype=np.int64)
+        index = SimpleNamespace(timescale=1000, duration_ticks=1250)
+        with patch('app.services.source_timeline.source_fingerprint', return_value={}):
+            result = timeline_response('N001-V001', index, table)
+            self.assertEqual(result['source_duration_ms'], 1250)
+            self.assertEqual(result['playback_origin_pts'], 200)
+            index.duration_ticks = 3000
+            with self.assertRaisesRegex(ValueError, 'duration'):
+                timeline_response('N001-V001', index, table)
+
     def test_vfr_grid_retains_valid_existing_and_original_ids(self):
         table = np.array([[0, 100, 1], [1, 150, 2], [2, 149, 3], [3, 150, 4],
                           [4, 300, 5], [5, 500, 6], [6, 600, 7]], dtype=np.int64)

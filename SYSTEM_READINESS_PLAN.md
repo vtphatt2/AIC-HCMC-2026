@@ -26,12 +26,12 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Reuse decoded source frame/PTS/time-base/checksum maps | complete | All 298 N videos received complete independent replay. Seven existing one-thread profile maps pass exact replay (100,107 frames). Among the remaining maps, 32 differ only across one-/four-thread settings; every fresh four-thread repeat reproduces its authoritative four-thread map exactly. All frame IDs and PTS agree. Cross-setting variation is ignored because the unified pipeline uses the map setting. |
 | Isolated organizer redownload of N031-N040 | complete | Fresh 10,924,602,184-byte ZIP from the supplied URL has the same SHA-256 as local (`f66be6b1bb0189e86f6b8e2df3b704b8e5b85a9d8a82ed806873eb01005551aa`); all 30 entry records match and fresh full CRC passes. No source or derivative replacement is warranted. |
 | N configurable two-second presentation sampling, retain valid selections, deduplicate, no scene cap | complete | 298 N videos / 89,795 staged pictures; stage manifest records identities and omissions. |
-| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. Review found the normal map decoder used four threads while derivatives used two. All derivatives now use their authoritative map's decoder setting, so normal two-thread checkpoints are intentionally invalidated; verified one-thread profile artifacts remain reusable. Resume follows the archive-wide audit. |
+| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. All derivatives now use their authoritative map's decoder setting. The 291-video main stage is running; old vectors are copied into the new generation only when exhaustive selected-source checks, rows, scenes and encoder settings match exactly. Other vectors are recomputed. |
 | N031 non-increasing timestamp exclusions | complete | All 298 N timelines pass exhaustive numeric/source-ID audit; only N031-V001/V002/V003 omit entries (four each). All six adjacent retained pictures pass source PTS/checksum and visual continuity checks, with matching exclusions in validated playback copies. See n_timeline_audit.json and n031_discontinuity_picture_audit.json. |
-| Sequential selected 640px thumbnails and full-resolution inspection | in progress | All 309 N031-V003 and 935 combined N001 recovery selected JPEGs/cards pass source identity and exposed-card comparison (N007 max RGB MAE 2.90; N009 2.85). A bounded full main-stage image/card audit is running across 291 currently nonblocked videos. |
+| Sequential selected 640px thumbnails and full-resolution inspection | in progress | All 309 N031-V003 and 935 combined N001 recovery selected JPEGs/cards pass source identity and exposed-card comparison (N007 max RGB MAE 2.90; N009 2.85). The full main-stage image/card audit needs resumption after the unified decoder-policy change. |
 | Validate staged archives, exports, metadata and indexes | in progress | Recovered N001-N010 ZIP stages all 30 videos/9,181 vectors; full ZIP CRC, ingest dry run and NumPy export agree on every ID, source-PTS millisecond timestamp and vector (max component error 5.96e-8). Offline audit temporarily bypassed the public blocklist; live publication is still prohibited. Superseded 29-video candidate and export files were removed after validation. |
-| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | Recovery copies passed exhaustive source PTS/checksum and output PTS/codec checks. Pulled map hashing plus explicit decoder provenance intentionally changes copy identity, so every served copy is revalidated. N015-V001 and N019-V003 exposed the shared two-thread/four-thread mismatch and are blocked pending the global policy rebuild. Publication is pending. |
-| Preserve VFR timing and playback origin independently of source pictures | pending | Never convert full videos during requests. |
+| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | Recovery copies passed exhaustive source PTS/checksum and output PTS/codec checks. The unified decoder provenance changes copy identity, so the one-job full N conversion/validation has resumed. N015-V001 and N019-V003 exposed the shared two-thread/four-thread mismatch; the global policy fix covers both. Publication is pending. |
+| Preserve VFR timing and playback origin independently of source pictures | in progress | All 298 N MP4 track durations agree with decoded presentation spans within 240 ms; fingerprinted per-video evidence is in n_duration_audit.json. Nominal frame/FPS duration was wrong by >10 s for 15 videos (worst 70.37 s). New staged metadata, timeline API and ingest use the source track duration; old artifacts keep legacy defaults. Playback origin remains a separate field. |
 | Proxy media, timing and availability | in progress | Local HTTP tests preserve timing capabilities, explicit timeline IDs, Range headers and playback bytes; metadata forwarding now includes the tunnel bypass header. Live two-client browser verification remains. |
 | Organizer archive naming, unambiguous ID aliases, M/S title/link refresh | in progress | Both archive naming forms and ambiguity-safe aliases implemented/tested. Local organizer metadata contains L only; M/S source titles/links remain blocked pending authoritative metadata, with no embedding change needed. N absence is expected. |
 | Verify YouTube alignment before preferring it | blocked | S01-V005 and S01-V011 have no authoritative YouTube links in available metadata; do not invent or prefer a link. |
@@ -41,7 +41,7 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Neighbor fill and strict numeric/QA quoting tests | complete | L/M/S and N unit tests, strict parser and quoted QA tests pass. |
 | Machine-readable audit of every M/N/S source/artifact | in progress | Full source/result structural manifest and live PostgreSQL/vector-index manifest written with zero reported structural issues. Picture and playback audits remain. |
 | Exhaustive structural and cross-artifact audit | in progress | All 21 source ZIPs and 21 result ZIPs pass full CRC; 614 source/result videos and 221,760 M/N/S rows align. Packaged vectors match processing output exactly; NumPy export differs by at most 1.19e-7 per component. All live M/N/S PostgreSQL and populated Milvus rows agree. |
-| Picture identity checks | in progress | Every newly repaired N vector passed; main N pass continues. A deterministic M/S semantic audit inventories all 316 videos/2,991 sampled selected rows, including scene boundaries. The M01_V001 and S01-V001 pilots pass checksum-verified source seeking and fresh PE-Core comparison (minimum cosine 0.999987); full 316-video audit awaits the current single GPU job. |
+| Picture identity checks | in progress | Every newly repaired N vector passed; main N pass continues. A deterministic M/S semantic audit inventories all 316 videos/2,991 sampled selected rows, including scene boundaries. The M01_V001 and S01-V001 pilots pass checksum-verified source seeking and fresh PE-Core comparison (minimum cosine 0.999987); CPU source-map preparation has resumed, and full PE-Core sampling follows the N GPU job. |
 | Thumbnail/cache/playback/submission artifact validation | pending | Check generation, images/dimensions, compatibility/timing/seeks, units/round-trips. |
 | Legacy/versioned/interrupted/selective-invalidation tests | pending | Preserve rollback before derivative replacement. |
 | Every N start/middle/end/discontinuity and all exposed thumbnails | pending | Release quarantine only with evidence. |
@@ -343,3 +343,27 @@ result exists. No competition submission is authorized by this plan.
   one-thread candidate maps were removed. N059-V002's earlier random-seek concern
   also passes full sequential replay. The seven older verified profiles remain;
   no organizer corruption or additional exclusion is established.
+- 2026-09-25: Added source/map fingerprint checks to the saved same-setting
+  decoder replay so a changed map cannot inherit old evidence. Added safe vector
+  adoption across N metadata generations: selected rows, scenes, source
+  checksums, model/preprocessing and stored vector bytes must validate before a
+  new marker is written. This avoids needless PE-Core recomputation when a
+  decoder-policy change altered only unselected pictures. Focused tests pass;
+  the real 291-video N stage has adopted matching vectors and recomputed the
+  first missing set. CPU-only M/S source maps and one-job playback conversion
+  run concurrently with memory monitored; no live publication has occurred.
+- 2026-09-25: An archive/ingest review found a global N duration defect:
+  `num_frames / fps` can understate the source presentation length by 70 seconds.
+  Across all 298 N videos, MP4 track duration agrees with the decoded first-to-
+  last PTS span within 240 ms. New stage metadata records track duration in
+  milliseconds, ingest uses it for N, and packaging checks it against the
+  current MP4 and timeline. Existing vector rows are safely adopted because
+  duration does not affect picture selection or PE-Core inputs. The 291-video
+  stage resumed from checkpoints; the seven recovery videos were revalidated
+  and adopted without recomputing identical vectors. Focused duration and
+  packaging tests pass. An isolated N001-N010 candidate had previously passed
+  all 30 videos/9,181 vectors; it was superseded by the duration-aware candidate.
+  The latter passed ZIP CRC, all 30 video metadata/9,181 ingest rows, source
+  duration and frame ID/timestamp checks, and exact normalized vector comparison
+  (maximum component error zero). The obsolete isolated candidate was removed;
+  no live archive or index was changed.

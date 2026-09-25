@@ -27,13 +27,15 @@ class ResultArchiveLayoutTest(unittest.TestCase):
                 archive.writestr(f'phase1_transnet/{folder}/scenes.json',
                                  json.dumps({'fps': 25, 'num_frames': 100}))
                 archive.writestr(f'phase1_transnet/{folder}/keyframes.json',
-                                 json.dumps({'version': 2, 'keyframes': [
+                                 json.dumps({'version': 2, 'source_duration_ms': 6100,
+                                             'keyframes': [
                                      {'frame_number': 25, 'source_pts': 12345,
                                       'source_timebase': 10000, 'source_checksum': 42,
                                       'timestamp_ms': 1235}]}))
                 archive.writestr(f'phase2_embeddings/{folder}/embeddings.npy', array.getvalue())
             records = list(iter_video_records(path, {}))
             self.assertEqual(records[0][1][0]['timestamp_ms'], 1235)
+            self.assertEqual(records[0][0]['duration_ms'], 6100)
 
     def test_ingest_rejects_versioned_n_without_source_pts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
