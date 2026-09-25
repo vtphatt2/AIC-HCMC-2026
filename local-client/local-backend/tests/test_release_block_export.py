@@ -13,6 +13,45 @@ from scripts import export_vectors_npy
 
 
 class ReleaseBlockExportTests(unittest.TestCase):
+    def test_export_uses_verified_n_presentation_time_not_nominal_fps(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = 'videos__N001-V001'
+            data = io.BytesIO()
+            np.save(data, np.ones((1, 1280), dtype=np.float32) / np.sqrt(1280))
+            with zipfile.ZipFile(root / 'N001-N010_results.zip', 'w') as zf:
+                zf.writestr(f'phase1_transnet/{folder}/scenes.json',
+                            json.dumps({'fps': 25, 'num_frames': 100}))
+                zf.writestr(f'phase1_transnet/{folder}/keyframes.json',
+                            json.dumps({'version': 2, 'keyframes': [
+                                {'frame_number': 25, 'source_pts': 12345,
+                                 'source_timebase': 10000, 'source_checksum': 42,
+                                 'timestamp_ms': 1235}]}))
+                zf.writestr(f'phase2_embeddings/{folder}/embeddings.npy', data.getvalue())
+            with patch.object(export_vectors_npy, 'release_blocked_video_ids',
+                              return_value=frozenset()):
+                self.assertEqual(export_vectors_npy.export(root, root / 'out'), 0)
+            with np.load(root / 'out/vectors.meta.npz', allow_pickle=False) as meta:
+                self.assertEqual(meta['timestamp_ms'].tolist(), [1235])
+
+    def test_export_rejects_versioned_n_without_source_pts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            folder = 'videos__N001-V001'
+            data = io.BytesIO()
+            np.save(data, np.ones((1, 1280), dtype=np.float32) / np.sqrt(1280))
+            with zipfile.ZipFile(root / 'N001-N010_results.zip', 'w') as zf:
+                zf.writestr(f'phase1_transnet/{folder}/scenes.json',
+                            json.dumps({'fps': 25, 'num_frames': 100}))
+                zf.writestr(f'phase1_transnet/{folder}/keyframes.json',
+                            json.dumps({'version': 2, 'keyframes': [
+                                {'frame_number': 25, 'timestamp_ms': 1235}]}))
+                zf.writestr(f'phase2_embeddings/{folder}/embeddings.npy', data.getvalue())
+            with patch.object(export_vectors_npy, 'release_blocked_video_ids',
+                              return_value=frozenset()):
+                with self.assertRaisesRegex(ValueError, 'source identity'):
+                    export_vectors_npy.export(root, root / 'out')
+
     def test_export_skips_bad_video_and_keeps_good_sibling(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

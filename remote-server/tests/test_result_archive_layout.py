@@ -17,6 +17,40 @@ from scripts.ingest_zip_pipeline_results import iter_video_records
 
 
 class ResultArchiveLayoutTest(unittest.TestCase):
+    def test_ingest_uses_verified_n_presentation_time_not_nominal_fps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'N001-N010_results.zip'
+            folder = 'video__N001-V001'
+            array = io.BytesIO()
+            np.save(array, np.ones((1, 1280), dtype=np.float32))
+            with zipfile.ZipFile(path, 'w') as archive:
+                archive.writestr(f'phase1_transnet/{folder}/scenes.json',
+                                 json.dumps({'fps': 25, 'num_frames': 100}))
+                archive.writestr(f'phase1_transnet/{folder}/keyframes.json',
+                                 json.dumps({'version': 2, 'keyframes': [
+                                     {'frame_number': 25, 'source_pts': 12345,
+                                      'source_timebase': 10000, 'source_checksum': 42,
+                                      'timestamp_ms': 1235}]}))
+                archive.writestr(f'phase2_embeddings/{folder}/embeddings.npy', array.getvalue())
+            records = list(iter_video_records(path, {}))
+            self.assertEqual(records[0][1][0]['timestamp_ms'], 1235)
+
+    def test_ingest_rejects_versioned_n_without_source_pts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'N001-N010_results.zip'
+            folder = 'video__N001-V001'
+            array = io.BytesIO()
+            np.save(array, np.ones((1, 1280), dtype=np.float32))
+            with zipfile.ZipFile(path, 'w') as archive:
+                archive.writestr(f'phase1_transnet/{folder}/scenes.json',
+                                 json.dumps({'fps': 25, 'num_frames': 100}))
+                archive.writestr(f'phase1_transnet/{folder}/keyframes.json',
+                                 json.dumps({'version': 2, 'keyframes': [
+                                     {'frame_number': 25, 'timestamp_ms': 1235}]}))
+                archive.writestr(f'phase2_embeddings/{folder}/embeddings.npy', array.getvalue())
+            with self.assertRaisesRegex(ValueError, 'source identity'):
+                list(iter_video_records(path, {}))
+
     def test_ingest_and_fps_support_video_and_videos_prefixes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

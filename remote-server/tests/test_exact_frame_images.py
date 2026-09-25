@@ -48,6 +48,8 @@ class ExactImageTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertEqual(images.verified_exact_image_bytes(
                 'N001', self.index, 2, directory=self.root), paths[1].read_bytes())
+            self.assertTrue(images.verified_exact_image_set(
+                'N001', self.index, [0, 2], directory=self.root))
 
     def test_modified_jpeg_is_rebuilt_before_it_can_be_served(self):
         with patch.object(images.subprocess, 'run', side_effect=self.decode) as run:
@@ -55,6 +57,8 @@ class ExactImageTests(unittest.TestCase):
             paths[1].write_bytes(b'changed')
             self.assertIsNone(images.verified_exact_image_bytes(
                 'N001', self.index, 2, directory=self.root))
+            self.assertFalse(images.verified_exact_image_set(
+                'N001', self.index, [0, 2], directory=self.root))
             images.build_exact_images('N001', self.index, [0, 2], directory=self.root)
             self.assertEqual(run.call_count, 2)
             self.assertIsNotNone(images.verified_exact_image_bytes(

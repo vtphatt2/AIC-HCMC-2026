@@ -22,7 +22,7 @@ load_dotenv(ROOT / 'remote-server/.env')
 import numpy as np
 from PIL import Image
 from app.services import local_zip_media as media
-from app.services.exact_frame_images import build_exact_images
+from app.services.exact_frame_images import build_exact_images, verified_exact_image_set
 from app.services.exact_frame_pts import index_path
 from app.services.source_timeline import source_fingerprint
 
@@ -66,6 +66,14 @@ async def audit_cards(video_id: str, rows: list[dict], paths: list[Path]) -> dic
             'max_mae_frame': max_frame, 'card_sizes': sorted([list(size) for size in sizes])}
 
 
+def reusable_image_audit(previous: dict | None, identity: dict, video_id: str,
+                         index, frames: list[int]) -> bool:
+    return bool(previous and previous.get('status') == 'pass' and
+                previous.get('cards') == len(frames) and
+                all(previous.get(key) == value for key, value in identity.items()) and
+                verified_exact_image_set(video_id, index, frames))
+
+
 async def run(args) -> None:
     os.chdir(ROOT / 'remote-server')
     stage = args.stage.resolve()
@@ -91,11 +99,6 @@ async def run(args) -> None:
         identity = {'source': source_fingerprint(index), 'generation': job['generation'],
                     'map_path': str(map_path), 'map_size': stat.st_size,
                     'map_mtime_ns': stat.st_mtime_ns}
-        previous = report['videos'].get(video)
-        if not args.force and previous and previous.get('status') == 'pass' and all(
-                previous.get(k) == v for k, v in identity.items()):
-            print(f'{number}/{len(requested)} reused {video}: {previous["cards"]} cards', flush=True)
-            continue
         try:
             metadata = json.loads((Path(job['path']) / 'keyframes.json').read_text())
             rows = metadata['keyframes']
@@ -116,6 +119,10 @@ async def run(args) -> None:
                    (int(row['source_pts']) * 1000 + index.timescale // 2) // index.timescale
                    for frame, row in zip(frames, rows)):
                 raise ValueError('Selected source IDs/PTS/checksums/units differ from complete map')
+            previous = report['videos'].get(video)
+            if not args.force and reusable_image_audit(previous, identity, video, index, frames):
+                print(f'{number}/{len(requested)} reused {video}: {previous["cards"]} cards', flush=True)
+                continue
             paths = await asyncio.to_thread(build_exact_images, video, index, frames)
             if len(paths) != len(rows):
                 raise ValueError('Incomplete verified source JPEG set')

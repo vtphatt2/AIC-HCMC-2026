@@ -7,7 +7,9 @@ Milvus raw indexes. Picture semantics and browser playback are separate checks.
 from __future__ import annotations
 import argparse
 import asyncio
+from bisect import bisect_left
 from collections import Counter, defaultdict
+import hashlib
 import io
 import json
 import os
@@ -25,7 +27,8 @@ from app.services import local_zip_media as media
 from app.services.exact_frame_pts import index_path
 from app.services.source_timeline import monotonic_entries, source_fingerprint
 from app.services.playback_copies import validated_copy
-from scripts.ingest_zip_pipeline_results import video_directories
+from app.services.video_quarantine import release_blocked_video_ids
+from scripts.ingest_zip_pipeline_results import video_directories, selected_timestamp_ms
 
 DATA = ROOT / 'challenge_resources/data'
 RESULTS = DATA / 'zip_embeddings'
@@ -45,6 +48,99 @@ def export_vector_error(packaged, exported):
             or not np.isfinite(exported).all()):
         return float('inf')
     return float(np.max(np.abs(exported - packaged)))
+
+
+def unexpected_export_ids(export_lookup, packaged_ids):
+    return set(export_lookup) - set(packaged_ids)
+
+
+def verify_packaged_generation(video_id, keyframes, marker, payloads):
+    """A v2 ZIP carries its own verified generation; no scratch output is needed."""
+    rows = keyframes['keyframes']
+    if (keyframes.get('version') != 2 or
+            marker.get('version') != 1 or
+            marker.get('generation') != keyframes.get('generation') or
+            marker.get('rows') != len(rows) or
+            keyframes.get('num_keyframes') != len(rows) or
+            marker.get('source_checksums') != 'exhaustive' or
+            marker.get('source_time_base_verified') is not True or
+            marker.get('published') is not False or
+            not marker.get('model') or not marker.get('preprocess')):
+        raise ValueError(f'{video_id}: incomplete packaged verification marker')
+    for name, data in payloads.items():
+        if marker.get(f'{name}_sha256') != hashlib.sha256(data).hexdigest():
+            raise ValueError(f'{video_id}: packaged {name} digest differs from verification')
+
+
+def verify_n_source_identity(video_id, selected, table, timescale, identity):
+    """Check every selected v2 N row against the decoded source map."""
+    kept, omitted = monotonic_entries(table)
+    if (selected.get('source_identity') != identity or
+            selected.get('source_time_base') != {'num': 1, 'den': timescale} or
+            selected.get('source_frame_count') != len(table)):
+        raise ValueError(f'{video_id}: staged source identity/time base changed')
+    expected_omissions = [
+        {'frame_number': int(frame), 'source_pts': int(pts),
+         'source_checksum': int(checksum),
+         'reason': 'non-increasing presentation timestamp'}
+        for frame, pts, checksum in omitted]
+    if selected.get('omitted_entries', []) != expected_omissions:
+        raise ValueError(f'{video_id}: omitted presentation identities changed')
+    allowed = set(map(int, kept[:, 0]))
+    for item in selected['keyframes']:
+        frame = int(item['frame_number'])
+        if frame not in allowed or frame >= len(table):
+            raise ValueError(f'{video_id}/{frame}: selected omitted/out-of-range frame')
+        if int(item['source_pts']) != int(table[frame, 1]):
+            raise ValueError(f'{video_id}/{frame}: source PTS differs from map')
+        if int(item['source_checksum']) != int(table[frame, 2]):
+            raise ValueError(f'{video_id}/{frame}: source checksum differs from map')
+        if int(item['source_timebase']) != timescale:
+            raise ValueError(f'{video_id}/{frame}: source time base differs from map')
+        selected_timestamp_ms(video_id, item, float('nan'), 2)
+
+
+def verify_scene_association(video_id, selected, scenes):
+    """N v2 may retain source-verified frames in omitted TransNet transitions."""
+    versioned_n = video_id.startswith('N') and selected.get('version') == 2
+    ends = [int(scene['end_frame']) for scene in scenes]
+    for item in selected['keyframes']:
+        frame = int(item['frame_number'])
+        position = bisect_left(ends, frame)
+        in_scene = (position < len(scenes) and
+                    int(scenes[position]['start_frame']) <= frame)
+        if not in_scene:
+            if not versioned_n:
+                raise ValueError(f'{video_id}/{frame}: selected frame lies in a TransNet transition gap')
+            if (item.get('scene_index') != -1 or
+                    item.get('scene_association') != 'transition gap in original TransNet output'):
+                raise ValueError(f'{video_id}/{frame}: invalid transition gap scene association')
+        elif versioned_n and item.get('scene_index') != position:
+            raise ValueError(f'{video_id}/{frame}: selected scene association differs from TransNet')
+
+
+def verify_result_inventory(archive_name, source_by_id, packaged_ids, manifest, blocked):
+    """Only a documented, still-blocked source may be absent from an N ZIP."""
+    lot = archive_name.removesuffix('_results.zip')
+    expected = {video for video, source in source_by_id.items()
+                if source['archive'] == f'Video_{lot}.zip'}
+    if packaged_ids - expected:
+        raise ValueError(f'{archive_name}: packaged videos are not in the source archive')
+    missing = expected - packaged_ids
+    if manifest is None:
+        if missing:
+            raise ValueError(f'{archive_name}: undocumented missing source videos {sorted(missing)}')
+        return set()
+    if manifest.get('version') != 2:
+        raise ValueError(f'{archive_name}: invalid result manifest version')
+    included = [row['video_id'] for row in manifest['videos']]
+    excluded = manifest['release_blocked_excluded']
+    if (len(included) != len(set(included)) or set(included) != packaged_ids or
+            len(excluded) != len(set(excluded)) or set(excluded) != missing):
+        raise ValueError(f'{archive_name}: undocumented or inconsistent result inventory')
+    if missing - blocked:
+        raise ValueError(f'{archive_name}: excluded source videos are not release-blocked')
+    return missing
 
 
 def audit(crc=False, live=False, output=None):
@@ -92,6 +188,7 @@ def audit(crc=False, live=False, output=None):
                         'source_by_lot': dict(Counter(video[0] for video in source_by_id))}
 
     export = None
+    timestamps = None
     export_lookup = {}
     try:
         export = np.load(DATA / 'vectors.f32.npy', mmap_mode='r', allow_pickle=False)
@@ -104,9 +201,15 @@ def audit(crc=False, live=False, output=None):
                 if frame_id in export_lookup: issue(report, 'numpy', f'duplicate frame {frame_id}')
                 export_lookup[frame_id] = i
         report['numpy'] = {'total_rows': len(ids), 'mns_rows': len(export_lookup), 'shape': list(export.shape)}
-    except Exception as exc: issue(report, 'numpy', exc)
+    except Exception as exc:
+        export = None
+        timestamps = None
+        export_lookup.clear()
+        issue(report, 'numpy', exc)
 
     result_by_id = {}
+    packaged_frame_ids = set()
+    release_blocked = release_blocked_video_ids()
     archives = sorted(p for p in RESULTS.glob('*_results.zip') if p.name.startswith(('M','N','S')))
     for archive_path in archives:
         archive_report = {'name': archive_path.name, 'videos': 0, 'crc_ok': None}
@@ -117,17 +220,22 @@ def audit(crc=False, live=False, output=None):
                 bad = zf.testzip()
                 archive_report['crc_ok'] = bad is None
                 if bad: issue(report, archive_path.name, f'CRC failed: {bad}')
-                for video, folder in video_directories(set(members)):
+                video_folders = video_directories(set(members))
+                for video, folder in video_folders:
                     archive_report['videos'] += 1
                     if video in result_by_id: issue(report, video, 'duplicate result video')
                     result_by_id[video] = archive_path.name
                     video_report = {'source': source_by_id.get(video), 'result': archive_path.name}
                     report['videos'][video] = video_report
                     try:
-                        scenes = json.loads(zf.read(f'phase1_transnet/{folder}/scenes.json'))
-                        selected = json.loads(zf.read(f'phase1_transnet/{folder}/keyframes.json'))
-                        vectors = np.load(io.BytesIO(zf.read(f'phase2_embeddings/{folder}/embeddings.npy')), allow_pickle=False)
+                        scenes_bytes = zf.read(f'phase1_transnet/{folder}/scenes.json')
+                        keyframes_bytes = zf.read(f'phase1_transnet/{folder}/keyframes.json')
+                        embedding_bytes = zf.read(f'phase2_embeddings/{folder}/embeddings.npy')
+                        scenes = json.loads(scenes_bytes)
+                        selected = json.loads(keyframes_bytes)
+                        vectors = np.load(io.BytesIO(embedding_bytes), allow_pickle=False)
                         frames_selected = [int(r['frame_number']) for r in selected['keyframes']]
+                        packaged_frame_ids.update(f'{video}_{frame:06d}' for frame in frames_selected)
                         num_frames = int(scenes['num_frames'])
                         ranges = scenes['scenes']
                         if (not ranges or int(ranges[0]['start_frame']) != 0 or int(ranges[-1]['end_frame']) != num_frames-1 or
@@ -139,8 +247,10 @@ def audit(crc=False, live=False, output=None):
                         # TransNet's predictions_to_scenes() omits pictures in
                         # transition runs between two scene ranges. Record them
                         # explicitly; they are not missing decoded source frames.
-                        if any(lo <= frame <= hi for frame in frames_selected for lo, hi in gaps):
-                            issue(report, video, 'selected frame lies in a TransNet transition gap')
+                        try:
+                            verify_scene_association(video, selected, ranges)
+                        except ValueError as exc:
+                            issue(report, video, exc)
                         if (len(frames_selected) != len(set(frames_selected)) or frames_selected != sorted(frames_selected)
                                 or any(frame < 0 or frame >= num_frames for frame in frames_selected)):
                             issue(report, video, 'invalid selected frame identities/order')
@@ -148,12 +258,19 @@ def audit(crc=False, live=False, output=None):
                             issue(report, video, f'invalid vector shape/dtype/finiteness {vectors.shape}/{vectors.dtype}')
                         elif not np.allclose(np.linalg.norm(vectors,axis=1),1,atol=1e-4):
                             issue(report, video, 'unnormalized vectors')
-                        source_folder = RESULTS / f'output_{archive_path.name.removesuffix("_results.zip")}' / folder
-                        if source_folder.exists():
-                            original = np.load(source_folder / 'embeddings.npy', mmap_mode='r', allow_pickle=False)
-                            if original.shape != vectors.shape or not np.array_equal(original,vectors):
-                                issue(report,video,'result ZIP differs from processing output')
-                        else: issue(report, video, 'processing output folder missing')
+                        if selected.get('version') == 2:
+                            marker = json.loads(zf.read(f'phase2_embeddings/{folder}/verified.json'))
+                            verify_packaged_generation(video, selected, marker, {
+                                'scenes': scenes_bytes, 'keyframes': keyframes_bytes,
+                                'embeddings': embedding_bytes})
+                            video_report['verified_generation'] = selected['generation']
+                        else:
+                            source_folder = RESULTS / f'output_{archive_path.name.removesuffix("_results.zip")}' / folder
+                            if source_folder.exists():
+                                original = np.load(source_folder / 'embeddings.npy', mmap_mode='r', allow_pickle=False)
+                                if original.shape != vectors.shape or not np.array_equal(original,vectors):
+                                    issue(report,video,'result ZIP differs from processing output')
+                            else: issue(report, video, 'processing output folder missing')
                         if export is not None:
                             missing_export = 0; differing = 0; max_export_error = 0.0
                             for i, frame in enumerate(frames_selected):
@@ -165,7 +282,9 @@ def audit(crc=False, live=False, output=None):
                                 if (int(frames[pos]) != frame or str(videos[pos]) != video or
                                         error > MAX_EXPORT_VECTOR_ABS_ERROR):
                                     differing += 1
-                                expected_ms = int(frame / float(scenes['fps']) * 1000)
+                                expected_ms = selected_timestamp_ms(
+                                    video, selected['keyframes'][i], float(scenes['fps']),
+                                    selected.get('version', 1))
                                 if int(timestamps[pos]) != expected_ms: differing += 1
                             if missing_export or differing:
                                 issue(report, video, f'NumPy export missing={missing_export} differing={differing}')
@@ -181,6 +300,9 @@ def audit(crc=False, live=False, output=None):
                                 kept, omitted = monotonic_entries(table)
                                 if len(table) != num_frames: issue(report,video,f'PTS map rows {len(table)}/{num_frames}')
                                 if any(table[frame,0] != frame for frame in frames_selected): issue(report,video,'PTS map missing selection')
+                                if selected.get('version') == 2:
+                                    verify_n_source_identity(video, selected, table, index.timescale,
+                                                             source_fingerprint(index))
                                 video_report['pts_map'] = {'path':str(map_path), 'rows':len(table), 'time_base':[1,index.timescale],
                                                            'non_increasing':omitted[:,0].tolist()}
                                 video_report['playback_copy'] = validated_copy(video,index) is not None
@@ -191,19 +313,37 @@ def audit(crc=False, live=False, output=None):
                                              'selected':len(frames_selected),'vector_dim':vectors.shape[1] if vectors.ndim==2 else None,
                                              'selection':selected.get('selection'),'source_pts_rows':sum('source_pts' in r for r in selected['keyframes'])})
                     except Exception as exc: issue(report,video,f'result artifact failed: {exc}')
+                if archive_path.name.startswith('N'):
+                    try:
+                        manifest = json.loads(zf.read('manifest.json')) if 'manifest.json' in members else None
+                        excluded = verify_result_inventory(
+                            archive_path.name, source_by_id,
+                            {video for video, _ in video_folders}, manifest, release_blocked)
+                        archive_report['documented_exclusions'] = sorted(excluded)
+                    except Exception as exc:
+                        issue(report, archive_path.name, f'result inventory failed: {exc}')
         except Exception as exc: issue(report,archive_path.name,f'result ZIP failed: {exc}')
         report['result_archives'].append(archive_report)
         print(f'Result {archive_path.name}: {archive_report["videos"]} videos, CRC={archive_report["crc_ok"]}', flush=True)
     if len(archives) != 21: issue(report,'results',f'{len(archives)}/21 result archives')
-    if set(source_by_id) != set(result_by_id):
-        issue(report,'inventory',f'missing results={sorted(set(source_by_id)-set(result_by_id))[:20]}, extra={sorted(set(result_by_id)-set(source_by_id))[:20]}')
+    missing_results = set(source_by_id) - set(result_by_id)
+    extra_results = set(result_by_id) - set(source_by_id)
+    if missing_results - release_blocked or extra_results:
+        issue(report,'inventory',f'missing results={sorted(missing_results-release_blocked)[:20]}, extra={sorted(extra_results)[:20]}')
+    report['counts']['release_blocked_missing_results'] = sorted(missing_results & release_blocked)
     report['counts']['result_archives'] = len(archives)
     report['counts']['result_videos'] = len(result_by_id)
     report['counts']['result_rows'] = sum(v.get('selected',0) for v in report['videos'].values())
+    extra_export = unexpected_export_ids(export_lookup, packaged_frame_ids)
+    report['counts']['unexpected_numpy_rows'] = len(extra_export)
+    if extra_export:
+        issue(report, 'numpy', f'{len(extra_export)} rows absent from result ZIPs: '
+              f'{sorted(extra_export)[:20]}')
     report['counts']['scene_transition_omitted_frames'] = sum(
         v.get('scene_transition_omitted_frames', 0) for v in report['videos'].values())
     if live:
-        audit_live(report, result_by_id, export_lookup, export, timestamps)
+        audit_live(report, result_by_id, export_lookup, export, timestamps,
+                   missing_results)
     report['elapsed_seconds'] = round(time.time()-started,2)
     report['status'] = 'pass' if not report['issues'] else 'exceptions'
     output = output or RESULTS / 'verification/readiness_audit.json'
@@ -215,7 +355,7 @@ def audit(crc=False, live=False, output=None):
     return report
 
 
-def audit_live(report,result_by_id, export_lookup, export, timestamps):
+def audit_live(report,result_by_id, export_lookup, export, timestamps, absent_videos=()):
     from app.db import milvus_client, postgres_client
     from pymilvus import Collection, utility
     async def postgres():
@@ -234,6 +374,9 @@ def audit_live(report,result_by_id, export_lookup, export, timestamps):
             if expected is not None and data['frame_count'] != expected:
                 issue(report,video,f'PostgreSQL frame_count {data["frame_count"]}/{expected}')
     except Exception as exc: issue(report,'postgres',f'connection/query failed: {exc}')
+    if export is None or timestamps is None:
+        issue(report, 'milvus', 'live vector comparison requires a complete NumPy export')
+        return
     try:
         milvus_client.connect()
         expected_ids = defaultdict(set)
@@ -274,6 +417,12 @@ def audit_live(report,result_by_id, export_lookup, export, timestamps):
                 if missing_ids: issue(report,video,f'{algorithm} missing {len(missing_ids)} frames')
                 index_report['videos_checked']+=1
                 if number%50==0: print(f'{algorithm}: {number}/{len(result_by_id)}',flush=True)
+            for video in sorted(absent_videos):
+                rows = col.query(expr=f'video_id == "{video}"',
+                                 output_fields=['frame_id'], limit=16384)
+                if rows:
+                    issue(report, video, f'{algorithm} retains {len(rows)} rows from excluded result')
+                    index_report['mismatches'] += 1
     except Exception as exc: issue(report,'milvus',f'connection/query failed: {exc}')
 
 

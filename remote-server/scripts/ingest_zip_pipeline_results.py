@@ -64,6 +64,23 @@ VIDEO_DIR_PATTERN = re.compile(r"^videos?__(?P<video_id>.+)$")
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+def selected_timestamp_ms(video_id: str, item: dict[str, Any], fps: float,
+                          metadata_version: int = 1) -> int:
+    """Keep ingest, export and audit on the same source presentation clock."""
+    if video_id.startswith("N") and (metadata_version >= 2 or "source_pts" in item):
+        if not all(key in item for key in ("source_pts", "source_timebase", "source_checksum")):
+            raise ValueError(f"{video_id}: missing verified source identity")
+        scale = int(item["source_timebase"])
+        if scale <= 0:
+            raise ValueError(f"{video_id}: invalid source time base")
+        timestamp_ms = (int(item["source_pts"]) * 1000 + scale // 2) // scale
+        if metadata_version >= 2 and ("timestamp_ms" not in item or
+                                      int(item["timestamp_ms"]) != timestamp_ms):
+            raise ValueError(f"{video_id}: selected presentation timestamp differs from source PTS")
+        return timestamp_ms
+    return int(int(item["frame_number"]) / fps * 1000)
+
+
 def youtube_id_from_watch_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.netloc.endswith("youtu.be"):
@@ -212,13 +229,8 @@ def iter_video_records(
                 norm = float(np.linalg.norm(vector))
                 if norm == 0.0:
                     raise ValueError(f"{video_id} frame {frame_number}: zero-norm vector")
-                if video_id.startswith("N") and "source_pts" in item:
-                    scale = int(item["source_timebase"])
-                    if scale <= 0 or "source_checksum" not in item:
-                        raise ValueError(f"{video_id}: unverified source timing")
-                    timestamp_ms = (int(item["source_pts"]) * 1000 + scale // 2) // scale
-                else:
-                    timestamp_ms = int(frame_number / fps * 1000)
+                timestamp_ms = selected_timestamp_ms(
+                    video_id, item, fps, keyframes.get("version", 1))
                 records.append({
                     "frame_id": f"{video_id}_{frame_number:06d}",
                     "video_id": video_id,

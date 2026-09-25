@@ -54,6 +54,7 @@ try:
     from scripts.ingest_zip_pipeline_results import (  # noqa: E402
         iter_result_archives,
         load_media_info,
+        selected_timestamp_ms,
         video_directories,
     )
 finally:
@@ -108,8 +109,7 @@ def export(zip_dir: Path, out_dir: Path) -> int:
                 meta["video_genre"].extend([""] * len(selected))
                 meta["frame_number"].extend(frame_numbers.tolist())
                 meta["timestamp_ms"].extend([
-                    (int(item["source_pts"]) * 1000 + int(item["source_timebase"]) // 2) // int(item["source_timebase"])
-                    if video_id.startswith("N") and "source_pts" in item else int(int(item["frame_number"]) / fps * 1000)
+                    selected_timestamp_ms(video_id, item, fps, keyframes.get("version", 1))
                     for item in selected
                 ])
                 meta["youtube_id"].extend([youtube_id] * len(selected))

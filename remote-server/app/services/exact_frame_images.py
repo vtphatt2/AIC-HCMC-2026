@@ -60,13 +60,16 @@ def verified_exact_image_bytes(video_id: str, index, frame_number: int, *,
         map_path = index_path(video_id, index)
         marker = _manifest(path.parent / 'verified_images.json')
         provenance = _provenance(video_id, index, map_path)
-        if marker is None or any(marker.get(key) != value for key, value in provenance.items()):
+        if not isinstance(marker, dict) or any(
+                marker.get(key) != value for key, value in provenance.items()):
             return None
         row = marker.get('images', {}).get(str(frame_number))
         if not isinstance(row, dict):
             return None
         table = np.load(map_path, mmap_mode='r', allow_pickle=False)
-        if (frame_number < 0 or frame_number >= len(table) or
+        if (table.ndim != 2 or table.shape[1] != 3 or table.dtype != np.int64 or
+                frame_number < 0 or frame_number >= len(table) or
+                int(table[frame_number, 0]) != frame_number or
                 row.get('source_pts') != int(table[frame_number, 1]) or
                 row.get('source_checksum') != int(table[frame_number, 2])):
             return None
@@ -76,6 +79,40 @@ def verified_exact_image_bytes(video_id: str, index, frame_number: int, *,
         return data
     except (OSError, ValueError, IndexError, KeyError):
         return None
+
+
+def verified_exact_image_set(video_id: str, index, frames: list[int], *,
+                             directory: Path = EXACT_N_FRAME_DIR) -> bool:
+    """Check a complete selected set with one map/manifest read per video."""
+    if not frames or len(frames) != len(set(frames)):
+        return False
+    try:
+        map_path = index_path(video_id, index)
+        parent = exact_image_path(video_id, index, frames[0], directory).parent
+        marker = _manifest(parent / 'verified_images.json')
+        provenance = _provenance(video_id, index, map_path)
+        if not isinstance(marker, dict) or any(
+                marker.get(key) != value for key, value in provenance.items()):
+            return False
+        records = marker.get('images')
+        if not isinstance(records, dict):
+            return False
+        table = np.load(map_path, mmap_mode='r', allow_pickle=False)
+        if table.ndim != 2 or table.shape[1] != 3 or table.dtype != np.int64:
+            return False
+        for frame in frames:
+            if frame < 0 or frame >= len(table) or int(table[frame, 0]) != frame:
+                return False
+            record = records.get(str(frame))
+            if not isinstance(record, dict) or record.get('source_pts') != int(table[frame, 1]) or \
+                    record.get('source_checksum') != int(table[frame, 2]):
+                return False
+            data = (parent / f'{frame}.jpg').read_bytes()
+            if len(data) != record.get('size') or hashlib.sha256(data).hexdigest() != record.get('sha256'):
+                return False
+        return True
+    except (OSError, ValueError, IndexError, KeyError):
+        return False
 
 
 def build_exact_images(video_id: str, index, frames: list[int], *,
@@ -116,8 +153,7 @@ def _build_exact_images_locked(video_id: str, index, frames: list[int], *,
     provenance = _provenance(video_id, index, map_path)
     marker_path = paths[0].parent / 'verified_images.json'
     old_marker = _manifest(marker_path)
-    if all(verified_exact_image_bytes(video_id, index, frame, directory=directory) is not None
-           for frame in targets):
+    if verified_exact_image_set(video_id, index, targets, directory=directory):
         return paths
     directory.mkdir(parents=True, exist_ok=True)
     source = (f"subfile,,start,{index.data_offset},end,"
