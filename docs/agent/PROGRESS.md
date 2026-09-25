@@ -28,10 +28,11 @@
 - DRES tests: `npm run build` PASS; `npm test` PASS 36/36; `node scripts/test-dres-smoke.cjs` PASS with fake DRES/VORTA (status, PIN, stale row/task, missing metadata, exact payload, duplicate guard and task rollover). No request was sent to BTC.
 - Added [final-round setup and operator guide](../DRES.md). Existing CSV/ZIP export remains available.
 - Pre-merge guard: reject `N` video DRES payloads until verified PTS timing is available. Frontend build PASS; `npm test` 36/36 PASS; Agent backend tests 18/18 PASS; fake DRES/VORTA smoke PASS; `git diff --check` PASS. No BTC request made.
+- Agent-only integration: fast-forwarded `main` from `4a77cf9` to `7a1fb19` and pushed it; remote `main` and `agent-competition-mvp` matched at `7a1fb19` immediately after the merge. `zip-decode/fix` was not merged; the existing dirty build/paper files were preserved.
 
 # DOING
 
-- Merge the Agent branch into `main` only; `zip-decode/fix` remains separate by operator choice.
+- No further merge work in this pass. Host-dependent acceptance checks remain.
 
 # NEXT
 
