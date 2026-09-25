@@ -35,7 +35,7 @@ swap pressure. No N publication has occurred.
 | Area | Status |
 |---|---|
 | Real client flow | Passed for released data: a top-100 search produced 54 L/M/S groups. Activating every group rendered 1,215 cards; all 125 requested images returned HTTP 200, with no broken/unavailable cards and 6 ms UI response. Search-result and nearby S cards now use exact frame IDs. |
-| Display/search lag | Fixed shared causes: LOCAL proxies now forward search, scoring, and media instead of loading a second model; context is centered on the best hit and bounded to about 24 cards rather than thousands across long S videos. Five uncached top-100 searches took 56–246 ms under playback conversion. |
+| Display/search lag | Shared fixes improved speed and correct loading. In current Cloudflare use, display is less laggy than before, and all observed L/M/S frames load without loss or unavailability. It still feels slow and nearby context feels too sparse. Whether the lower lag comes from fewer displayed frames or another change is unknown. Current frontend target is about 24 cards around the best hit, regardless of video duration, using indexed sampled frames. Investigate later; preserve source frame IDs and submission timing. |
 | Weak-network cards | Constrained connections request 640px WebP cards while retaining the exact video/timestamp/frame identity. Browser simulation requested 10/10 small cards and no originals; representative L/M/S cards were 31–61 KB instead of 78–211 KB originals. |
 | N submissions | Live web round-trip passed: N010-V001 source frame 100 became verified source-PTS position 4199 ms, its exact WebP review card returned HTTP 200, reload preserved both identities, and the temporary session was removed. Review/manual-entry labels distinguish N milliseconds from L/M/S frames. |
 | N seeking | Shared fallback verified: all N originals require validated copies. N010-V001/002/003 copies passed exhaustive source-picture/output-PTS validation and Chrome playback at start, midpoint, and near end through the proxy. |
@@ -107,6 +107,11 @@ swap pressure. No N publication has occurred.
    deadlocks, broken images/seeks, OOM, and sustained swap growth. Targets: warm
    top-100 search p95 ≤1 s and cached first
    viewport ≤2 s locally; measure WAN separately.
+   Include the new user report: display is faster and all observed L/M/S frames
+   load, but it still feels slow and the fixed 24-card nearby context may be too
+   sparse. Compare useful duration-aware densities for S and L-like videos while
+   keeping result matches, frame identity, and submission units unchanged. Put
+   this ahead of repeating audits whose evidence remains current.
 
 ## Completed shared fixes to preserve
 

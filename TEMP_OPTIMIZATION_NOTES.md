@@ -1,8 +1,9 @@
 # Readiness checkpoint — 2026-09-25
 
-No offline preprocessing job is running. The last known web stack is frontend `3000`, remote `8000`, LOCAL proxy `8001`, plus Docker services.
+No offline preprocessing job is running. Current session: production frontend `3000`, remote backend `8000`, share proxy `3001`, Docker databases, and a temporary Cloudflare quick tunnel. Public health, search, and a result image passed. The tunnel URL is temporary and ends when its process/environment stops.
 
-- Display lag fixed: proxy runs search/context scoring once on the server; long-video context is centered and capped near 24 cards. Full-scroll browser test: 54 L/M/S groups, 1,215 card nodes, 125/125 image HTTP 200, no unavailable cards, 6 ms UI response. S search and context cards carry exact frame IDs. Five uncached searches took 56–246 ms.
+- Display improvements: proxy runs search/context scoring once on the server; long-video context is centered and capped near 24 cards. Full-scroll browser test: 54 L/M/S groups, 1,215 card nodes, 125/125 image HTTP 200, no unavailable cards, 6 ms UI response. S search and context cards carry exact frame IDs. Five uncached searches took 56–246 ms. User reports remaining perceived slowness despite the improvement.
+- New live-use issue: display is less laggy than before; all observed L/M/S frames load without loss or unavailable cards, but the page still feels slow and nearby context feels too sparse. Cause of the speed improvement is unknown; it may relate to fewer displayed frames or something else. Current target is ~24 cards around the best hit for every duration, using indexed sampled frames. Investigate later; preserve frame IDs and submission positions.
 - FLAT is the release default: 316/316 M/S stored-vector self-matches versus 314/316 for HNSW, with warm top-100 p95 290 ms versus 270 ms. HNSW remains selectable.
 - Weak network: constrained clients use exact-frame 640px WebP cards (31–61 KB in representative L/M/S checks) instead of 78–211 KB originals; frame identity and submission data are unchanged.
 - N submission live check passed: source frame 100 mapped to verified 4199 ms, exact WebP review returned 200, reload preserved both values, and cleanup succeeded. UI now labels N milliseconds and mapped source frames explicitly.
