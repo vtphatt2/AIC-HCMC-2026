@@ -45,10 +45,11 @@ about 19 GiB available, with 26 MiB swap used.
 
 ## Required work, in priority order
 
-1. **Prove a real L/M/S user flow.** Start required services and use the real
-   client to search, scroll, open result cards, inspect the source picture, and
-   play/seek the matching video. Repeat through the proxy. Fix user-visible
-   correctness or availability failures before expanding low-impact checks.
+1. **Keep the verified L/M/S flow and resolve N seeking.** L/M/S search, all 100
+   cards, selected-picture playback, and frame submissions passed in the proxied
+   browser. N010-V002 picture and PTS-millisecond submission passed; Chrome
+   random seeking failed on N010-V001/002/003 originals. Prepare verified copies,
+   then retest seeks and check representative N videos through the proxy.
 2. **Settle search behavior.** Compare HNSW and FLAT on representative searches;
    verify expected IDs, ranking, and top-100 recall in the client, then measure
    end-to-end latency. Preserve the existing L/M/S baseline; assess added N
