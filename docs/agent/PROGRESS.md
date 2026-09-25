@@ -27,10 +27,11 @@
 - Final-round DRES: read `HD-ChungKet-2026.pdf` from `origin/zip-decode/fix`; added operator-triggered candidate submission from `/submissions`, server-only DRES session token, submit PIN, active task check, FPS-based KIS/Q&A timestamps, TRAKE frame-number format, duplicate guard, and explicit DRES result. Search/Verify Agents still never submit.
 - DRES tests: `npm run build` PASS; `npm test` PASS 36/36; `node scripts/test-dres-smoke.cjs` PASS with fake DRES/VORTA (status, PIN, stale row/task, missing metadata, exact payload, duplicate guard and task rollover). No request was sent to BTC.
 - Added [final-round setup and operator guide](../DRES.md). Existing CSV/ZIP export remains available.
+- Pre-merge guard: reject `N` video DRES payloads until verified PTS timing is available. Frontend build PASS; `npm test` 36/36 PASS; Agent backend tests 18/18 PASS; fake DRES/VORTA smoke PASS; `git diff --check` PASS. No BTC request made.
 
 # DOING
 
-- DRES integration review and local-only test completion; host-dependent acceptance checks remain.
+- Merge the Agent branch into `main` only; `zip-decode/fix` remains separate by operator choice.
 
 # NEXT
 
@@ -57,3 +58,4 @@
 - Per operator request, defer only the host-dependent M4 live test. Keep visual checks `UNKNOWN` until real image transport is proven; transcript/metadata work can continue.
 - Verify uses a separate ephemeral Codex context, one serialized in-memory queue and bounded evidence from a single video. Its visual verdicts remain UNKNOWN; no automatic submission is implemented.
 - DRES submission is a separate human action on one dashboard row. Team session ID stays on the Next.js server; the submit PIN is configured there and entered per browser tab. The DRES payload includes the active task ID. TRAKE uses numeric frame numbers (operator confirmed). Duplicate protection is in memory for one Next.js process.
+- `main` does not contain `zip-decode/fix`; per operator direction merge Agent alone. Block DRES submission for `N001–N100` in this branch until verified source PTS timing is integrated. A future merge with `zip-decode/fix` still needs to combine test scripts and adapt `readCandidateForDres` to version-2 session metadata and millisecond rows.

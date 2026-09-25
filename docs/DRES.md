@@ -59,6 +59,9 @@ The selected task ID is included in the DRES answer set so a task change cannot
 silently redirect an answer. The API checks the task is still RUNNING and that
 the row has not changed since the operator saw it. It blocks a duplicate exact
 answer in the current Next.js process, including two near-simultaneous clicks.
+Videos `N001–N100` are blocked in this branch: their variable frame rate needs
+verified source PTS timing from the separate `zip-decode/fix` work before DRES
+submission can safely use them.
 After a timeout, the result may have reached DRES; check the DRES website before
 trying again. Restarting Next.js clears this local duplicate memory.
 

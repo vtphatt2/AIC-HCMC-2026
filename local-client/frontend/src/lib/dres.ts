@@ -12,6 +12,9 @@ export function buildDresAnswer(
       row.frames.some((frame) => !Number.isSafeInteger(frame) || frame < 0)) {
     throw new Error("Candidate needs valid frame numbers");
   }
+  if (row.videoId.startsWith("N")) {
+    throw new Error("N videos need verified source PTS timing before DRES submission");
+  }
 
   if (queryType === "trake") {
     if (new Set(row.frames).size !== row.frames.length) throw new Error("TRAKE frames must be distinct");

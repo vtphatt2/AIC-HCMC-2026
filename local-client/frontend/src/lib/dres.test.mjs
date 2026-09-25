@@ -23,4 +23,6 @@ test("incomplete or invalid candidates cannot be submitted", () => {
   assert.throws(() => buildDresSubmission("task-1", "qa", { videoId: "L01_V001", frames: [42], answer: "" }, 25), /answer/);
   assert.throws(() => buildDresSubmission("task-1", "trake", { videoId: "L01_V001", frames: [42, 42] }), /distinct/);
   assert.throws(() => buildDresSubmission("", "trake", { videoId: "L01_V001", frames: [42] }), /task/);
+  assert.throws(() => buildDresSubmission("task-1", "kis", { videoId: "N001", frames: [42] }, 25), /source PTS/);
+  assert.throws(() => buildDresSubmission("task-1", "trake", { videoId: "N001", frames: [42] }), /source PTS/);
 });
