@@ -29,7 +29,7 @@
 - Added [final-round setup and operator guide](../DRES.md). Existing CSV/ZIP export remains available.
 - Pre-merge guard: reject `N` video DRES payloads until verified PTS timing is available. Frontend build PASS; `npm test` 36/36 PASS; Agent backend tests 18/18 PASS; fake DRES/VORTA smoke PASS; `git diff --check` PASS. No BTC request made.
 - Agent-only integration: fast-forwarded `main` from `4a77cf9` to `7a1fb19` and pushed it; remote `main` and `agent-competition-mvp` matched at `7a1fb19` immediately after the merge. `zip-decode/fix` was not merged; the existing dirty build/paper files were preserved.
-- Merged `zip-decode/fix` at `570bee8` into the Agent-based `main`: combined the frontend test commands, adapted DRES candidate loading to version-2 metadata plus CSV consistency checks, and used verified source PTS milliseconds for N KIS/Q&A. N TRAKE and unresolved N timing still fail closed. The local backend proxy client is now initialized independently of import-time ENV_MODE so LOCAL tests run under the existing ZIP-mode venv.
+- Merged `zip-decode/fix` through `158a9fa` into the Agent-based `main`: combined the frontend test commands, adapted DRES candidate loading to version-2 metadata plus CSV consistency checks, and used verified source PTS milliseconds for N KIS/Q&A. N TRAKE and unresolved N timing still fail closed. The local backend proxy client is now initialized independently of import-time ENV_MODE so LOCAL tests run under the existing ZIP-mode venv.
 - Merge checks: frontend `npm run build` PASS; `npm test` 53/53 PASS; Agent tests 18/18 PASS; local-backend tests 66/66 PASS; fake DRES smoke PASS including N PTS; 44 focused remote timeline/readiness tests PASS. No dependency installed and no BTC submission made.
 
 # DOING
