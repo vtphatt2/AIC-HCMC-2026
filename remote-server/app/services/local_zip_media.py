@@ -16,7 +16,6 @@ a video is byte `data_offset + N` of the archive and any range is one seek away.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
 import json
 import logging
@@ -49,7 +48,7 @@ STREAM_CHUNK = 1024 * 1024
 # H.264 reordering depth is small; 32 is far past any real encoder setting.
 REORDER_LOOKAHEAD = 32
 PRESENTATION_FRAME_CACHE_VERSION = "presentation-v4"
-N_FRAME_CACHE_VERSION = "system-ffmpeg-global-frame-v6"
+N_FRAME_CACHE_VERSION = "system-ffmpeg-global-frame-v7"
 
 # ffmpeg is the only real cost on this path; reading the bytes is a local seek.
 _decode_semaphore = asyncio.Semaphore(int(os.getenv("ZIP_FRAME_DECODE_CONCURRENCY", "6")))
@@ -129,13 +128,12 @@ def _resize_jpeg(original: bytes, width: int, format: str = "jpeg") -> bytes:
         return output.getvalue()
 
 
-def _map_sha256(path: str) -> str:
-    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-
-
 def _frame_map_generation(video_id: str, index: "VideoFrameIndex") -> str:
+    from app.services.readiness_policy import verified_embed_decoder_threads
+    from app.services.source_timeline import source_map_sha256
     path = index_path(video_id, index)
-    return f'{path.stem}-{_map_sha256(str(path))}'
+    return (f'{path.stem}-{source_map_sha256(path)}-decoder-threads='
+            f'{verified_embed_decoder_threads(video_id, index)}')
 
 
 def _cache_key(index: "VideoFrameIndex", video_id: str, timestamp_ms: int,

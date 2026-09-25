@@ -17,7 +17,10 @@ validation remain required before release.
 
 1. Record the mismatch and release-block the affected video. Preserve the source,
    previous maps and derivatives. Expand verification to its archive/processing
-   group; do not infer that other videos are faulty.
+   group; do not infer that other videos are faulty. Archive sweeps may use
+   `audit_decoder_agreement.py --block-mismatches`; it atomically blocks only a
+   completed replay disagreement and applies the same action when resuming a
+   checkpointed mismatch.
 2. From `remote-server`, run the offline recovery with explicitly named videos:
 
    ```bash
@@ -42,9 +45,21 @@ validation remain required before release.
 
 Source maps, exact image extraction, PE-Core input decoding, and offline playback
 all resolve decoder settings through `app/services/readiness_policy.py`.
-Unprofiled sources retain their existing defaults. A profile changes derivative
-generation identity while preserving canonical video/frame IDs. Existing verified
-one-thread recoveries retain their generation names and remain reusable.
+Every derivative uses the decoder thread setting that created its authoritative
+source map. The normal map setting is currently four threads; the two-thread
+playback policy applies to the H.264 encoder, not to source decoding. A verified
+profile changes derivative generation identity while preserving canonical
+video/frame IDs. Existing verified one-thread vectors and exact images remain
+reusable. Playback copies are revalidated under the strengthened source-map and
+decoder fingerprint. Normal generations made with the earlier two-thread
+derivative decoder are invalidated and rebuilt because their provenance no
+longer matches.
+
+The complete one-thread replay runs across each N archive, rather than only the
+video that exposed a mismatch. A pixel disagreement at identical frame ID and PTS
+creates a source-bound recovery candidate. Videos whose one-thread replay matches
+the existing four-thread map use the shared four-thread derivative policy and do
+not need a per-video exception.
 
 Changing the decoder implementation or FFmpeg build still requires a new replay;
 the current registry records thread settings and source/map identity, not the

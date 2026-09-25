@@ -40,7 +40,8 @@ class PlaybackCopyAlignmentTests(unittest.TestCase):
                                         'ffmpeg', root / 'maps', store_full_timeline=True)
             table = np.load(frame_map)
             policy = PlaybackPolicy(height=48, threads=1)
-            with patch.object(playback_copies, 'load_timeline', return_value=table):
+            with patch.object(playback_copies, 'load_timeline', return_value=table), \
+                 patch.object(playback_copies, 'index_path', return_value=frame_map):
                 path, meta = prepare_copy('N999-V001', index, policy, root / 'valid')
                 self.assertTrue(path.is_file())
                 self.assertTrue(meta['picture_alignment_verified'])
@@ -49,7 +50,10 @@ class PlaybackCopyAlignmentTests(unittest.TestCase):
 
                 altered = table.copy()
                 altered[3, 2] ^= 1
-                with patch.object(playback_copies, 'load_timeline', return_value=altered):
+                altered_map = root / 'altered.npy'
+                np.save(altered_map, altered)
+                with patch.object(playback_copies, 'load_timeline', return_value=altered), \
+                     patch.object(playback_copies, 'index_path', return_value=altered_map):
                     self.assertIsNone(serving_copy('N999-V001', index, policy, root / 'valid'))
                     with self.assertRaisesRegex(ValueError, 'source-picture alignment failed'):
                         prepare_copy('N999-V001', index, policy, root / 'bad')

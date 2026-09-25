@@ -1,25 +1,22 @@
 # Current readiness — 2026-09-25
 
-Shared decoder recovery is implemented: source-bound profiles replace video-ID
-exceptions, and maps/images/embeddings/playback use the same verified setting.
-Complete replay is required; source/map changes invalidate verification.
-All seven profiles pass complete independent replay (100,107 source frames).
-These videos remain release-blocked until derivatives and publication pass.
-No organizer corruption is established. Official N001-N010 and N031-N040
-redownloads matched the originals; redundant downloads were removed.
+The pulled readiness fixes passed 160 remote, 56 local and 48 frontend tests plus
+the frontend build. Review found and fixed a global decoder-policy mismatch:
+normal N maps used four threads while embeddings/playback used two. Every
+derivative now uses its source map's verified decoder setting, with provenance
+and cache invalidation; H.264 encoding remains bounded to two threads. Repeated
+full frame-map hashing is now stat-cached. Thirty-nine focused tests pass.
 
-Both affected archives have completed full replay. Main N staging now covers
-291 nonblocked videos/87,618 selected pictures, resuming verified checkpoints.
-All 1,244 previously recovered vectors/cards and four recovery playback copies
-pass; N039-V001 adds 318 verified vectors/cards. Other recovery work continues. Full image/playback work and M/S source-map preparation continue.
-All 21 source/result ZIPs and the 614-video live structural audit pass.
+Seven source-bound one-thread profiles pass complete replay. N015-V001 and
+N019-V003 are additionally release-blocked pending their archive replay. Three
+bounded audit lanes are checking every remaining N archive and can atomically
+block the same verified mismatch pattern. No organizer corruption is established;
+official N001-N010 and N031-N040 redownloads matched and redundant copies were
+removed. KIS/QA use verified source-PTS milliseconds; TRAKE excludes N.
 
-Tests: 141 remote backend, 54 local backend, 46 frontend and production build
-pass; 29 focused shared-policy/timing/image/playback/staging tests also pass.
-Remaining: complete N derivatives, all-video M/S sampled semantic checks,
-browser/load validation, consistent indexes/exports and staged publication.
-M/S title/YouTube refresh awaits authoritative organizer metadata.
-
-Memory: about 19 GiB available, 2.3 GiB swap, no sustained memory pressure.
-Jobs have logs and exit records in verification/running_jobs_2026-09-25.json.
+All 21 source/result ZIPs and the 614-video structural/live audit pass. Remaining:
+finish archive replay, rebuild invalidated N derivatives, finish M/S semantics,
+browser/load checks, consistent indexes/exports and staged publication. Memory is
+about 19 GiB available with zero swap use and no pressure; the 25 GiB card cache
+is disk-backed and the RAM JPEG cache is capped at 128 MiB.
 Details and evidence: [SYSTEM_READINESS_PLAN.md](SYSTEM_READINESS_PLAN.md).

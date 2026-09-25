@@ -22,15 +22,15 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Ready queue: rescan after producer completion | complete | Deterministic final-publish race test passes. |
 | Warmer: idle waits outside cache locks, including recovery | complete | Concurrent lock/idle regression test passes. |
 | Protect verified metadata from Phase 1 and policy invalidation | complete | Preflight guard test proves no artifact deletion on a protected generation. |
-| Staged generations and deterministic processing regression tests | in progress | Independent source-fingerprinted N stage; no publication. More interruption tests needed. |
-| Reuse decoded source frame/PTS/time-base/checksum maps | in progress | Full N001-N010 audit: 27/30 old maps match one-thread replay exactly; N007-V002/V003 and N009-V002 old maps differ at 9/5/1 pixels with unchanged IDs/PTS. New one-thread maps for all three pass independent complete replay. N031-V003's one-thread map passes all 14,947 frames. Full N031-N040 replay is complete: 27 current maps exact; N039-V001/N040-V002/N040-V003 differ at 4/1/2 pixels, with unchanged IDs/PTS. One-thread recovery maps for all seven decoder-sensitive videos pass complete independent replay (100,107 decoded frames). |
+| Staged generations and deterministic processing regression tests | in progress | Independent source-fingerprinted N stage; no publication. Pulled changes add immutable candidates, locks, artifact digests and interrupted-metadata recovery; complete remote tests pass. More end-to-end interruption tests remain. |
+| Reuse decoded source frame/PTS/time-base/checksum maps | in progress | Full N001-N010 audit: 27/30 old maps match one-thread replay exactly; N007-V002/V003 and N009-V002 old maps differ at 9/5/1 pixels with unchanged IDs/PTS. Full N031-N040 replay: 27 exact; N039-V001/N040-V002/N040-V003 differ at 4/1/2 pixels. One-thread recovery maps for all seven pass complete replay (100,107 frames). The same complete replay is now running across every remaining N archive; N011–N020, N021–N030 and N041–N050 are the current bounded lanes. |
 | Isolated organizer redownload of N031-N040 | complete | Fresh 10,924,602,184-byte ZIP from the supplied URL has the same SHA-256 as local (`f66be6b1bb0189e86f6b8e2df3b704b8e5b85a9d8a82ed806873eb01005551aa`); all 30 entry records match and fresh full CRC passes. No source or derivative replacement is warranted. |
 | N configurable two-second presentation sampling, retain valid selections, deduplicate, no scene cap | complete | 298 N videos / 89,795 staged pictures; stage manifest records identities and omissions. |
-| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. Main bounded job resumed from verified markers after the M/S pilot; refreshed manifest has 291 nonblocked videos/87,618 pictures after three additional decoder disagreements. All prior completed vectors remain staged; resume validation now checks settings and artifact digests. |
+| Recompute all selected N vectors with existing PE-Core preprocessing | in progress | N031-V003's 309 and the N007-V002/V003/N009-V002 recovery generation's 935 vectors pass exhaustive selected-source checks. Review found the normal map decoder used four threads while derivatives used two. All derivatives now use their authoritative map's decoder setting, so normal two-thread checkpoints are intentionally invalidated; verified one-thread profile artifacts remain reusable. Resume follows the archive-wide audit. |
 | N031 non-increasing timestamp exclusions | complete | All 298 N timelines pass exhaustive numeric/source-ID audit; only N031-V001/V002/V003 omit entries (four each). All six adjacent retained pictures pass source PTS/checksum and visual continuity checks, with matching exclusions in validated playback copies. See n_timeline_audit.json and n031_discontinuity_picture_audit.json. |
 | Sequential selected 640px thumbnails and full-resolution inspection | in progress | All 309 N031-V003 and 935 combined N001 recovery selected JPEGs/cards pass source identity and exposed-card comparison (N007 max RGB MAE 2.90; N009 2.85). A bounded full main-stage image/card audit is running across 291 currently nonblocked videos. |
 | Validate staged archives, exports, metadata and indexes | in progress | Recovered N001-N010 ZIP stages all 30 videos/9,181 vectors; full ZIP CRC, ingest dry run and NumPy export agree on every ID, source-PTS millisecond timestamp and vector (max component error 5.96e-8). Offline audit temporarily bypassed the public blocklist; live publication is still prohibited. Superseded 29-video candidate and export files were removed after validation. |
-| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | N007-V002/V003, N009-V002, N031-V003 and four older copies (N001-V001/V002, N031-V001/V002) pass exhaustive source PTS/checksum and output PTS/codec checks. One bounded offline conversion job continues across browser-incompatible, nonblocked N videos; publication is pending. |
+| Reusable validated 720p H.264/yuv420p MP4 playback | in progress | Recovery copies passed exhaustive source PTS/checksum and output PTS/codec checks. Pulled map hashing plus explicit decoder provenance intentionally changes copy identity, so every served copy is revalidated. N015-V001 and N019-V003 exposed the shared two-thread/four-thread mismatch and are blocked pending the global policy rebuild. Publication is pending. |
 | Preserve VFR timing and playback origin independently of source pictures | pending | Never convert full videos during requests. |
 | Proxy media, timing and availability | in progress | Local HTTP tests preserve timing capabilities, explicit timeline IDs, Range headers and playback bytes; metadata forwarding now includes the tunnel bypass header. Live two-client browser verification remains. |
 | Organizer archive naming, unambiguous ID aliases, M/S title/link refresh | in progress | Both archive naming forms and ambiguity-safe aliases implemented/tested. Local organizer metadata contains L only; M/S source titles/links remain blocked pending authoritative metadata, with no embedding change needed. N absence is expected. |
@@ -48,7 +48,7 @@ server and proxied clients; independent N support on standalone ZIP clients is d
 | Unchanged L/M/S vectors and baseline search | pending | Mixed-data ranking measured separately. |
 | Two-client load during warming and resource bounds | pending | Local warm top-100 p95 ≤1s, cached first viewport ≤2s; 32 GiB card budget, no deadlock/OOM/swap growth; WAN separately. |
 | Maintenance publication, indexes/exports, quarantine release | pending | Consistent validated generation and rollback. |
-| Exceptions, final evidence and focused commits | in progress | Seven decoder-sensitive videos remain release-blocked: N007-V002/V003, N009-V002, N031-V003, N039-V001, N040-V002/V003. Original sources are retained; organizer corruption is not established. Preserve pre-existing modifications and exclude generated artifacts. |
+| Exceptions, final evidence and focused commits | in progress | Nine decoder-sensitive videos are release-blocked: the seven verified one-thread profiles plus N015-V001 and N019-V003 pending archive replay. Original sources are retained; organizer corruption is not established. Preserve pre-existing modifications and exclude generated artifacts. |
 
 ## Shared decoder recovery
 
@@ -59,14 +59,17 @@ server and proxied clients; independent N support on standalone ZIP clients is d
   and a file lock preserve concurrent registrations. See
   [DECODER_RECOVERY.md](docs/DECODER_RECOVERY.md).
 - **In progress (data):** complete recovery verification and staged publication
-  for the seven affected videos. Decoder reproducibility does not by itself
+  for every archive-audit mismatch. Seven profiles are verified; N015-V001 and
+  N019-V003 are blocked pending their archive replay. Decoder reproducibility does not by itself
   establish intended picture identity or release readiness.
-- **Complete (compatibility check):** all seven profiles resolve
-  to their existing source map paths; the four previously verified recovery
-  playback copies remain reusable (`verification/decoder_profile_migration.json`).
-- **Complete (tests for shared policy):** 29 focused decoder/timing/image/playback/
-  staging tests and the full 141-test remote backend suite pass. Local backend
-  remains 54 passing tests; frontend 46 tests and production build pass.
+- **Complete (compatibility check):** all seven profiles resolve to their existing
+  source map paths. Verified vectors and exact images remain reusable. Playback
+  copies require the new source-map/decoder fingerprint and are revalidated.
+- **Complete (tests for shared policy):** 39 focused decoder/timing/image/playback/
+  staging/quarantine tests pass. The pulled tree passed 160 remote tests, and the
+  first full run with cached map identities passed 161; a final full run follows
+  the current changes. Local backend has 56 passing tests; frontend has 48 and a
+  passing production build.
 
 ## Audit requirements
 
@@ -311,3 +314,22 @@ result exists. No competition submission is authorized by this plan.
   from finals DRES/preliminary CSV guidance are preserved in
   docs/ORGANIZER_TIMING_GUIDANCE.md. No acceptance or rounding convention is
   inferred beyond the supplied guidance.
+- 2026-09-25: Reviewed the three pulled readiness commits. Their immutable
+  staged candidates, exact-image verification, source-map-bound playback,
+  source-PTS ingest/export and explicit frame URLs are structurally sound; the
+  pulled tree passed 160 remote, 56 local and 48 frontend tests plus the frontend
+  production build. A performance defect remained: normal N image and playback
+  requests repeatedly hashed complete frame-map files. Source-map digests are now
+  cached by path/inode/size/mtime/ctime, retaining replacement invalidation while
+  avoiding repeated multi-megabyte reads. Cache-generation regression tests pass.
+- 2026-09-25: Playback evidence exposed N015-V001 and N019-V003 with the same
+  complete-row/exact-PTS but different-pixel pattern when the two-thread
+  derivative decoder was compared with the four-thread authoritative map. This
+  revealed a global policy inconsistency. Source maps, PE-Core inputs, exact
+  images, cards and playback source decoding now share one source-bound decoder
+  setting; the planned two threads still bound the H.264 encoder. Decoder
+  provenance invalidates old normal derivatives and cache entries. The archive
+  audit can atomically release-block every complete replay mismatch, while
+  source-specific one-thread profiles remain reserved for independently verified
+  unstable maps. Organizer VFR guidance remains handled separately through PTS:
+  KIS/QA use source PTS milliseconds and TRAKE rejects N.

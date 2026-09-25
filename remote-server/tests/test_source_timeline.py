@@ -2,7 +2,8 @@ import unittest
 from unittest.mock import patch
 import numpy as np
 from app.services.source_timeline import monotonic_entries, select_pictures, generation_signature
-from app.services.readiness_policy import (SelectionPolicy, exceptional_decode_provenance,
+from app.services.readiness_policy import (SelectionPolicy, decode_provenance,
+                                           exceptional_decode_provenance,
                                            source_map_decoder_threads, verified_embed_decoder_threads)
 
 
@@ -37,11 +38,13 @@ class SourceTimelineTests(unittest.TestCase):
             self.assertEqual((source_map_decoder_threads('N099-V999', None),
                               verified_embed_decoder_threads('N099-V999', None)), (1, 1))
             self.assertEqual((source_map_decoder_threads('N032-V003', None),
-                              verified_embed_decoder_threads('N032-V003', None)), (4, 2))
+                              verified_embed_decoder_threads('N032-V003', None)), (4, 4))
             self.assertIsNone(exceptional_decode_provenance('N032-V003', None))
             args = ({'size': 1}, SelectionPolicy(), {'scenes': []}, [])
             old = generation_signature(*args)
             self.assertEqual(old, generation_signature(*args,
                              exceptional_decode_provenance('N032-V003', None)))
+            self.assertNotEqual(old, generation_signature(*args,
+                                decode_provenance('N032-V003', None)))
             self.assertNotEqual(old, generation_signature(*args,
                                 exceptional_decode_provenance('N099-V999', None)))

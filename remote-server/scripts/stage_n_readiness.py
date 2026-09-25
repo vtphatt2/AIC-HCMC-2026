@@ -24,7 +24,7 @@ import numpy as np
 from app.services import local_zip_media as media
 from app.services.source_timeline import load_timeline, source_fingerprint, select_pictures, generation_signature
 from app.services.readiness_policy import (SelectionPolicy, selection_policy,
-    exceptional_decode_provenance, verified_embed_decoder_threads)
+    decode_provenance, verified_embed_decoder_threads)
 from app.services.video_quarantine import release_blocked_video_ids
 from app.services.staged_artifacts import metadata_generation, reusable_vectors, artifact_digests
 from pipeline.io_utils import atomic_json
@@ -68,16 +68,15 @@ def main():
             table = load_timeline(video, index)
             rows, omitted = select_pictures(table, index.timescale, scenes['scenes'], old['keyframes'], policy)
             identity = source_fingerprint(index)
-            decode_provenance = exceptional_decode_provenance(video, index)
-            signature = generation_signature(identity, policy, scenes, old['keyframes'], decode_provenance)
+            decoder = decode_provenance(video, index)
+            signature = generation_signature(identity, policy, scenes, old['keyframes'], decoder)
             payload = {**old, 'version': 2, 'selection': {'strategy': 'presentation_interval', **asdict(policy)},
                        'source_identity': identity, 'generation': signature,
                        'source_time_base': {'num': 1, 'den': index.timescale},
                        'playback_origin_pts': int(table[0, 1]), 'keyframes': rows,
                        'num_keyframes': len(rows), 'omitted_entries': omitted,
                        'source_frame_count': len(table), 'submission_unit': 'milliseconds'}
-            if decode_provenance is not None:
-                payload['decode_provenance'] = decode_provenance
+            payload['decode_provenance'] = decoder
             folder, payload = metadata_generation(args.stage, video, payload, scenes)
             jobs.append((video, index, folder, payload))
         except Exception as exc:
@@ -112,7 +111,7 @@ def main():
         marker = folder / 'verified.json'
         provenance = {'model': DEFAULT_MODEL_ID, 'preprocess': plan.ffmpeg_filter,
                       'amp': amp, 'weights_dtype': 'float32', 'tf32': True,
-                      'decode_provenance': exceptional_decode_provenance(video, index)}
+                      'decode_provenance': decode_provenance(video, index)}
         if reusable_vectors(folder, payload, provenance):
             print(f'{number}/{len(jobs)} reused {video}', flush=True)
             continue

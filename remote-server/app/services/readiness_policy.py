@@ -52,13 +52,19 @@ def source_map_decoder_threads(video_id, index):
 
 
 def verified_embed_decoder_threads(video_id, index):
-    profile = decoder_profile(video_id, index)
-    return profile['threads'] if profile else 2
+    # Source checksums are meaningful only when every derivative uses the
+    # decoder setting that produced the authoritative source map.
+    return source_map_decoder_threads(video_id, index)
 
 
 def playback_decoder_threads(video_id, policy, index):
-    profile = decoder_profile(video_id, index)
-    return profile['threads'] if profile else policy.threads
+    del policy
+    return source_map_decoder_threads(video_id, index)
+
+
+def decode_provenance(video_id, index):
+    threads = source_map_decoder_threads(video_id, index)
+    return {'source_map_threads': threads, 'verified_embed_threads': threads}
 
 
 def exceptional_decode_provenance(video_id, index):
@@ -66,7 +72,7 @@ def exceptional_decode_provenance(video_id, index):
     profile = decoder_profile(video_id, index)
     if profile is None:
         return None
-    return {'source_map_threads': profile['threads'], 'verified_embed_threads': profile['threads']}
+    return decode_provenance(video_id, index)
 
 
 # Browser audit before conversion: these original N010 sources played correctly.

@@ -10,7 +10,8 @@ import numpy as np
 from app.services.decoder_profiles import decoder_profile, register_profile, source_identity
 from app.services.exact_frame_pts import index_path
 from app.services.readiness_policy import (source_map_decoder_threads, verified_embed_decoder_threads,
-                                          playback_decoder_threads, exceptional_decode_provenance, PlaybackPolicy)
+                                          playback_decoder_threads, exceptional_decode_provenance,
+                                          decode_provenance, PlaybackPolicy)
 
 
 class DecoderProfileTests(unittest.TestCase):
@@ -48,6 +49,11 @@ class DecoderProfileTests(unittest.TestCase):
         self.assertEqual(index_path(self.video, self.index, self.root), self.map)
         self.assertNotEqual(ordinary, self.map)
         self.assertEqual(source_map_decoder_threads('N-other', self.index), 4)
+        self.assertEqual(verified_embed_decoder_threads('N-other', self.index), 4)
+        self.assertEqual(playback_decoder_threads(
+            'N-other', PlaybackPolicy(threads=3), self.index), 4)
+        self.assertEqual(decode_provenance('N-other', self.index),
+                         {'source_map_threads': 4, 'verified_embed_threads': 4})
 
     def test_wrong_source_or_incomplete_replay_cannot_register(self):
         for change in ({'checksum_mismatch_count': 1}, {'decoded_rows': 1}, {'status': 'mismatch'},

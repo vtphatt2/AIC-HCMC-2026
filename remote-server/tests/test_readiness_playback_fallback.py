@@ -18,20 +18,22 @@ class PlaybackFallbackTests(unittest.IsolatedAsyncioTestCase):
         from app.services import playback_copies
         policy = PlaybackPolicy(threads=3)
         self.assertEqual(playback_decoder_threads('N031-V003', policy, None), 1)
-        self.assertEqual(playback_decoder_threads('N032-V003', policy, None), 3)
+        self.assertEqual(playback_decoder_threads('N032-V003', policy, None), 4)
         with tempfile.TemporaryDirectory() as scratch:
             source = Path(scratch) / 'source.zip'
             source.write_bytes(b'source')
             index = SimpleNamespace(zip_path=source, data_offset=0, video_size=6)
             old = hashlib.sha256(json.dumps({'source': source_fingerprint(index),
                         'policy': asdict(policy)}, sort_keys=True).encode()).hexdigest()[:20]
+            map_path = Path(scratch) / 'source.npy'
             table = np.array([[0, 10, 11]], dtype=np.int64)
-            with patch.object(playback_copies, 'load_timeline', return_value=table):
+            np.save(map_path, table)
+            with patch.object(playback_copies, 'index_path', return_value=map_path):
                 ordinary, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
                 exceptional, _ = playback_copies.copy_paths('N031-V003', index, policy, Path(scratch))
                 changed = table.copy(); changed[0, 2] += 1
-                with patch.object(playback_copies, 'load_timeline', return_value=changed):
-                    changed_path, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
+                np.save(map_path, changed)
+                changed_path, _ = playback_copies.copy_paths('N032-V003', index, policy, Path(scratch))
             self.assertNotEqual(ordinary.stem, f'N032-V003-{old}')
             self.assertNotEqual(exceptional.stem, f'N031-V003-{old}')
             self.assertNotEqual(ordinary, exceptional)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from functools import lru_cache
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,29 @@ import numpy as np
 
 from .exact_frame_pts import index_path
 from .readiness_policy import SelectionPolicy
+
+
+@lru_cache(maxsize=512)
+def _source_map_sha256(path: str, device: int, inode: int, size: int,
+                       mtime_ns: int, ctime_ns: int) -> str:
+    """Hash one immutable generation of a source map.
+
+    The stat fields are part of the cache key, so an atomic replacement or an
+    in-place rewrite gets a new digest while repeated card and Range requests
+    do not reread the complete map.
+    """
+    del device, inode, size, mtime_ns, ctime_ns
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as source:
+        while chunk := source.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def source_map_sha256(path: Path) -> str:
+    stat = path.stat()
+    return _source_map_sha256(str(path.resolve()), stat.st_dev, stat.st_ino,
+                              stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 def source_fingerprint(index):

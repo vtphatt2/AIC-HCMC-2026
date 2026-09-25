@@ -20,7 +20,7 @@ from PIL import Image
 
 from app.services.exact_frame_pts import index_path, showinfo_frames
 from app.services.readiness_policy import verified_embed_decoder_threads
-from app.services.source_timeline import source_fingerprint
+from app.services.source_timeline import source_fingerprint, source_map_sha256
 from app.services.staged_artifacts import file_digest
 
 
@@ -35,7 +35,7 @@ def exact_image_path(video_id: str, index, frame_number: int,
 
 def _provenance(video_id: str, index, map_path: Path) -> dict:
     return {'version': 1, 'source': source_fingerprint(index),
-            'source_map_sha256': file_digest(map_path),
+            'source_map_sha256': source_map_sha256(map_path),
             'decoder_threads': verified_embed_decoder_threads(video_id, index)}
 
 

@@ -95,6 +95,23 @@ class ExactImageTests(unittest.TestCase):
             second = media._cache_key(self.index, 'N001', 2000, 640, 'jpeg', 0)
         self.assertNotEqual(first, second)
 
+    def test_frame_map_digest_is_reused_until_the_map_changes(self):
+        from app.services import source_timeline
+        source_timeline._source_map_sha256.cache_clear()
+        with patch.object(media, 'index_path', return_value=self.map):
+            first = media._cache_key(self.index, 'N001', 2000, 640, 'jpeg', 0)
+            self.assertEqual(first, media._cache_key(
+                self.index, 'N001', 2000, 640, 'jpeg', 0))
+            self.assertEqual(source_timeline._source_map_sha256.cache_info().hits, 1)
+            self.assertEqual(source_timeline._source_map_sha256.cache_info().misses, 1)
+
+            changed = np.load(self.map)
+            changed[0, 2] ^= 1
+            np.save(self.map, changed)
+            second = media._cache_key(self.index, 'N001', 2000, 640, 'jpeg', 0)
+            self.assertNotEqual(first, second)
+            self.assertEqual(source_timeline._source_map_sha256.cache_info().misses, 2)
+
     def test_checksum_failure_publishes_no_images(self):
         def wrong(command, **kwargs):
             result = self.decode(command, **kwargs)

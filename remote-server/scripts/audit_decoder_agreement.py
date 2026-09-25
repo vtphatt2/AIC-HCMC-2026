@@ -24,6 +24,7 @@ import numpy as np
 from app.services import local_zip_media as media
 from app.services.exact_frame_pts import index_path, showinfo_frames
 from app.services.source_timeline import source_fingerprint
+from app.services.video_quarantine import block_release
 
 
 def audit_video(video_id, index, threads: int, timeout: int = 1200, *, map_path=None):
@@ -89,6 +90,23 @@ def write_report(path: Path, report: dict):
     os.replace(temporary, path)
 
 
+def block_mismatch(video: str, result: dict, threads: int, report_path: Path) -> None:
+    try:
+        evidence = str(report_path.relative_to(ROOT / 'challenge_resources/data'))
+    except ValueError:
+        evidence = str(report_path)
+    block_release(
+        video,
+        reason='decoder_sensitive_source_picture',
+        details=(f"Complete {threads}-thread replay differs from the current source map: "
+                 f"PTS mismatches={result['pts_mismatch_count']}, pixel mismatches="
+                 f"{result['checksum_mismatch_count']}. Organizer corruption is not "
+                 "established; verified decoder-profile recovery and derivative "
+                 "validation are required."),
+        evidence=evidence,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', required=True, help='Archive filename, e.g. Video_N001-N010.zip')
@@ -96,6 +114,8 @@ def main():
     parser.add_argument('--videos', nargs='*')
     parser.add_argument('--report', type=Path)
     parser.add_argument('--force', action='store_true')
+    parser.add_argument('--block-mismatches', action='store_true',
+                        help='Atomically release-block complete decoder disagreements')
     args = parser.parse_args()
     if args.threads < 1:
         raise ValueError('--threads must be positive')
@@ -130,6 +150,8 @@ def main():
         saved = report['videos'].get(video)
         if not args.force and saved and all(saved.get(k) == v for k, v in identity.items()) and \
                 saved.get('status') in ('exact', 'mismatch'):
+            if args.block_mismatches and saved['status'] == 'mismatch':
+                block_mismatch(video, saved, args.threads, report_path)
             print(f'{number}/{len(videos)} reused {video}: {saved["status"]}', flush=True)
             continue
         try:
@@ -138,6 +160,8 @@ def main():
             result = {**identity, 'video_id': video, 'status': 'error', 'error': str(exc)}
         report['videos'][video] = result
         write_report(report_path, report)
+        if args.block_mismatches and result['status'] == 'mismatch':
+            block_mismatch(video, result, args.threads, report_path)
         print(f'{number}/{len(videos)} {video}: {result["status"]} '
               f'PTS={result.get("pts_mismatch_count", "?")} '
               f'pixels={result.get("checksum_mismatch_count", "?")}', flush=True)

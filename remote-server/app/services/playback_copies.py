@@ -11,9 +11,10 @@ import tempfile
 
 import numpy as np
 
-from .readiness_policy import playback_policy, exceptional_decode_provenance, playback_decoder_threads
-from .source_timeline import source_fingerprint, load_timeline, monotonic_entries
-from .exact_frame_pts import showinfo_frames
+from .readiness_policy import playback_policy, decode_provenance, playback_decoder_threads
+from .source_timeline import (source_fingerprint, source_map_sha256 as map_sha256,
+                              load_timeline, monotonic_entries)
+from .exact_frame_pts import index_path, showinfo_frames
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DIRECTORY = ROOT / 'challenge_resources/data/zip_embeddings/playback'
@@ -25,22 +26,20 @@ def directory():
 
 def source_map_sha256(video_id, index):
     """Bind playback to decoded PTS and pixels, including map-only repairs."""
-    table = load_timeline(video_id, index)
+    path = index_path(video_id, index)
+    table = np.load(path, mmap_mode='r', allow_pickle=False)
     if table.ndim != 2 or table.shape[1] != 3 or table.dtype != np.int64:
         raise ValueError(f'{video_id}: invalid source map for playback')
-    digest = hashlib.sha256()
-    digest.update(json.dumps({'shape': table.shape, 'dtype': str(table.dtype)}).encode())
-    digest.update(table.tobytes(order='C'))
-    return digest.hexdigest()
+    return map_sha256(path)
 
 
 def copy_paths(video_id, index, policy=None, root=None):
     policy = policy or playback_policy()
+    decoder = decode_provenance(video_id, index)
     fingerprint = {'source': source_fingerprint(index), 'policy': asdict(policy),
-                   'source_map_sha256': source_map_sha256(video_id, index)}
-    exceptional = exceptional_decode_provenance(video_id, index)
-    if exceptional is not None:
-        fingerprint['decode_provenance'] = exceptional
+                   'source_map_sha256': source_map_sha256(video_id, index),
+                   'decode_provenance': {**decoder,
+                                         'playback_source_threads': decoder['source_map_threads']}}
     signature = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode()).hexdigest()[:20]
     base = (root or directory()) / f'{video_id}-{signature}'
     return base.with_suffix('.mp4'), base.with_suffix('.json')
@@ -136,8 +135,9 @@ def prepare_copy(video_id, index, policy=None, root=None, timeout=7200):
                 'source_to_playback_offset_seconds': -origin / index.timescale, 'playback_start_seconds': 0,
                 'omitted_frame_ids': omitted[:, 0].tolist(), 'validation': validation,
                 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns}
-        if exceptional_decode_provenance(video_id, index) is not None:
-            meta['decode_provenance'] = exceptional_decode_provenance(video_id, index)
+        decoder = decode_provenance(video_id, index)
+        meta['decode_provenance'] = {**decoder,
+                                     'playback_source_threads': decoder['source_map_threads']}
         temp_marker = Path(scratch) / 'metadata.json'
         temp_marker.write_text(json.dumps(meta, indent=2))
         os.replace(temp_marker, marker)

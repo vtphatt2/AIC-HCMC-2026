@@ -39,6 +39,24 @@ class QuarantineTests(unittest.TestCase):
         self.assertEqual(policy.excluded_video_ids(),frozenset({'N031-V003','N001-V001'}))
         self.assertEqual(policy.release_blocked_video_ids(),frozenset({'N031-V003'}))
 
+    def test_release_block_is_atomic_and_preserves_existing_context(self):
+        self.path.write_text(json.dumps({'version':1,'videos':{
+            'N015-V001':{'reason':'browser failure','custom':'keep'},
+        }}))
+        policy.block_release('N015-V001', reason='decoder mismatch',
+                             details='complete replay differs', evidence='verification/report.json')
+        data=json.loads(self.path.read_text())
+        self.assertEqual(data['videos']['N015-V001']['custom'],'keep')
+        self.assertTrue(data['videos']['N015-V001']['release_blocked'])
+        self.assertEqual(policy.release_blocked_video_ids(),frozenset({'N015-V001'}))
+        self.assertFalse(self.path.with_suffix('.json.partial').exists())
+
+    def test_release_block_rejects_incomplete_or_non_n_evidence(self):
+        with self.assertRaises(ValueError):
+            policy.block_release('M01_V001', reason='x', details='y', evidence='z')
+        with self.assertRaises(ValueError):
+            policy.block_release('N001-V001', reason='', details='y', evidence='z')
+
     def test_milvus_filters_before_limit_without_changing_search_parameters(self):
         collection=MagicMock();collection.search.return_value=[[]]
         milvus_client.vector_search(collection,[1.,0.],top_k=100,algorithm='hnsw')

@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import json
 import os
+import fcntl
 from functools import lru_cache
 from pathlib import Path
 
 DEFAULT_PATH = Path(__file__).resolve().parents[3] / 'challenge_resources/data/video_quarantine.json'
+
+
+def manifest_path() -> Path:
+    return Path(os.getenv('VIDEO_QUARANTINE_PATH') or DEFAULT_PATH)
 
 
 @lru_cache(maxsize=4)
@@ -21,12 +26,38 @@ def _read(path: str, mtime_ns: int, size: int) -> dict[str, dict]:
 
 
 def _entries() -> dict[str, dict]:
-    path = Path(os.getenv('VIDEO_QUARANTINE_PATH') or DEFAULT_PATH)
+    path = manifest_path()
     try:
         stat = path.stat()
     except FileNotFoundError:
         return {}
     return _read(str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+
+
+def block_release(video_id: str, *, reason: str, details: str, evidence: str) -> None:
+    """Atomically retain a source while preventing release and search use."""
+    if not video_id.startswith('N') or not all(
+            isinstance(value, str) and value.strip()
+            for value in (reason, details, evidence)):
+        raise ValueError('A release block requires an N video and complete evidence')
+    path = manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + '.lock')
+    with lock_path.open('a+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        data = json.loads(path.read_text()) if path.exists() else {'version': 1, 'videos': {}}
+        if data.get('version') != 1 or not isinstance(data.get('videos'), dict):
+            raise ValueError(f'Invalid video quarantine manifest: {path}')
+        previous = data['videos'].get(video_id, {})
+        data['videos'][video_id] = {
+            **previous, 'reason': reason, 'details': details, 'evidence': evidence,
+            'scope': 'search_only; original video and preprocessing preserved',
+            'release_blocked': True,
+        }
+        temporary = path.with_suffix(path.suffix + '.partial')
+        temporary.write_text(json.dumps(data, indent=2, sort_keys=True) + '\n')
+        os.replace(temporary, path)
+        _read.cache_clear()
 
 
 def excluded_video_ids() -> frozenset[str]:
