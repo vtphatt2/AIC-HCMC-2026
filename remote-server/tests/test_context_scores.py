@@ -18,6 +18,7 @@ class ContextScoresTests(unittest.IsolatedAsyncioTestCase):
         self.context = {'fps': 25, 'before': [{'frame_id': 'before', 'frame_number': 10}],
                         'middle': [{'frame_id': 'hit', 'frame_number': 20}], 'after': []}
         self.ns = {'BaseModel': BaseModel, 'Field': Field, 'logger': Mock(),
+                   '_require_released_video': lambda _: None,
                    'get_context_frames': AsyncMock(return_value=self.context),
                    'get_frame_scores': AsyncMock(return_value={'scores': {'hit': .8}})}
         exec(compile(tree, 'main.py', 'exec'), self.ns)

@@ -59,6 +59,19 @@ class BlockingIOTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DiskCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_warmup_presence_check_does_not_read_or_touch_jpeg(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = JpegDiskCache(directory, 4096)
+            async def produce():
+                return b"jpeg"
+            self.assertFalse(await cache.contains("key"))
+            await cache.get("key", produce)
+            path = cache._path("key")
+            before = path.stat().st_mtime_ns
+            with patch.object(cache, "_read", side_effect=AssertionError("JPEG should not be read")):
+                self.assertTrue(await cache.contains("key"))
+            self.assertEqual(path.stat().st_mtime_ns, before)
+
     async def test_write_failure_returns_already_decoded_image(self):
         with tempfile.TemporaryDirectory() as directory:
             cache = JpegDiskCache(directory, 4096)

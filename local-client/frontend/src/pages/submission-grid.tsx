@@ -97,7 +97,7 @@ export default function SubmissionGridPage() {
                     className="border-2 border-stone-800 dark:border-stone-600 rounded overflow-hidden bg-cream-card dark:bg-stone-800"
                   >
                     <img
-                      src={rowThumbUrl(row.videoId, frame, fps)}
+                      src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[row.frames.indexOf(frame)])}
                       alt={`${row.videoId}, frame ${frame}`}
                       loading="lazy"
                       className="w-full aspect-video object-cover bg-stone-200 dark:bg-stone-700"

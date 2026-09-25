@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import zipfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+VIDEO_DIR_PATTERN = re.compile(r"^videos?__(?P<video_id>.+)$")
 
 
 def collect(zip_dir: Path) -> dict[str, float]:
@@ -40,9 +42,13 @@ def collect(zip_dir: Path) -> dict[str, float]:
         found = 0
         with zipfile.ZipFile(archive_path) as archive:
             for name in archive.namelist():
-                if not (name.endswith("/scenes.json") and "video__" in name):
+                parts = name.split("/")
+                if len(parts) != 3 or parts[0] != "phase1_transnet" or parts[2] != "scenes.json":
                     continue
-                video_id = name.split("video__")[1].split("/")[0]
+                match = VIDEO_DIR_PATTERN.fullmatch(parts[1])
+                if match is None:
+                    continue
+                video_id = match.group("video_id")
                 if video_id in fps_by_video:
                     continue
                 try:

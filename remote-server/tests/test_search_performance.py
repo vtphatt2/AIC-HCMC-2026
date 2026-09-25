@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 from pymilvus import DataType
@@ -18,6 +18,13 @@ from app.strategies._similarity_filter import filter_similar_results
 
 
 class HnswSearchParameterTests(unittest.TestCase):
+    def setUp(self):
+        # Baseline parameter tests are independent of the operator's active
+        # source quarantine; test_video_quarantine covers the combined path.
+        self.policy = patch('app.services.video_quarantine.excluded_video_ids', return_value=frozenset())
+        self.policy.start()
+        self.addCleanup(self.policy.stop)
+
     def test_deep_unfiltered_search_bypasses_cached_entry_point(self):
         for top_k in [50, 100, 1000, 3000]:
             with self.subTest(top_k=top_k):

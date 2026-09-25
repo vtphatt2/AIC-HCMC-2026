@@ -38,6 +38,12 @@ One row = one CSV line = one candidate:
   a row has exactly one `videoId` field, so mixing videos into a candidate
   is impossible by construction, not just a warning
 
+For N001–N100, KIS/QA use **source PTS milliseconds** in the position column;
+L/M/S keep frame units. N videos cannot be added to TRAKE. This follows the
+[organizer's VFR clarification](ORGANIZER_TIMING_GUIDANCE.md). The column count
+stays unchanged. Version 2 sidecars preserve units, verified source frame IDs,
+and timing status; N rows with unresolved timing cannot be exported.
+
 ## Editing a session — two modes, same data
 
 Toggle per session on `/submissions`: **▦ Frame grid** ⇄ **📝 Raw CSV**.
@@ -67,6 +73,10 @@ frames and duplicate `video_id,frame` pairs, and never changes the original
 rank order. The operation is deliberately unavailable for QA and TRAKE:
 duplicating a QA answer is not necessarily valid, while TRAKE requires an
 exact event/frame count per candidate.
+
+For N candidates the filler instead finds verified source pictures near
+`-500, +500, -1000, +1000, ...` milliseconds, respecting timeline bounds and
+deduplicating source pictures. It never estimates N timing from nominal FPS.
 
 **Review grid ↗** opens that session in a separate browser tab and displays
 every CSV frame as a responsive thumbnail grid in CSV rank order. It works

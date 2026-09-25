@@ -99,12 +99,17 @@ export type SubmissionQueryType = "kis" | "qa" | "trake";
 // row's own position (rank = array order), so the on-disk file is the
 // literal export CSV, not a separate JSON model of it.
 export interface SubmissionRow {
+  unit?: "frames" | "milliseconds";
+  sourceFrames?: number[];
+  timingStatus?: "verified" | "unresolved";
+  timingError?: string;
   videoId: string;
   frames: number[];
   answer?: string; // qa only
 }
 
 export interface SubmissionState {
+  version?: 2;
   session: string;
   queryType: SubmissionQueryType;
   // TRAKE only: row index "Add to submission" appends the next frame into.

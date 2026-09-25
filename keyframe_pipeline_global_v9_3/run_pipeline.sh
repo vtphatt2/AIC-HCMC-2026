@@ -418,8 +418,10 @@ PYSIZE
   fi
 
   echo ""
-  echo "=== STEP 1/4: download complete ZIP ==="
-  rm -f "$ZIP_PATH"
+  echo "=== STEP 1/4: download complete ZIP (resumable) ==="
+  if [[ -f "$ZIP_PATH" ]]; then
+    echo "Resuming existing partial ZIP: $ZIP_PATH ($(du -h "$ZIP_PATH" | awk '{print $1}'))"
+  fi
 
   ENGINE="$DOWNLOAD_ENGINE"
   if [[ "$ENGINE" == "auto" ]]; then
@@ -434,19 +436,84 @@ PYSIZE
       -d "$SOURCE_DIR" -o "$BASENAME" "$URL"
   else
     "$PYTHON_BIN" - "$URL" "$ZIP_PATH" <<'PYDOWNLOAD'
-import sys, time, requests
+import os, sys, time
+import requests
 from tqdm import tqdm
+
 url, out = sys.argv[1], sys.argv[2]
 chunk_size = 8 * 1024 * 1024
+max_attempts = 20
 t0 = time.perf_counter()
-with requests.get(url, stream=True, timeout=(30, 300)) as r:
-    r.raise_for_status()
-    total = int(r.headers.get('content-length', 0))
-    done = 0
-    with open(out, 'wb', buffering=16*1024*1024) as f, tqdm(total=total or None, unit='B', unit_scale=True, unit_divisor=1024, desc='ZIP') as bar:
-        for chunk in r.iter_content(chunk_size=chunk_size):
-            if chunk:
-                f.write(chunk); done += len(chunk); bar.update(len(chunk))
+done = os.path.getsize(out) if os.path.exists(out) else 0
+total = None
+
+for attempt in range(1, max_attempts + 1):
+    headers = {"Range": f"bytes={done}-"} if done else {}
+    try:
+        with requests.get(url, headers=headers, stream=True, timeout=(30, 300)) as r:
+            # A 416 response is success only when the local file already has the
+            # server's complete length.  Any other 416 means the partial file is
+            # incompatible with this URL and must be removed deliberately.
+            if r.status_code == 416 and done:
+                remote_total = r.headers.get("Content-Range", "").rpartition("/")[2]
+                # Some CDN/cache layers return 416 without Content-Range even
+                # though the requested byte is exactly one past EOF.  Confirm
+                # the complete length with HEAD before treating it as a retry.
+                if not remote_total.isdigit():
+                    probe = requests.head(url, allow_redirects=True, timeout=(30, 300))
+                    probe.raise_for_status()
+                    remote_total = probe.headers.get("Content-Length", "")
+                if remote_total.isdigit() and done == int(remote_total):
+                    total = done
+                    break
+            r.raise_for_status()
+
+            # Servers that do not implement Range return 200.  Start cleanly in
+            # that case rather than appending a second copy of the archive.
+            if done and r.status_code == 200:
+                print("Server ignored Range; restarting this download from zero.")
+                done = 0
+                mode = "wb"
+            else:
+                mode = "ab" if done else "wb"
+
+            content_range = r.headers.get("Content-Range", "")
+            range_total = content_range.rpartition("/")[2]
+            if range_total.isdigit():
+                total = int(range_total)
+            elif r.headers.get("Content-Length", "").isdigit():
+                total = done + int(r.headers["Content-Length"])
+
+            with open(out, mode, buffering=16 * 1024 * 1024) as f, tqdm(
+                total=total, initial=done, unit="B", unit_scale=True,
+                unit_divisor=1024, desc="ZIP",
+            ) as bar:
+                for chunk in r.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        done += len(chunk)
+                        bar.update(len(chunk))
+        if total is None or done >= total:
+            break
+        raise requests.exceptions.ChunkedEncodingError(
+            f"download ended at {done} bytes; expected {total}"
+        )
+    except requests.exceptions.RequestException as exc:
+        if attempt == max_attempts:
+            raise SystemExit(
+                f"Download failed after {max_attempts} attempts; retained {out} "
+                f"({done} bytes) so the next run can resume: {exc}"
+            )
+        delay = min(60, 2 ** (attempt - 1))
+        print(
+            f"Download interrupted at {done} bytes ({exc}); "
+            f"retrying attempt {attempt + 1}/{max_attempts} in {delay}s...",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+
+if total is not None and done != total:
+    raise SystemExit(f"Download size mismatch: got {done} bytes, expected {total}")
 elapsed = time.perf_counter() - t0
 print(f"Downloaded {done/1024**3:.3f} GiB in {elapsed:.1f}s ({done/1024**2/max(elapsed,1e-9):.1f} MiB/s)")
 PYDOWNLOAD

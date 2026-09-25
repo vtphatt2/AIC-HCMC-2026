@@ -35,8 +35,20 @@ from app.services.query_parser import QueryParser
 from app.services.remote_zip_proxy import RemoteZipVideoProxy, ZipVideoUnavailable
 from app.services import local_zip_media
 from app.services.video_catalog import indexed_video_catalog, search_video_catalog
+from app.services.video_quarantine import release_blocked_video_ids, filter_release_rows
 
 logger = logging.getLogger(__name__)
+
+
+def _require_released_video(video_id: str) -> None:
+    if video_id in release_blocked_video_ids():
+        raise HTTPException(404, f"Video {video_id} is unavailable")
+
+
+def _require_released_frames(frame_ids: list[str]) -> None:
+    blocked = release_blocked_video_ids()
+    if any(str(frame_id).rsplit('_', 1)[0] in blocked for frame_id in frame_ids):
+        raise HTTPException(404, "A requested video is unavailable")
 STRATEGIES_DIR = Path(__file__).parent / "app" / "strategies"
 _strategies: dict[str, BaseStrategy] = {}
 _data_provider: DataProvider | None = None
@@ -211,6 +223,7 @@ async def warmup_text_encoder(passes: int = 1):
 
 @app.get("/api/transcript/{video_id}")
 async def get_transcript(video_id: str):
+    _require_released_video(video_id)
     """Full transcript for one video — fetched once per
     video by VideoModal; the frontend looks up the active segment locally
     against the already-polled playback time instead of round-tripping on
@@ -235,6 +248,16 @@ async def get_video_info(video_id: str):
     Returns the same VideoModal response as the old exact-ID endpoint; exact
     IDs stay on the fast path and only misses scan the cached local catalog.
     """
+    _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if os.getenv("ENV_MODE", "").upper() == "LOCAL" and remote_base:
+        response = await _http_client.get(
+            f"{remote_base}/api/video/{video_id}",
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Remote video metadata unavailable")
+        return response.json()
     from app.db import numpy_vector_store
 
     if not numpy_vector_store.available():
@@ -252,6 +275,7 @@ async def get_video_info(video_id: str):
             raise HTTPException(404, f"No indexed frames found for video_id={video_id}")
     else:
         video_id = frames[0]["video_id"]
+    _require_released_video(video_id)
     frame = frames[0]
 
     from app.services.zip_frame_source import ingest_fps
@@ -266,6 +290,38 @@ async def get_video_info(video_id: str):
     }
 
 
+@app.get("/api/video/{video_id}/frame-timeline")
+async def proxy_frame_timeline(video_id: str, version: int = 2):
+    _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if not video_id.startswith("N") or not remote_base:
+        raise HTTPException(404, "Verified N timeline requires the server proxy")
+    response = await _zip_upstream_client.get(
+        f"{remote_base}/api/video/{video_id}/frame-timeline",
+        params={"version": version}, headers={"ngrok-skip-browser-warning": "1"},
+    )
+    if response.status_code != 200:
+        raise HTTPException(response.status_code, "Verified timeline unavailable")
+    return Response(content=response.content,
+                    media_type=response.headers.get("content-type", "application/json"))
+
+
+@app.get("/api/video/{video_id}/frame-offset/{frame_number}")
+async def proxy_frame_offset(video_id: str, frame_number: int):
+    _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if not video_id.startswith("N") or not remote_base:
+        raise HTTPException(404, "Verified N offset requires the server proxy")
+    response = await _zip_upstream_client.get(
+        f"{remote_base}/api/video/{video_id}/frame-offset/{frame_number}",
+        headers={"ngrok-skip-browser-warning": "1"},
+    )
+    if response.status_code != 200:
+        raise HTTPException(response.status_code, "Verified offset unavailable")
+    return Response(content=response.content,
+                    media_type=response.headers.get("content-type", "application/json"))
+
+
 @app.get("/api/video/{video_id}/context-frames")
 async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: int = 20):
     """Up to `expand` indexed keyframes immediately before start_ms, up to
@@ -275,6 +331,7 @@ async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: 
     cluster is. Lets Video view's per-video strip fill itself out with
     real neighboring frames instead of reading as "that's all there is"
     when the video has far more indexed nearby."""
+    _require_released_video(video_id)
     from app.db import numpy_vector_store
 
     if not numpy_vector_store.available():
@@ -305,6 +362,7 @@ async def get_frame_scores(req: FrameScoresRequest):
     against anything before now (a search's own dedup pass only ever saw
     its own matches, never context-frames' additions). A frame_id missing
     from the response was filtered as a duplicate, not unscored."""
+    _require_released_frames(req.frame_ids)
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready.")
     if not req.frame_ids:
@@ -346,7 +404,31 @@ async def zip_video(video_id: str, request: Request):
     exactly like it would against a plain MP4. 404 (unknown video_id, or
     upstream refusing Range) is the expected signal for VideoModal to fall
     back to YouTube."""
+    _require_released_video(video_id)
     try:
+        remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+        if video_id.startswith("N"):
+            if not remote_base:
+                raise HTTPException(404, "N playback requires a validated server copy")
+            upstream_request = _zip_upstream_client.build_request(
+                "GET", f"{remote_base}/api/zip-video/{video_id}",
+                headers={"Range": request.headers.get("range", "bytes=0-"),
+                         "ngrok-skip-browser-warning": "1"},
+            )
+            upstream = await _zip_upstream_client.send(upstream_request, stream=True)
+            if upstream.status_code != 206:
+                await upstream.aclose()
+                raise HTTPException(upstream.status_code, "Validated N playback unavailable")
+            headers = {name: upstream.headers[name] for name in
+                       ("content-range", "accept-ranges", "content-length", "content-type")
+                       if name in upstream.headers}
+            async def remote_body():
+                try:
+                    async for chunk in upstream.aiter_bytes():
+                        yield chunk
+                finally:
+                    await upstream.aclose()
+            return StreamingResponse(remote_body(), status_code=206, headers=headers)
         if _ZIP_MEDIA_SOURCE == "local":
             headers, body_gen = await local_zip_media.open_range(
                 video_id, request.headers.get("range")
@@ -358,6 +440,8 @@ async def zip_video(video_id: str, request: Request):
         )
     except ZipVideoUnavailable as exc:
         raise HTTPException(404, str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Unexpected error opening zip-video stream for %s", video_id)
         raise HTTPException(500, f"Unexpected error opening video stream: {exc}") from exc
@@ -409,7 +493,7 @@ async def _single_flight(key: tuple[str, str, int], factory):
 
 
 @app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
-async def zip_frame(video_id: str, timestamp_ms: int):
+async def zip_frame(video_id: str, timestamp_ms: int, request: Request):
     """Decode one JPEG frame straight from the organizer's remote ZIP — for
     videos ingested without local keyframe JPGs (see
     remote-server/scripts/ingest_zip_pipeline_results.py). Builds a per-video
@@ -430,6 +514,20 @@ async def zip_frame(video_id: str, timestamp_ms: int):
     retry/backoff behind that), but this still bounds total wall time and
     catches anything unexpected so a client is never left waiting with
     nothing coming back."""
+    _require_released_video(video_id)
+    remote_base = os.getenv("REMOTE_SERVER_URL", "").rstrip("/")
+    if video_id.startswith("N"):
+        if not remote_base:
+            raise HTTPException(404, "N pictures require the verified server proxy")
+        suffix = f"?{request.url.query}" if request.url.query else ""
+        response = await _zip_upstream_client.get(
+            f"{remote_base}/api/zip-frame/{video_id}/{timestamp_ms}{suffix}",
+            headers={"ngrok-skip-browser-warning": "1"},
+        )
+        if response.status_code != 200:
+            raise HTTPException(response.status_code, "Verified N picture unavailable")
+        return Response(content=response.content,
+                        media_type=response.headers.get("content-type", "image/jpeg"))
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_jpeg
 
     async def decode():
@@ -467,6 +565,7 @@ async def zip_frame_plan(video_id: str, timestamp_ms: int):
 
     Cheap enough not to need the decode semaphore — after the first frame of a
     video the moov index is cached, so this is pure arithmetic."""
+    _require_released_video(video_id)
     from app.services.zip_frame_source import ZipFrameUnavailable, get_frame_plan
 
     plan_call = (
@@ -495,6 +594,7 @@ async def zip_bytes(video_id: str, region_start: int, length: int):
 
     Not a general proxy: fetch_region checks the range against this video's own
     extent inside the archive, so it can't be aimed anywhere else."""
+    _require_released_video(video_id)
     from app.services.zip_frame_source import ZipFrameUnavailable, fetch_region
 
     fetch_call = (
@@ -710,7 +810,7 @@ async def search(req: SearchRequest):
     except Exception as exc:
         raise HTTPException(500, f"Strategy error: {exc}")
 
-    results = results[:top_k]
+    results = filter_release_rows(results)[:top_k]
     logger.info(
         "[TIMER] total_request %.3f ms strategy=%s status=ok results=%s",
         (time.monotonic() - t0) * 1000, req.strategy_id, len(results),
@@ -755,7 +855,7 @@ async def search_transcript_chunks(req: TranscriptChunkSearchRequest):
     except Exception as exc:
         raise HTTPException(500, f"Transcript chunk search error: {exc}")
 
-    results = results[:top_k]
+    results = filter_release_rows(results)[:top_k]
 
     return {
         "results":           results,

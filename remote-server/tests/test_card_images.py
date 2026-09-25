@@ -3,7 +3,9 @@ import asyncio
 from collections import OrderedDict
 import io
 import logging
+import os
 from pathlib import Path
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -34,8 +36,11 @@ class CardImageTests(unittest.IsolatedAsyncioTestCase):
         self.decoder = AsyncMock(return_value=self.original)
         for name, value in {
             "_jpeg_cache": OrderedDict(), "_jpeg_cache_bytes": 0,
-            "_jpeg_inflight": {}, "JPEG_CACHE_MAX_BYTES": 1024 * 1024,
-            "_disk_cache": None, "_decode_semaphore": asyncio.Semaphore(3),
+            "_jpeg_inflight": {}, "_jpeg_waiters": {},
+            "_card_activity_task": None,
+            "JPEG_CACHE_MAX_BYTES": 1024 * 1024,
+            "_disk_cache": None, "_card_disk_cache": None,
+            "_decode_semaphore": asyncio.Semaphore(3),
             "_resize_semaphore": asyncio.Semaphore(2),
             "_get_index": AsyncMock(return_value=index),
             "_decode_frame_jpeg": self.decoder,
@@ -89,6 +94,86 @@ class CardImageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await media.get_frame_jpeg("V1", 100, width=640), card)
                 self.assertEqual(await media.get_frame_jpeg("V1", 100), self.original)
 
+    async def test_unrelated_cache_keys_do_not_wait_for_a_slow_decode(self):
+        cache = JpegDiskCache(str(Path(self.tmp.name) / "collision-cache"), 1024 * 1024)
+        cache.SHARDS = 1
+        cache.shard_budget = 1024 * 1024
+        first, second = "first", "second"
+        while cache._path(first).stem[:3] == cache._path(second).stem[:3]:
+            second += "x"
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def slow():
+            started.set()
+            await release.wait()
+            return b"first jpeg"
+
+        async def fast():
+            return b"second jpeg"
+
+        waiting = asyncio.create_task(cache.get(first, slow))
+        await started.wait()
+        # Both keys share the same write shard. A slow producer must not hold
+        # its lock, because a live result card may need the other key.
+        self.assertEqual(await asyncio.wait_for(cache.get(second, fast), .5), b"second jpeg")
+        release.set()
+        self.assertEqual(await waiting, b"first jpeg")
+
+    async def test_same_cache_key_still_produces_only_once(self):
+        cache = JpegDiskCache(str(Path(self.tmp.name) / "single-flight-cache"), 1024 * 1024)
+        calls = 0
+
+        async def produce():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(.02)
+            return b"shared jpeg"
+
+        values = await asyncio.gather(*(cache.get("same-key", produce) for _ in range(8)))
+        self.assertEqual(values, [b"shared jpeg"] * 8)
+        self.assertEqual(calls, 1)
+
+    async def test_background_warmer_yields_while_live_decode_is_active(self):
+        cache = JpegDiskCache(str(Path(self.tmp.name) / "live-cards"), 1024 * 1024)
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def slow_decode(*args):
+            started.set()
+            await release.wait()
+            return self.original
+
+        self.decoder.side_effect = slow_decode
+        with patch.object(media, "_card_disk_cache", cache):
+            live = asyncio.create_task(media.get_frame_jpeg("V1", 100, width=640))
+            await started.wait()
+            marker = media.card_activity_file()
+            for _ in range(50):
+                if marker.exists():
+                    break
+                await asyncio.sleep(.01)
+            self.assertTrue(marker.exists())
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(media.wait_for_live_card_idle(.5), .65)
+            release.set()
+            self.assertTrue(await live)
+            await asyncio.wait_for(media.wait_for_live_card_idle(.5), 1.5)
+
+    async def test_separate_card_cache_keeps_original_bytes_and_reuses_card(self):
+        original_cache = JpegDiskCache(str(Path(self.tmp.name) / "originals"), 16 * 1024 * 1024)
+        card_cache = JpegDiskCache(str(Path(self.tmp.name) / "cards"), 16 * 1024 * 1024)
+        with patch.object(media, "_disk_cache", original_cache), patch.object(media, "_card_disk_cache", card_cache):
+            full, card = await asyncio.gather(
+                media.get_frame_jpeg("V1", 100), media.get_frame_jpeg("V1", 100, width=640))
+            self.assertEqual(full, self.original)
+            self.assertEqual(self.decoder.await_count, 1)
+            self.assertEqual(len(list(card_cache.directory.rglob("*.jpg"))), 1)
+            self.assertEqual(len(list(original_cache.directory.rglob("*.jpg"))), 1)
+            media._jpeg_cache.clear()
+            media._jpeg_cache_bytes = 0
+            self.decoder.side_effect = AssertionError("Warm variants must not decode")
+            self.assertEqual(await media.get_frame_jpeg("V1", 100, width=640), card)
+            self.assertEqual(await media.get_frame_jpeg("V1", 100), full)
+
     async def test_cancelled_card_viewer_does_not_discard_shared_work(self):
         started, release = asyncio.Event(), asyncio.Event()
 
@@ -107,6 +192,25 @@ class CardImageTests(unittest.IsolatedAsyncioTestCase):
         release.set()
         self.assertTrue(await second)
         self.assertEqual(self.decoder.await_count, 1)
+
+    async def test_abandoned_card_stops_decoding_and_can_be_retried(self):
+        started = asyncio.Event()
+
+        async def decode(*args):
+            started.set()
+            await asyncio.Future()
+
+        self.decoder.side_effect = decode
+        task = asyncio.create_task(media.get_frame_jpeg("V1", 100, width=640))
+        await started.wait()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+        self.assertFalse(media._jpeg_inflight)
+        self.assertFalse(media._jpeg_waiters)
+        self.decoder.side_effect = None
+        self.assertTrue(await media.get_frame_jpeg("V1", 100, width=640))
 
     async def test_disk_read_failure_still_returns_card(self):
         cache = JpegDiskCache(str(Path(self.tmp.name) / "cache"), 1024 * 1024)
@@ -155,15 +259,16 @@ class CardImageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_http_original_variant_and_restricted_dimensions(self):
         import httpx
-        from fastapi import FastAPI, HTTPException, Query
+        from fastapi import FastAPI, HTTPException, Query, Request
         from fastapi.responses import Response
 
         tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
         tree.body = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "zip_frame"]
         app = FastAPI()
-        scope = dict(app=app, asyncio=asyncio, Query=Query, HTTPException=HTTPException,
+        scope = dict(app=app, asyncio=asyncio, Query=Query, Request=Request,
+                     HTTPException=HTTPException,
                      Response=Response, local_zip_media=media, ZIP_FRAME_TIMEOUT_SEC=2,
-                     logger=logging.getLogger(__name__))
+                     logger=logging.getLogger(__name__), _require_released_video=lambda _: None)
         exec(compile(tree, "main.py", "exec"), scope)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             full = await client.get("/api/zip-frame/V1/100")
@@ -181,6 +286,55 @@ class CardImageTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await client.get("/api/zip-frame/V1/100" + url)).status_code, 422)
             for width in ["0", "-1", "641", "999999", "bad"]:
                 self.assertEqual((await client.get(f"/api/zip-frame/V1/100?width={width}")).status_code, 422)
+
+    async def test_http_disconnect_cancels_unneeded_decode(self):
+        from fastapi import FastAPI, HTTPException, Query, Request
+        from fastapi.responses import Response
+
+        tree = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
+        tree.body = [n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "zip_frame"]
+        scope = dict(app=FastAPI(), asyncio=asyncio, Query=Query, Request=Request,
+                     HTTPException=HTTPException, Response=Response, local_zip_media=media,
+                     ZIP_FRAME_TIMEOUT_SEC=2, logger=logging.getLogger(__name__),
+                     _require_released_video=lambda _: None)
+        exec(compile(tree, "main.py", "exec"), scope)
+
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def decode(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+        class Gone:
+            async def is_disconnected(self):
+                return True
+
+        with patch.object(media, "get_frame_jpeg", side_effect=decode):
+            response = await scope["zip_frame"]("V1", 100, Gone(), width=640, format="jpeg", frame_number=None)
+        self.assertEqual(response.status_code, 204)
+        self.assertTrue(started.is_set())
+        self.assertTrue(cancelled.is_set())
+
+    async def test_cancelled_ffmpeg_job_reaps_its_process(self):
+        pid_file = Path(self.tmp.name) / "decoder.pid"
+        command = [sys.executable, "-c",
+                   "import os,sys,time;open(sys.argv[1],'w').write(str(os.getpid()));time.sleep(30)",
+                   str(pid_file)]
+        task = asyncio.create_task(media._run_ffmpeg(command, timeout_sec=20))
+        for _ in range(100):
+            if pid_file.exists():
+                break
+            await asyncio.sleep(.01)
+        self.assertTrue(pid_file.exists())
+        pid = int(pid_file.read_text())
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
 
 if __name__ == "__main__":

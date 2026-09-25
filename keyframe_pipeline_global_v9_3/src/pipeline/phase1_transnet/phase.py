@@ -19,6 +19,7 @@ import numpy as np
 import torch
 
 from ..io_utils import atomic_json, safe_video_id
+from ..keyframe_selection import protect_verified_metadata
 from .decode import (
     TransNetDecodedVideo,
     TransNetDecodeFailure,
@@ -36,6 +37,9 @@ from .model import _finalize_transnet_video, _to_numpy_prediction, _transnet_pre
 def _run_transnet_phase_sequential(args, entries, model) -> tuple[list, list[dict]]:
     """Legacy v8 path, kept for correctness/performance A/B tests."""
     ready: list = []
+    if args.overwrite:
+        for entry in entries:
+            protect_verified_metadata(args.out_dir / safe_video_id(entry.name))
     failures: list[dict] = []
     for index, entry in enumerate(entries, 1):
         video_id = safe_video_id(entry.name)
@@ -77,6 +81,9 @@ def _run_transnet_phase_global(args, entries, model) -> tuple[list, list[dict]]:
     entire 10k-20k-frame video (or a whole wave of videos) to finish decoding.
     """
     ready: list = []
+    if args.overwrite:
+        for entry in entries:
+            protect_verified_metadata(args.out_dir / safe_video_id(entry.name))
     failures: list[dict] = []
     todo: list = []
 

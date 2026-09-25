@@ -24,9 +24,20 @@ function fixture(mode = "server", connection) {
 test("card variants apply only to server-decoded archive frames", () => {
   const f = fixture();
   assert.equal(f.cardImageUrl("/api/zip-frame/V1/100"), "/api/zip-frame/V1/100?width=640");
+  assert.equal(f.cardImageUrl("/api/zip-frame/N001-V001/100?frame_number=3"),
+    "/api/zip-frame/N001-V001/100?frame_number=3&width=640");
+  assert.equal(f.cardImageUrl("/api/zip-frame/N001-V001/100?frame_number=3&v=4"),
+    "/api/zip-frame/N001-V001/100?frame_number=3&v=4&width=640");
+  assert.equal(f.cardImageUrl("/api/zip-frame/N001-V001/100?frame_number=3&v=5"),
+    "/api/zip-frame/N001-V001/100?frame_number=3&v=5&width=640");
+  assert.equal(f.cardImageUrl("/api/zip-frame/N001-V001/100?frame_number=3&v=6"),
+    "/api/zip-frame/N001-V001/100?frame_number=3&v=6&width=640");
   for (const url of ["/static/frame.jpg", "blob:frame", "/api/zip-video/V1", "/api/zip-frame/V1/100?width=640"])
     assert.equal(f.cardImageUrl(url), null);
   assert.equal(fixture("client").cardImageUrl("/api/zip-frame/V1/100"), null);
+  assert.equal(f.needsOriginalFrame(250, 2), false);
+  assert.equal(f.needsOriginalFrame(320, 2), false);
+  assert.equal(f.needsOriginalFrame(321, 2), true);
 });
 
 test("prefetch is bounded, reuses successful requests and retries failures", () => {

@@ -28,6 +28,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+from app.services.video_quarantine import release_blocked_video_ids
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,9 @@ def available() -> bool:
 
 def video_ids() -> list[str]:
     """All indexed video IDs, sorted once by NumPy without copying frame rows."""
-    return [str(video_id) for video_id in np.unique(get_store().video_id).tolist()]
+    blocked = release_blocked_video_ids()
+    return [str(video_id) for video_id in np.unique(get_store().video_id).tolist()
+            if str(video_id) not in blocked]
 
 
 def staleness_warning() -> str | None:
@@ -128,7 +131,9 @@ def frame_vectors(frame_ids: list[str]) -> dict[str, list[float]]:
     compared with the Milvus path — the rows are already mapped, so this is a
     copy rather than 1280 floats per hit over gRPC."""
     store = get_store()
-    rows = store.rows_for(frame_ids)
+    blocked = release_blocked_video_ids()
+    rows = store.rows_for(frame_id for frame_id in frame_ids
+                          if str(frame_id).rsplit('_', 1)[0] not in blocked)
     return {
         str(store.frame_id[row]): np.asarray(store.vectors[row], dtype="float32").tolist()
         for row in rows.tolist()
@@ -139,6 +144,8 @@ def frames_in_range(
     video_id: str, start_ms: int, end_ms: int, *, limit: int = 20
 ) -> list[dict]:
     """Indexed keyframes of one video inside a time window, in time order."""
+    if video_id in release_blocked_video_ids():
+        return []
     store = get_store()
     selected = (
         (store.video_id == video_id)
@@ -177,6 +184,8 @@ def context_frames(
     their min/max timestamp) — callers already know their own frame_ids
     and should dedupe against them, not this function's job to guess
     which of the frames in range the caller already has."""
+    if video_id in release_blocked_video_ids():
+        return [], [], []
     store = get_store()
     rows = np.flatnonzero(store.video_id == video_id)
     rows = rows[np.argsort(store.timestamp_ms[rows], kind="stable")]
@@ -226,6 +235,8 @@ def vector_search(
 
     n = store.vectors.shape[0]
     blocked = np.zeros(n, dtype=bool)
+    for video_id in release_blocked_video_ids():
+        blocked |= store.video_id == video_id
     if exclude_frame_ids:
         blocked[store.rows_for(exclude_frame_ids)] = True
     if video_genre and video_genre != "All":

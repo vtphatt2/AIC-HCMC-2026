@@ -88,23 +88,15 @@ def embedding_producer(
 
         ready_queue = ReadyEntryQueue(entries, args.out_dir, sentinel)
         emitted = 0
-        while ready_queue:
-            ready = ready_queue.take_ready()
-            for entry in ready:
-                emitted += 1
-                yield emitted, len(entries), entry
-            if not ready_queue:
-                return
-            if ready_queue.producer_finished:
-                for entry in ready_queue.take_missing():
-                    put_queue(out_queue, ProducerFailure(
-                        entry_name=entry.name,
-                        error="TransNet completed without scenes.json/keyframes.json",
-                        detail=f"producer sentinel: {sentinel}",
-                    ))
-                return
-            if not ready:
-                time.sleep(0.1)
+        for entry in ready_queue:
+            emitted += 1
+            yield emitted, len(entries), entry
+        for entry in ready_queue.take_missing():
+            put_queue(out_queue, ProducerFailure(
+                entry_name=entry.name,
+                error="TransNet completed without scenes.json/keyframes.json",
+                detail=f"producer sentinel: {sentinel}",
+            ))
 
     def flush_global() -> None:
         if not tensors:
@@ -147,6 +139,19 @@ def embedding_producer(
                     for position, item in enumerate(selected)
                 }
                 target_frames = sorted(by_frame)
+                exact_pts = None
+                if any('source_pts' in item for item in selected):
+                    # A verified repair records exact source identity so a
+                    # forced rerun cannot silently revert to nominal-FPS seeks.
+                    exact_pts = {
+                        int(item['frame_number']): (int(item['source_pts']), int(item['source_checksum']))
+                        for item in selected
+                    }
+                if Path(entry.name).stem.startswith('N') and exact_pts is None:
+                    raise ValueError('N embeddings require verified source PTS/checksum metadata; nominal frame/fps seeking is prohibited')
+                timebases = {int(item['source_timebase']) for item in selected if 'source_timebase' in item}
+                if exact_pts is not None and (len(timebases) != 1 or next(iter(timebases)) <= 0):
+                    raise ValueError('Verified source identity requires a consistent time base')
                 seen_frames: set[int] = set()
 
                 with tempfile.TemporaryDirectory(prefix=f"embed-{video_id}-") as temp_name:
@@ -154,6 +159,8 @@ def embedding_producer(
                         fps, _, _ = probe_video(args.ffprobe_bin, source)
                         for frame_index, tensor in _decode_selected_frames(
                             args, source, fps, target_frames, preprocess, preprocess_plan,
+                            exact_pts=exact_pts,
+                            exact_timebase=next(iter(timebases)) if timebases else None,
                         ):
                             if frame_index not in by_frame:
                                 raise RuntimeError(f"unexpected decoded frame {frame_index}")

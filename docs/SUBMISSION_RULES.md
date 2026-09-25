@@ -3,6 +3,12 @@
 Nguồn: https://sotuyenaic.oj.io.vn/rules/ (lưu lại 2026-08-21 vì trang chặn
 fetch tự động — không có API/RSS để đồng bộ, copy thủ công khi thể lệ đổi).
 
+**Cập nhật dữ liệu N (2026-09-25):** BTC xác nhận video N001–N100 là VFR;
+KIS/QA có thể dùng `pts_time × 1000` (ms) thay `frame_idx`, và TRAKE không
+sử dụng dữ liệu N. Xem [nguyên văn và phạm vi áp dụng](ORGANIZER_TIMING_GUIDANCE.md).
+Quy định CSV dưới đây vẫn dùng frame cho L/M/S. Hướng dẫn vòng chung kết DRES
+là giao thức riêng, không phải bằng chứng CSV đã được chấp nhận.
+
 ## Các loại truy vấn
 
 Vòng sơ tuyển gồm 3 dạng truy vấn:

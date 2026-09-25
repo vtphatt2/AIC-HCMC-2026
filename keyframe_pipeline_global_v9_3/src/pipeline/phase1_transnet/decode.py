@@ -54,7 +54,7 @@ def decode_transnet_frames(ffmpeg_bin: str, video_source: str) -> np.ndarray:
         ffmpeg_bin, "-v", "error", "-i", video_source,
         "-map", "0:v:0", "-an",
         "-vf", f"scale={TRANSNET_W}:{TRANSNET_H}:flags=area",
-        "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+        "-vsync", "0", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     stdout, stderr = proc.communicate()
@@ -149,10 +149,13 @@ def _stream_transnet_entry(args, entry: VideoEntry, event_q) -> None:
                     args.ffmpeg_bin, "-v", "error", "-i", source,
                     "-map", "0:v:0", "-an",
                     "-vf", f"scale={TRANSNET_W}:{TRANSNET_H}:flags=area",
-                    "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
+                    "-vsync", "0", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1",
                 ]
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=TRANSNET_FRAME_BYTES * 64)
-                if proc.stdout is None or proc.stderr is None:
+                # Some MOV files emit thousands of decoder warnings. A stderr
+                # pipe can fill while we read stdout, deadlocking both processes.
+                error_file = tempfile.TemporaryFile()
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=error_file, bufsize=TRANSNET_FRAME_BYTES * 64)
+                if proc.stdout is None:
                     raise RuntimeError("failed to open ffmpeg pipes")
 
                 started = time.perf_counter()
@@ -197,8 +200,10 @@ def _stream_transnet_entry(args, entry: VideoEntry, event_q) -> None:
                                 frame_buffer.popleft()
                                 buffer_start += 1
 
-                stderr = proc.stderr.read()
                 returncode = proc.wait()
+                error_file.seek(0)
+                stderr = error_file.read()
+                error_file.close()
                 decode_seconds = time.perf_counter() - started
                 if returncode != 0:
                     raise RuntimeError(f"ffmpeg TransNet decode failed:\n{stderr.decode(errors='replace')}")

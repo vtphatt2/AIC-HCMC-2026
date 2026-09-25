@@ -1,0 +1,23 @@
+[Unit]
+Description=Prewarm exact 640px AIC search thumbnails from local ZIP archives
+
+[Service]
+Type=exec
+TimeoutStartSec=0
+WorkingDirectory=/workspace/AIC-HCMC-2026/remote-server
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+MemoryHigh=8192M
+MemoryMax=10240M
+CPUQuota=1200%
+ExecStartPre=/usr/bin/nice -n 10 /usr/bin/ionice -c3 /workspace/AIC-HCMC-2026/remote-server/.venv/bin/python -u scripts/build_exact_frame_pts.py --workers 4
+ExecStart=/usr/bin/nice -n 10 /usr/bin/ionice -c3 /workspace/AIC-HCMC-2026/remote-server/.venv/bin/python -u scripts/prewarm_result_thumbnails.py --workers 8 --progress-every 500
+Restart=on-failure
+RestartPreventExitStatus=2
+RestartSec=30
+StandardOutput=append:/workspace/AIC-HCMC-2026/challenge_resources/data/zip_embeddings/prewarm_new_thumbnails.log
+StandardError=append:/workspace/AIC-HCMC-2026/challenge_resources/data/zip_embeddings/prewarm_new_thumbnails.log
+
+[Install]
+WantedBy=default.target

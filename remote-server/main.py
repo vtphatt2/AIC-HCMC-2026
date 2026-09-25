@@ -27,6 +27,7 @@ from app.services.strategy_config import StrategyConfigStore
 from app.services.transcript_search import TranscriptSearchService
 from app.services.transcript_jsonl_reader import transcript_response
 from app.services.video_catalog import search_video_catalog
+from app.services.video_quarantine import excluded_video_ids, release_blocked_video_ids, filter_rows
 from app.services.query_parser import QueryParser
 from app.services import local_zip_media
 
@@ -40,6 +41,17 @@ _strategy_configs = StrategyConfigStore(REMOTE_ROOT.parent / "challenge_resource
 logger = logging.getLogger(__name__)
 
 ZIP_FRAME_TIMEOUT_SEC = float(os.getenv("ZIP_FRAME_TIMEOUT_SEC", "45"))
+
+
+def _require_released_video(video_id: str) -> None:
+    if video_id in release_blocked_video_ids():
+        raise HTTPException(404, f"Video {video_id} is unavailable")
+
+
+def _require_released_frames(frame_ids: list[str]) -> None:
+    blocked = release_blocked_video_ids()
+    if any(str(frame_id).rsplit("_", 1)[0] in blocked for frame_id in frame_ids):
+        raise HTTPException(404, "A requested video is unavailable")
 
 
 def discover_strategies(data_provider: DataProvider, parser=None) -> dict[str, BaseStrategy]:
@@ -226,6 +238,7 @@ async def health():
         "pecore_device": os.getenv("PECORE_DEVICE", "cpu"),
         "pecore_precision": os.getenv("PECORE_PRECISION", "fp32"),
         "strategies": len(_strategies),
+        "quarantined_videos": len(excluded_video_ids()),
         # Scans raw_zip_videos/ on first call — this is the check for whether the
         # /api/zip-frame and /api/zip-video routes have anything to serve.
         "local_zip_videos": await local_zip_media.available_video_count(),
@@ -286,6 +299,7 @@ async def warmup_text_encoder(passes: int = 10):
 
 @app.get("/api/transcript/{video_id}")
 async def get_transcript(video_id: str):
+    _require_released_video(video_id)
     payload = transcript_response(video_id)
     if payload is None:
         raise HTTPException(404, f"No transcript found for video_id={video_id}")
@@ -308,6 +322,7 @@ async def get_video_info(video_id: str):
     through the zip-video stream instead of YouTube and showed a wrong fps
     even for a video with a real YouTube embed (e.g. L21_V023, actually 30
     fps, DB default 25.0)."""
+    _require_released_video(video_id)
     lookup = video_id
     rows = await postgres_client.fetch_video_metadata([lookup])
     if not rows:
@@ -321,6 +336,7 @@ async def get_video_info(video_id: str):
             raise HTTPException(404, f"No metadata found for video_id={video_id}")
     else:
         video_id = rows[0]["video_id"]
+    _require_released_video(video_id)
     video = rows[0]
 
     frame_id, frame_number, timestamp_ms = None, 0, 0
@@ -335,6 +351,7 @@ async def get_video_info(video_id: str):
     except Exception:
         logger.warning("get_video_info: Milvus frame lookup failed for %s", video_id, exc_info=True)
 
+    capabilities = await local_zip_media.timing_capabilities(video_id)
     return {
         "video_id": video_id,
         "youtube_id": video.get("youtube_id") or None,
@@ -345,7 +362,47 @@ async def get_video_info(video_id: str):
         # Prefer that same value over a possibly stale PostgreSQL default so
         # the playback modal can refresh an incorrect result fps reliably.
         "fps": float(local_zip_media.ingest_fps(video_id) or video.get("fps") or 25.0),
+        **capabilities,
     }
+
+
+@app.get("/api/video/{video_id}/frame-timeline")
+async def get_video_frame_timeline(video_id: str, version: int = Query(default=1, ge=1, le=2)):
+    """Decoded-frame presentation times for N videos, as little-endian u32 µs.
+
+    The first entry is zero; entry n is the time of decoded frame n. This is
+    independent of ingest's frame/fps search timestamp and leaves ranking and
+    stored metadata unchanged. Other lots continue using their existing clock.
+    """
+    _require_released_video(video_id)
+    if not video_id.startswith("N"):
+        raise HTTPException(404, f"No variable-frame timeline for {video_id}")
+    try:
+        if version == 2:
+            return await local_zip_media.full_frame_timeline_v2(video_id)
+        timeline = await local_zip_media.full_frame_timeline_us(video_id)
+    except (local_zip_media.LocalZipUnavailable, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return Response(
+        content=timeline,
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.get("/api/video/{video_id}/frame-offset/{frame_number}")
+async def get_video_frame_offset(video_id: str, frame_number: int):
+    """Exact seek position of one decoded N/S frame when only a sparse map exists."""
+    _require_released_video(video_id)
+    if frame_number < 0:
+        raise HTTPException(422, "frame_number must be nonnegative")
+    if not video_id.startswith(("N", "S")):
+        raise HTTPException(404, f"No exact frame offset for {video_id}")
+    try:
+        offset_us = await local_zip_media.exact_frame_offset_us(video_id, frame_number)
+    except (local_zip_media.LocalZipUnavailable, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"video_id": video_id, "frame_number": frame_number, "offset_us": offset_us}
 
 
 # A video's own indexed keyframe count tops out around 784 in this dataset
@@ -365,6 +422,7 @@ async def get_context_frames(video_id: str, start_ms: int, end_ms: int, expand: 
     when the video has far more indexed nearby. Mirrors local-backend's
     endpoint of the same name/response shape; source here is Milvus +
     PostgreSQL instead of numpy_vector_store."""
+    _require_released_video(video_id)
     rows = await postgres_client.fetch_video_metadata([video_id])
     fps = float(rows[0].get("fps") or 25.0) if rows else 25.0
 
@@ -403,6 +461,7 @@ async def get_frame_scores(req: FrameScoresRequest):
     against anything before now (a search's own dedup pass only ever saw
     its own matches, never context-frames' additions). A frame_id missing
     from the response was filtered as a duplicate, not unscored."""
+    _require_released_frames(req.frame_ids)
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready.")
     if not req.frame_ids:
@@ -433,6 +492,7 @@ async def get_frame_scores(req: FrameScoresRequest):
 
 @app.post("/api/video/{video_id}/context-scores")
 async def get_context_scores(video_id: str, req: ContextScoresRequest):
+    _require_released_video(video_id)
     context = await get_context_frames(video_id, req.start_ms, req.end_ms, req.expand)
     neighbors = context["before"] + context["middle"] + context["after"]
     numbers = {frame["frame_id"]: frame["frame_number"] for frame in neighbors}
@@ -461,6 +521,7 @@ async def zip_video(video_id: str, request: Request):
 
     404 (no archive holds this video_id) is the expected signal for VideoModal
     to fall back to YouTube."""
+    _require_released_video(video_id)
     try:
         headers, body = await local_zip_media.open_range(
             video_id, request.headers.get("range")
@@ -475,9 +536,10 @@ async def zip_video(video_id: str, request: Request):
 
 
 @app.get("/api/zip-frame/{video_id}/{timestamp_ms}")
-async def zip_frame(video_id: str, timestamp_ms: int,
+async def zip_frame(video_id: str, timestamp_ms: int, request: Request,
                     width: int | None = Query(default=None, ge=640, le=640),
-                    format: str = Query(default="jpeg", pattern="^(jpeg|webp)$")):
+                    format: str = Query(default="jpeg", pattern="^(jpeg|webp)$"),
+                    frame_number: int | None = Query(default=None, ge=0)):
     """Decode one JPEG straight out of a local archive, for lots ingested
     without keyframe JPGs (ingest_zip_pipeline_results.py). The per-video sample
     table is parsed once and cached; each frame is then one seek plus one
@@ -486,11 +548,30 @@ async def zip_frame(video_id: str, timestamp_ms: int,
     This route is the boundary where every failure has to become an HTTP
     response — get_frame_jpeg guarantees bytes or LocalZipUnavailable, and the
     timeout bounds total wall time so a client is never left waiting."""
+    _require_released_video(video_id)
     if format == "webp" and width is None:
         raise HTTPException(422, "WebP requires width=640")
+
+    async def decode_while_connected():
+        task = asyncio.create_task(local_zip_media.get_frame_jpeg(
+            video_id, timestamp_ms, width=width, format=format,
+            frame_number=frame_number,
+        ))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=0.2)
+                if done:
+                    return await task
+                if await request.is_disconnected():
+                    return None
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     try:
         jpeg_bytes = await asyncio.wait_for(
-            local_zip_media.get_frame_jpeg(video_id, timestamp_ms, width=width, format=format),
+            decode_while_connected(),
             timeout=ZIP_FRAME_TIMEOUT_SEC,
         )
     except local_zip_media.LocalZipUnavailable as exc:
@@ -500,6 +581,9 @@ async def zip_frame(video_id: str, timestamp_ms: int,
     except Exception as exc:
         logger.exception("Unexpected error decoding zip-frame %s/%s", video_id, timestamp_ms)
         raise HTTPException(500, f"Unexpected error decoding frame: {exc}") from exc
+
+    if jpeg_bytes is None:
+        return Response(status_code=204)
 
     return Response(
         content=jpeg_bytes,
@@ -644,11 +728,12 @@ async def retrieve(req: RetrieveRequest):
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"hits": hits}
+    return {"hits": filter_rows(hits)}
 
 
 @app.post("/api/frame-embeddings")
 async def frame_embeddings(req: FrameEmbeddingsRequest):
+    _require_released_frames(req.frame_ids)
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready")
     if len(req.frame_ids) > 20_000:
@@ -663,6 +748,7 @@ async def frame_embeddings(req: FrameEmbeddingsRequest):
 
 @app.post("/api/keyframes")
 async def keyframes(req: KeyframesRequest):
+    _require_released_video(req.video_id)
     if _data_provider is None:
         raise HTTPException(503, "DataProvider is not ready")
     try:
@@ -750,6 +836,7 @@ async def search(req: SearchRequest):
         req.strategy_id,
         len(results),
     )
+    results = filter_rows(results)
     return {
         "results":           results[:top_k],
         "strategy_id":       req.strategy_id,
@@ -793,6 +880,7 @@ async def search_transcript(req: TranscriptSearchRequest):
         req.query[:80],
         len(results),
     )
+    results = filter_rows(results)
     return {
         "results":           results[:top_k],
         "total":             min(len(results), top_k),

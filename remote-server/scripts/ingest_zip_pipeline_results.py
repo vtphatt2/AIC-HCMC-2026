@@ -60,7 +60,7 @@ sys.path.insert(0, str(REMOTE_ROOT))
 from scripts.ingest_embeddings_to_milvus import upsert_vectors, upsert_videos  # noqa: E402
 
 logger = logging.getLogger("ingest_zip_pipeline_results")
-VIDEO_DIR_PATTERN = re.compile(r"^video__(?P<video_id>.+)$")
+VIDEO_DIR_PATTERN = re.compile(r"^videos?__(?P<video_id>.+)$")
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
@@ -75,13 +75,29 @@ def load_media_info(zip_dir: Path) -> dict[str, dict[str, str]]:
     """video_id -> {"youtube_id", "title"} from media-info-*.zip archives
     (one media-info/<video_id>.json per video, with a "watch_url" field)."""
     info: dict[str, dict[str, str]] = {}
-    archives = sorted(zip_dir.glob("media-info*.zip"))
+    archives = sorted(set(zip_dir.glob("media-info*.zip")) | set(zip_dir.glob("media_info*.zip")))
+    # Organizer files use both hyphens and underscores. Resolve aliases only
+    # against IDs in the result archives; ambiguous aliases are never guessed.
+    canonical_ids: set[str] = set()
+    for result in zip_dir.glob("*_results.zip"):
+        with zipfile.ZipFile(result) as zf:
+            canonical_ids.update(video_id for video_id, _ in video_directories(set(zf.namelist())))
+    aliases: dict[str, set[str]] = {}
+    for video_id in canonical_ids:
+        aliases.setdefault(video_id.replace("_", "-").casefold(), set()).add(video_id)
     for archive in archives:
         with zipfile.ZipFile(archive) as zf:
             for name in zf.namelist():
                 if not name.endswith(".json"):
                     continue
                 video_id = Path(name).stem
+                if canonical_ids and video_id not in canonical_ids:
+                    matches = aliases.get(video_id.replace("_", "-").casefold(), set())
+                    if len(matches) != 1:
+                        if matches:
+                            logger.warning("Ambiguous organizer alias %s: %s", video_id, sorted(matches))
+                        continue
+                    video_id = next(iter(matches))
                 data = json.loads(zf.read(name))
                 youtube_id = youtube_id_from_watch_url(data.get("watch_url", ""))
                 if not YOUTUBE_ID_PATTERN.fullmatch(youtube_id):
@@ -90,7 +106,10 @@ def load_media_info(zip_dir: Path) -> dict[str, dict[str, str]]:
                         video_id, data.get("watch_url"),
                     )
                     continue
-                info[video_id] = {"youtube_id": youtube_id, "title": data.get("title") or video_id}
+                item = {"youtube_id": youtube_id, "title": data.get("title") or video_id}
+                if video_id in info and info[video_id] != item:
+                    raise ValueError(f"Conflicting organizer metadata for {video_id} across media-info archives")
+                info[video_id] = item
     if archives:
         logger.info("Loaded youtube_id/title for %s videos from %s media-info archive(s)", len(info), len(archives))
     return info
@@ -132,26 +151,40 @@ def iter_result_archives(zip_dir: Path) -> list[Path]:
     return archives
 
 
+def video_directories(names: set[str]) -> list[tuple[str, str]]:
+    """Return (video_id, archive directory) for both supported ZIP layouts."""
+    directories: dict[str, str] = {}
+    for name in names:
+        parts = name.split("/")
+        if len(parts) != 3 or parts[0] != "phase1_transnet" or parts[2] != "scenes.json":
+            continue
+        match = VIDEO_DIR_PATTERN.fullmatch(parts[1])
+        if match is None:
+            continue
+        video_id = match.group("video_id")
+        previous = directories.setdefault(video_id, parts[1])
+        if previous != parts[1]:
+            raise ValueError(f"Ambiguous archive directories for {video_id}: {previous}, {parts[1]}")
+    return sorted(directories.items())
+
+
 def iter_video_records(
     zip_path: Path,
     media_info: dict[str, dict[str, str]],
 ) -> Iterator[tuple[dict[str, Any], list[dict[str, Any]]]]:
     import numpy as np
+    from app.services.video_quarantine import release_blocked_video_ids
 
+    release_blocked = release_blocked_video_ids()
     with zipfile.ZipFile(zip_path) as zf:
         names = set(zf.namelist())
-        video_ids = sorted({
-            match.group("video_id")
-            for name in names
-            if name.startswith("phase1_transnet/")
-            for match in [VIDEO_DIR_PATTERN.match(name.split("/", 2)[1])]
-            if match
-        })
-
-        for video_id in video_ids:
-            scenes_path = f"phase1_transnet/video__{video_id}/scenes.json"
-            keyframes_path = f"phase1_transnet/video__{video_id}/keyframes.json"
-            embeddings_path = f"phase2_embeddings/video__{video_id}/embeddings.npy"
+        for video_id, directory in video_directories(names):
+            if video_id in release_blocked:
+                logger.info("%s: release-blocked source, skipping ingest", video_id)
+                continue
+            scenes_path = f"phase1_transnet/{directory}/scenes.json"
+            keyframes_path = f"phase1_transnet/{directory}/keyframes.json"
+            embeddings_path = f"phase2_embeddings/{directory}/embeddings.npy"
 
             if embeddings_path not in names:
                 logger.warning("%s: no embeddings.npy in %s, skipping", video_id, zip_path.name)
@@ -179,7 +212,13 @@ def iter_video_records(
                 norm = float(np.linalg.norm(vector))
                 if norm == 0.0:
                     raise ValueError(f"{video_id} frame {frame_number}: zero-norm vector")
-                timestamp_ms = int(frame_number / fps * 1000)
+                if video_id.startswith("N") and "source_pts" in item:
+                    scale = int(item["source_timebase"])
+                    if scale <= 0 or "source_checksum" not in item:
+                        raise ValueError(f"{video_id}: unverified source timing")
+                    timestamp_ms = (int(item["source_pts"]) * 1000 + scale // 2) // scale
+                else:
+                    timestamp_ms = int(frame_number / fps * 1000)
                 records.append({
                     "frame_id": f"{video_id}_{frame_number:06d}",
                     "video_id": video_id,

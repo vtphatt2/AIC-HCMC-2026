@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchResult, SubmissionState, TranscriptSegment } from "@/types";
-import { apiUrl, fetchTranscript, fetchVideoById } from "@/lib/api";
+import { apiUrl, fetchExactFrameOffset, fetchFrameTimeline, fetchTranscript, fetchVideoById } from "@/lib/api";
 import { loadedCardImage } from "@/lib/frameImages";
 import { addSubmissionRowFrame, fetchSubmission } from "@/lib/submission";
 import {
   choosePlaybackSource,
   frameAtPlaybackTime,
+  frameAtTimelineTime,
   normalizePlaybackFps,
   otherPlaybackSource,
+  timeOfTimelineFrame,
+  type FrameTimeline,
   type PlaybackSource,
 } from "@/lib/playback";
 import { SUBMISSION_SESSION_KEY } from "@/components/SubmissionPanel";
@@ -35,6 +38,12 @@ declare global {
 }
 
 const PLAYER_DOM_ID = "yt-player-container";
+type FrameTiming = {
+  key: string;
+  startSeconds: number;
+  timeline: FrameTimeline | null;
+  exact: boolean;
+};
 
 export default function VideoModal({
   result,
@@ -47,6 +56,7 @@ export default function VideoModal({
 }: Props) {
   const playerRef = useRef<any>(null);
   const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const mediaStartRef = useRef(0);
   const resultYoutubeId = result.youtube_id || "";
   const startSeconds = result.timestamp_ms / 1000;
   const [metadataFps, setMetadataFps] = useState<number | null>(null);
@@ -89,7 +99,17 @@ export default function VideoModal({
   const [hasStartedPlaying, setHasStartedPlaying] = useState(false);
   const wantsPlayRef = useRef(false);
   const desiredTimeRef = useRef(startSeconds);
-  const currentFrame = frameAtPlaybackTime(currentTimeSec, fps);
+  const timingKey = `${result.video_id}:${result.frame_number}`;
+  const [frameTiming, setFrameTiming] = useState<FrameTiming | null>(null);
+  const [positionChanged, setPositionChanged] = useState(false);
+  const needsExactTiming = result.video_id.startsWith("N") && useZipVideo;
+  const timingReady = !needsExactTiming || frameTiming?.key === timingKey;
+  const activeTimeline = useZipVideo && frameTiming?.key === timingKey ? frameTiming.timeline : null;
+  const currentFrame = !hasStartedPlaying && !positionChanged
+    ? result.frame_number
+    : activeTimeline
+      ? frameAtTimelineTime(activeTimeline, currentTimeSec)
+      : frameAtPlaybackTime(currentTimeSec, fps);
 
   // Search hits can carry stale/default fps (notably transcript results used
   // to hard-code 25). Refresh from the canonical per-video metadata so both
@@ -110,6 +130,45 @@ export default function VideoModal({
       });
     return () => { cancelled = true; };
   }, [result.video_id]);
+
+  // N-series MOV edits can put decoded frame n many seconds away from n/fps.
+  // Load its exact presentation clock only when this modal needs it. Older
+  // lots and YouTube keep their established timing and search metadata.
+  useEffect(() => {
+    if (!result.video_id.startsWith("N")) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    setFrameTiming(null);
+    (async () => {
+      try {
+        const timeline = await fetchFrameTimeline(result.video_id, controller.signal);
+        const exact = timeOfTimelineFrame(timeline, result.frame_number);
+        if (exact === null) throw new Error("Search frame is outside the decoded timeline");
+        return { key: timingKey, startSeconds: exact, timeline, exact: true };
+      } catch {
+        // During map generation, an older sparse map may already contain the
+        // requested search frame even before the complete timeline is ready.
+        try {
+          const exact = await fetchExactFrameOffset(
+            result.video_id, result.frame_number, controller.signal,
+          );
+          return { key: timingKey, startSeconds: exact, timeline: null, exact: true };
+        } catch {
+          return { key: timingKey, startSeconds, timeline: null, exact: false };
+        }
+      }
+    })().then((timing) => { if (!cancelled) setFrameTiming(timing); });
+    return () => { cancelled = true; controller.abort(); };
+  }, [result.video_id, result.frame_number, timingKey, startSeconds]);
+
+  useEffect(() => {
+    if (!useZipVideo || frameTiming?.key !== timingKey || !frameTiming.exact) return;
+    desiredTimeRef.current = frameTiming.startSeconds;
+    if (videoElRef.current && videoElRef.current.readyState >= 1) {
+      videoElRef.current.currentTime = frameTiming.startSeconds + mediaStartRef.current;
+    }
+    setCurrentTimeSec(frameTiming.startSeconds);
+  }, [frameTiming, timingKey]);
 
   // "Add to submission" — targets whichever session this browser last picked
   // in the SubmissionPanel (localStorage.SUBMISSION_SESSION_KEY). No session
@@ -159,12 +218,13 @@ export default function VideoModal({
     setHasStartedPlaying(false);
     desiredTimeRef.current = startSeconds;
     setCurrentTimeSec(startSeconds);
+    mediaStartRef.current = 0;
     wantsPlayRef.current = false;
   }, [result.video_id]);
 
   const readActiveTime = useCallback((): number => {
     if (activeSource === "mp4" && videoElRef.current?.currentTime != null) {
-      return videoElRef.current.currentTime;
+      return Math.max(0, videoElRef.current.currentTime - mediaStartRef.current);
     }
     if (activeSource === "youtube" && typeof playerRef.current?.getCurrentTime === "function") {
       return playerRef.current.getCurrentTime();
@@ -196,12 +256,16 @@ export default function VideoModal({
     const el = videoElRef.current;
     if (!el) return;
     if (el.paused) {
-      if (!hasStartedPlaying) el.currentTime = desiredTimeRef.current;
+      if (!hasStartedPlaying) {
+        const start = frameTiming?.key === timingKey && frameTiming.exact
+          ? frameTiming.startSeconds : desiredTimeRef.current;
+        el.currentTime = start + mediaStartRef.current;
+      }
       el.play();
     } else {
       el.pause();
     }
-  }, [hasStartedPlaying]);
+  }, [hasStartedPlaying, frameTiming, timingKey]);
 
   const togglePlayback = useCallback(() => {
     const player = playerRef.current;
@@ -223,12 +287,13 @@ export default function VideoModal({
   }, []);
 
   const handleTogglePlayback = useCallback(() => {
+    if (!timingReady) return;
     if (useZipVideo) {
       toggleNativeVideoPlayback();
     } else {
       togglePlayback();
     }
-  }, [useZipVideo, toggleNativeVideoPlayback, togglePlayback]);
+  }, [timingReady, useZipVideo, toggleNativeVideoPlayback, togglePlayback]);
 
   // Transcript panel state — fetched once per video, no search involved
   // (see app/services/transcript_index.py): just "what's being said now."
@@ -270,7 +335,10 @@ export default function VideoModal({
 
         if (useZipVideo) {
           const el = videoElRef.current;
-          if (el) el.currentTime = Math.max(0, el.currentTime + delta);
+          if (el && timingReady) {
+            el.currentTime = Math.max(0, el.currentTime + delta);
+            setPositionChanged(true);
+          }
           return;
         }
 
@@ -283,7 +351,7 @@ export default function VideoModal({
     }
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose, startSeconds, useZipVideo, handleTogglePlayback]);
+  }, [onClose, startSeconds, useZipVideo, timingReady, handleTogglePlayback]);
 
   // Fetch the full transcript once per video (not per frame) — only when
   // the panel is actually shown, and only once (result.video_id is stable
@@ -401,23 +469,27 @@ export default function VideoModal({
   useEffect(() => {
     desiredTimeRef.current = startSeconds;
     if (useZipVideo) {
-      if (videoElRef.current) videoElRef.current.currentTime = startSeconds;
+      if (videoElRef.current && videoElRef.current.readyState >= 1) {
+        videoElRef.current.currentTime = startSeconds + mediaStartRef.current;
+      }
     } else if (playerRef.current && typeof playerRef.current.seekTo === "function") {
       playerRef.current.seekTo(startSeconds, true);
       playerRef.current.pauseVideo();
     }
     setCurrentTimeSec(startSeconds);
     setHasStartedPlaying(false);
-  }, [startSeconds]);
+    setPositionChanged(false);
+  }, [result.video_id, result.frame_number, startSeconds]);
 
   // Poll the player every 100ms to get the live playback position.
   // This updates frame number and timestamp whenever the video plays or the user scrubs.
   useEffect(() => {
     const interval = setInterval(() => {
       if (useZipVideo) {
-        if (videoElRef.current) {
-          desiredTimeRef.current = videoElRef.current.currentTime;
-          setCurrentTimeSec(videoElRef.current.currentTime);
+        if (videoElRef.current && videoElRef.current.readyState >= 1 && timingReady) {
+          const relativeTime = Math.max(0, videoElRef.current.currentTime - mediaStartRef.current);
+          desiredTimeRef.current = relativeTime;
+          setCurrentTimeSec(relativeTime);
         }
       } else if (playerRef.current && typeof playerRef.current.getCurrentTime === "function") {
         const time = playerRef.current.getCurrentTime();
@@ -426,7 +498,7 @@ export default function VideoModal({
       }
     }, 100);
     return () => clearInterval(interval);
-  }, [useZipVideo]);
+  }, [useZipVideo, timingReady]);
 
   return (
     <div
@@ -486,9 +558,10 @@ export default function VideoModal({
                   <button
                     type="button"
                     onClick={handleTogglePlayback}
+                    disabled={!timingReady}
                     aria-label="Play video from selected frame"
-                    title="Play video"
-                    className="absolute inset-0 z-20 m-auto h-16 w-16 rounded-full border-2 border-white/80 bg-black/65 text-3xl text-white transition hover:scale-105 hover:bg-orange-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-orange-400"
+                    title={timingReady ? "Play video" : "Loading frame timing"}
+                    className="absolute inset-0 z-20 m-auto h-16 w-16 rounded-full border-2 border-white/80 bg-black/65 text-3xl text-white transition hover:scale-105 hover:bg-orange-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-orange-400 disabled:opacity-50 disabled:cursor-wait"
                   >
                     <span aria-hidden="true" className="ml-1">▶</span>
                   </button>
@@ -510,7 +583,18 @@ export default function VideoModal({
                   preload="metadata"
                   className="w-full h-full"
                   onLoadedMetadata={() => {
-                    if (videoElRef.current) videoElRef.current.currentTime = desiredTimeRef.current;
+                    const el = videoElRef.current;
+                    if (!el) return;
+                    // Some edited MOVs start at PTS 0.2s rather than zero.
+                    // Browser currentTime is on the media timeline; our frame
+                    // map is relative to the first decoded presentation frame.
+                    const earliest = Math.max(
+                      el.currentTime,
+                      el.seekable.length ? el.seekable.start(0) : 0,
+                    );
+                    mediaStartRef.current = result.video_id.startsWith("N") && Number.isFinite(earliest)
+                      ? Math.max(0, earliest) : 0;
+                    el.currentTime = desiredTimeRef.current + mediaStartRef.current;
                   }}
                   onPlay={() => setHasStartedPlaying(true)}
                   onError={() => setZipVideoFailed(true)}
@@ -537,6 +621,11 @@ export default function VideoModal({
             </span>
             <span>·</span>
             <span>{Number(fps.toFixed(3))} fps</span>
+            {needsExactTiming && frameTiming?.key === timingKey && !frameTiming.exact && (
+              <span className="text-amber-300" title="Exact frame timing has not been indexed yet">
+                Playback position approximate
+              </span>
+            )}
             <div className="ml-auto flex items-center gap-2">
               {sessionInfo && (
                 <span className="text-xs text-stone-500 normal-case">

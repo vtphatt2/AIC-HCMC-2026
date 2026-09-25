@@ -1,3 +1,4 @@
+import { parsePosition } from "@/lib/submission/format";
 import Head from "next/head";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -165,7 +166,10 @@ export default function SubmissionsDashboard() {
   // useVideoInfo has already warmed it, which is the common case.
   async function openEntry(session: string, rowIndex: number, videoId: string, frame: number) {
     const info = await getVideoInfo(videoId);
-    setActiveResult(rowFrameToSearchResult(videoId, frame, info.fps, info.youtubeId));
+    const row = states[session]?.rows[rowIndex];
+    const sourceFrame = row?.sourceFrames?.[row.frames.indexOf(frame)];
+    try { setActiveResult(rowFrameToSearchResult(videoId, frame, info.fps, info.youtubeId, sourceFrame)); }
+    catch (error: any) { window.alert(error.message); return; }
     setActiveContext({ session, rowIndex });
   }
 
@@ -203,7 +207,8 @@ export default function SubmissionsDashboard() {
   }
 
   async function handleEditFrame(session: string, rowIndex: number, frameIndex: number, raw: string) {
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!Number.isFinite(frame) || frame < 0) return;
     updateState(session, await editRowFrame(session, rowIndex, frameIndex, frame));
   }
@@ -219,7 +224,8 @@ export default function SubmissionsDashboard() {
   async function handleAddFrameToRow(session: string, rowIndex: number, videoId: string) {
     const raw = window.prompt("Add frame number to this candidate:");
     if (!raw) return;
-    const frame = Number.parseInt(raw, 10);
+    let frame: number;
+    try { frame = parsePosition(raw); } catch (error: any) { window.alert(error.message); return; }
     if (!Number.isFinite(frame) || frame < 0) return;
     try {
       updateState(session, await addSubmissionRowFrame(session, videoId, frame, rowIndex));
@@ -232,13 +238,12 @@ export default function SubmissionsDashboard() {
     const draft = newRowDraft[session] || { videoId: "", frames: "" };
     const videoId = draft.videoId.trim();
     if (!videoId) return;
-    const frames = draft.frames
-      .split(",")
-      .map((s) => Number.parseInt(s.trim(), 10))
-      .filter((n) => Number.isFinite(n) && n >= 0);
+    let frames: number[];
+    try { frames = draft.frames.split(",").map(parsePosition); }
+    catch (error: any) { window.alert(error.message); return; }
     if (frames.length === 0) return;
     if (queryType !== "trake" && frames.length > 1) {
-      window.alert("kis/qa rows take exactly one frame.");
+      window.alert("KIS/QA rows take one position: N milliseconds, L/M/S frames.");
       return;
     }
     try {
@@ -588,11 +593,12 @@ export default function SubmissionsDashboard() {
                                 </button>
                               </div>
                               <div className="flex flex-wrap gap-1.5 pl-6">
+                                <span className="text-xs">{row.unit === "milliseconds" ? "ms" : "frames"}{row.timingStatus === "unresolved" ? " · timing unresolved" : ""}</span>
                                 {row.frames.map((frame, fi) => (
                                   <div key={fi} className="flex items-center gap-1 border border-stone-300 dark:border-stone-700 rounded p-1">
                                     <button type="button" onClick={() => openEntry(summary.session, i, row.videoId, frame)}>
                                       <img
-                                        src={rowThumbUrl(row.videoId, frame, fps)}
+                                        src={rowThumbUrl(row.videoId, frame, fps, row.sourceFrames?.[row.frames.indexOf(frame)])}
                                         alt=""
                                         className="w-16 h-9 object-cover rounded hover:ring-2 hover:ring-orange-600 transition"
                                       />

@@ -1,3 +1,4 @@
+import { serializeSubmissionRow, validateSubmissionRow } from "./format";
 import { useEffect, useState } from "react";
 import type { SearchResult, SubmissionQueryType, SubmissionRow, SubmissionSessionSummary, SubmissionState } from "@/types";
 import { apiUrl, fetchVideoById } from "@/lib/api";
@@ -63,7 +64,7 @@ export function addSubmissionRowFrame(
   frame: number,
   rowIndex?: number,
 ): Promise<SubmissionState> {
-  return postAction(session, { action: "add", videoId, frame, rowIndex });
+  return postAction(session, { action: "add", videoId, frame, rowIndex, sourceFrameInput: videoId.startsWith("N") });
 }
 
 // Manual add: type a video_id + frame(s) directly, no search needed.
@@ -180,7 +181,11 @@ export function useVideoInfo(videoIds: string[]): Record<string, { fps: number; 
   return info;
 }
 
-export function rowThumbUrl(videoId: string, frame: number, fps: number): string {
+export function rowThumbUrl(videoId: string, frame: number, fps: number, sourceFrame?: number): string {
+  if (videoId.startsWith("N")) {
+    if (sourceFrame === undefined) return "";
+    return apiUrl(`/api/zip-frame/${encodeURIComponent(videoId)}/${frame}?frame_number=${sourceFrame}&width=640`);
+  }
   const timestampMs = Math.round((frame / (fps || 25)) * 1000);
   return apiUrl(`/api/zip-frame/${encodeURIComponent(videoId)}/${timestampMs}`);
 }
@@ -192,15 +197,18 @@ export function rowFrameToSearchResult(
   frame: number,
   fps: number,
   youtubeId?: string,
+  sourceFrame?: number,
 ): SearchResult {
+  if (videoId.startsWith("N") && sourceFrame === undefined) throw new Error("N review needs verified source frame identity");
+  const source = sourceFrame ?? frame;
   return {
     video_id: videoId,
     youtube_id: youtubeId,
-    frame_id: `${videoId}_${String(frame).padStart(6, "0")}`,
-    frame_number: frame,
-    timestamp_ms: (frame / (fps || 25)) * 1000,
+    frame_id: `${videoId}_${String(source).padStart(6, "0")}`,
+    frame_number: source,
+    timestamp_ms: videoId.startsWith("N") ? frame : (frame / (fps || 25)) * 1000,
     confidence: 1,
-    frame_image_url: rowThumbUrl(videoId, frame, fps),
+    frame_image_url: rowThumbUrl(videoId, frame, fps, sourceFrame),
     fps: fps || 25,
   };
 }
@@ -216,17 +224,12 @@ export function trakeSizeMismatch(state: SubmissionState): number[] | null {
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────
-// No auto-quoting — fields are written exactly as typed. Quoting a QA
-// answer (e.g. one containing a comma) is the user's own call to make in
-// the answer text itself, not something this tool infers. This is also
-// exactly the on-disk row format (see pages/api/submission.ts's
-// serializeRow) — the export IS the stored file, not a derived view of it.
 function csvRow(state: SubmissionState, row: SubmissionRow): string {
-  if (state.queryType === "qa") return [row.videoId, row.frames[0], row.answer ?? ""].join(",");
-  return [row.videoId, ...row.frames].join(",");
+  return serializeSubmissionRow(state.queryType, row);
 }
 
 export function buildSubmissionCsv(state: SubmissionState): { filename: string; rows: number; content: string } {
+  state.rows.forEach(row => validateSubmissionRow(state.queryType, row, true));
   const csvRows = state.rows.map((r) => csvRow(state, r));
   return {
     // BTC's actual query filenames don't follow a plain query-{N}-{type}
@@ -342,13 +345,4 @@ export function downloadSubmissionZip(states: SubmissionState[], zipName: string
   if (!blob) return false;
   triggerDownload(zipName, blob);
   return true;
-}
-
-if (process.env.NODE_ENV !== "production") {
-  const kis: SubmissionState = { session: "s", queryType: "kis", draftRowIndex: 0, rows: [], createdAt: 0, updatedAt: 0 };
-  console.assert(csvRow(kis, { videoId: "L01_V001", frames: [42] }) === "L01_V001,42", "csvRow: kis, no auto-quoting");
-  const qa: SubmissionState = { ...kis, queryType: "qa" };
-  console.assert(csvRow(qa, { videoId: "L01_V001", frames: [42], answer: 'a,"b"' }) === 'L01_V001,42,a,"b"', "csvRow: qa, pre-quoted values pass through untouched");
-  const trake: SubmissionState = { ...kis, queryType: "trake" };
-  console.assert(csvRow(trake, { videoId: "L01_V001", frames: [1, 2, 3] }) === "L01_V001,1,2,3", "csvRow: trake, multi-frame");
 }

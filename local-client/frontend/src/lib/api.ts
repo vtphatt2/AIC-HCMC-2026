@@ -16,6 +16,7 @@ import type {
 } from "@/types";
 import { buildTranscriptSearchPayload } from "@/lib/transcriptSearch";
 import { RecentContextCache } from "@/lib/recentContext";
+import { parseFrameTimeline, parseVersionedTimeline, type FrameTimeline } from "@/lib/playback";
 
 type ScoredContext = ContextFramesResponse & { scores: Record<string, number> | null };
 const recentContexts = new RecentContextCache<ScoredContext>();
@@ -25,6 +26,29 @@ export const API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:800
 
 export function apiUrl(path: string): string {
   return `${API_URL}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export async function fetchFrameTimeline(videoId: string, signal?: AbortSignal): Promise<FrameTimeline> {
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/frame-timeline?version=2`), { signal });
+  if (!res.ok) throw new Error(`Frame timeline unavailable for ${videoId} (${res.status})`);
+  if (res.headers.get("content-type")?.includes("application/json")) {
+    const payload = await res.json();
+    if (payload.video_id !== videoId) throw new Error("Timeline video identity mismatch");
+    return parseVersionedTimeline(payload);
+  }
+  return parseFrameTimeline(await res.arrayBuffer());
+}
+
+export async function fetchExactFrameOffset(videoId: string, frameNumber: number,
+                                            signal?: AbortSignal): Promise<number> {
+  const res = await fetch(apiUrl(`/api/video/${encodeURIComponent(videoId)}/frame-offset/${frameNumber}`), { signal });
+  if (!res.ok) throw new Error(`Exact frame offset unavailable for ${videoId}/${frameNumber} (${res.status})`);
+  const payload = await res.json();
+  if (payload.video_id !== videoId || payload.frame_number !== frameNumber ||
+      !Number.isSafeInteger(payload.offset_us) || payload.offset_us < 0) {
+    throw new Error("Invalid exact frame offset response");
+  }
+  return payload.offset_us / 1_000_000;
 }
 
 export async function fetchStrategies(): Promise<Strategy[]> {

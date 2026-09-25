@@ -1,9 +1,13 @@
 // Original result URLs remain authoritative for playback and submissions.
 export function cardImageUrl(original: string, format: "jpeg" | "webp" = "jpeg"): string | null {
   if ((process.env.NEXT_PUBLIC_FRAME_DECODE || "server").toLowerCase() === "client") return null;
-  return /\/api\/zip-frame\/[^/?#]+\/\d+$/.test(original)
-    ? `${original}?width=640${format === "webp" ? "&format=webp" : ""}`
+  return /\/api\/zip-frame\/[^/?#]+\/\d+(?:\?frame_number=\d+(?:&v=[456])?)?$/.test(original)
+    ? `${original}${original.includes("?") ? "&" : "?"}width=640${format === "webp" ? "&format=webp" : ""}`
     : null;
+}
+
+export function needsOriginalFrame(cssWidth: number, devicePixelRatio: number): boolean {
+  return cssWidth > 0 && cssWidth * Math.max(1, devicePixelRatio) > 640;
 }
 
 export function isConstrainedConnection(): boolean {

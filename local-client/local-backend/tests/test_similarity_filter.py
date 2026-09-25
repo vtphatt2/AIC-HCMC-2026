@@ -35,17 +35,25 @@ class SimilarityFilterTests(unittest.TestCase):
         self.assertEqual([item["frame_id"] for item in kept], ["a2", "c2"])
 
     def test_event_weight_scales_each_steps_cosine_distance(self):
-        candidates = [result("a", steps=["a"]), result("b", steps=["b"])]
-        embeddings = {"a": [1.0, 0.0], "b": vector(0.99)}
+        candidates = [result("a", steps=["a0", "a1"]), result("b", steps=["b0", "b1"])]
+        embeddings = {"a0": [1.0, 0.0], "a1": [1.0, 0.0],
+                      "b0": vector(0.99), "b1": [1.0, 0.0]}
 
         kept = filter_similar_results(
             candidates,
             embeddings,
             threshold=0.985,
-            event_weights=[2.0],
+            event_weights=[2.0, 1.0],
         )
 
         self.assertEqual([item["frame_id"] for item in kept], ["a", "b"])
+
+    def test_single_frame_does_not_use_event_ranking_weight_as_duplicate_weight(self):
+        candidates = [result("a", steps=["a"]), result("b", steps=["b"])]
+        embeddings = {"a": [1.0, 0.0], "b": vector(0.99)}
+        kept = filter_similar_results(candidates, embeddings, threshold=0.985,
+                                      event_weights=[2.0])
+        self.assertEqual([item["frame_id"] for item in kept], ["a"])
 
     def test_similarity_equal_to_threshold_is_not_removed(self):
         candidates = [result("a"), result("b")]

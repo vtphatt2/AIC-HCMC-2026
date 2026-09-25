@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 from pathlib import Path
+from app.services.video_quarantine import excluded_video_ids
 
 REMOTE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,6 +58,15 @@ class CagraClient:
         import numpy as np
 
         top_k = max(1, min(int(top_k), len(self._frame_ids)))
+        wanted = top_k
+        blocked = excluded_video_ids()
+        if blocked:
+            if getattr(self, '_quarantine_ids', None) != blocked:
+                self._quarantine_count = sum(
+                    frame.rsplit('_', 1)[0] in blocked for frame in self._frame_ids
+                )
+                self._quarantine_ids = blocked
+            top_k = min(len(self._frame_ids), top_k + self._quarantine_count)
         query = np.asarray(query_vector, dtype="float32").reshape(1, -1)
         norm = float(np.linalg.norm(query))
         if norm == 0.0:
@@ -84,6 +94,8 @@ class CagraClient:
         for index, score in zip(indices, scores):
             frame_id = self._frame_ids[int(index)]
             video_id, frame_stem = frame_id.rsplit("_", 1)
+            if video_id in blocked:
+                continue
             hits.append(
                 {
                     "frame_id": frame_id,
@@ -95,4 +107,4 @@ class CagraClient:
                     "_timestamp_from_fps": True,
                 }
             )
-        return hits
+        return hits[:wanted]
