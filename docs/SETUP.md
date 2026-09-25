@@ -241,9 +241,11 @@ scripts/start-local.sh --lan-address 192.168.0.102
 ```
 
 `--backend` picks the PE-Core text encoder: `onnx-cpu` (default, no torch
-needed) / `torch-cpu` / `torch-cuda` / `torch-mps` (Mac only). Each opens
-backend + frontend in their own terminal windows and skips a service
-already listening on its port.
+needed) / `torch-cpu` / `torch-cuda` / `torch-mps` (Mac only). The Mac/Linux/WSL
+script opens backend, frontend and the optional agent service; the Windows
+script opens backend and frontend, with agent started separately. Both skip
+services already listening on their ports. See [Agent usage](agent/USAGE.md)
+for the agent connection and Windows command.
 
 For `remote-server`:
 
@@ -276,7 +278,9 @@ Two different situations — pick the one that matches what you're doing:
 Choose either ngrok or Cloudflare Tunnel. ngrok has a PowerShell launcher;
 Cloudflare Tunnel is started manually because it needs no application-specific
 adapter. `scripts/share-proxy.cjs` is tunnel-agnostic: it presents the
-frontend and backend on one local port.
+frontend and backend on one local port. Its two agent API paths go to Next.js,
+which calls the optional agent service; other search/media API paths go to the
+VORTA backend.
 
 One-time ngrok setup: `ngrok config add-authtoken <token>` (from
 [dashboard.ngrok.com](https://dashboard.ngrok.com)). Claiming a free static
@@ -296,8 +300,9 @@ scripts\start-local.ps1 -Ngrok
 ```
 
 Set `NGROK_DOMAIN=your-domain.ngrok-free.dev` in the repo-root `.env` first,
-or pass `-NgrokDomain`. This wires up the proxy and tunnel automatically —
-share the printed URL, nothing else to configure.
+or pass `-NgrokDomain`. This wires up the proxy and tunnel for manual search.
+To use agents, start the agent service as described in [Agent usage](agent/USAGE.md)
+and ensure the frontend inherits `AGENT_SERVER_URL` before it starts.
 
 **Already running in their own terminals** (the only path for
 `remote-server`, since the launch script can't start it):

@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ContextFrame, SearchResult, TranscriptSegment } from "@/types";
 import { apiUrl, fetchContextFrames, fetchFrameScores, fetchScoredContext, fetchTranscript } from "@/lib/api";
 import ResultCard from "./ResultCard";
+import VerifyAction from "./VerifyAction";
 
 interface Props {
   results: SearchResult[];
   total: number;
   executionTimeMs: number;
   onCardClick: (result: SearchResult) => void;
+  onVerify?: (result: SearchResult) => void;
   showTranscript: boolean;
   // The query text(s) that produced `results` and the per-event weight the
   // active strategy config has (if any) — optional, since not every caller
@@ -125,13 +127,14 @@ interface VideoGroupSectionProps {
   videoId: string;
   frames: DisplayFrame[];
   onCardClick: (result: SearchResult) => void;
+  onVerify?: (result: SearchResult) => void;
   showTranscript: boolean;
   queryEvents?: string[];
   eventWeights?: number[];
   duplicateThreshold?: number;
 }
 
-function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, queryEvents, eventWeights, duplicateThreshold }: VideoGroupSectionProps) {
+function VideoGroupSection({ videoId, frames, onCardClick, onVerify, showTranscript, queryEvents, eventWeights, duplicateThreshold }: VideoGroupSectionProps) {
   const elementRef = useRef<HTMLDivElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
   const bestFrameRef = useRef<HTMLDivElement | null>(null);
@@ -441,6 +444,7 @@ function VideoGroupSection({ videoId, frames, onCardClick, showTranscript, query
                     hideBadge={df.rankInVideo <= 5}
                     compact
                   />
+                  {onVerify && df.rankInVideo > 0 && <VerifyAction onClick={() => onVerify(df.result)} />}
                 </div>
               );
             })}
@@ -491,6 +495,7 @@ export default function VideoGroupGrid({
   total,
   executionTimeMs,
   onCardClick,
+  onVerify,
   showTranscript,
   queryEvents,
   eventWeights,
@@ -591,6 +596,7 @@ export default function VideoGroupGrid({
             videoId={videoId}
             frames={frames}
             onCardClick={onCardClick}
+            onVerify={onVerify}
             showTranscript={showTranscript}
             queryEvents={queryEvents}
             eventWeights={eventWeights}

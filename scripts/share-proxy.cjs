@@ -17,10 +17,11 @@ const PORT = Number(process.env.SHARE_PORT) || 3001;
 const NEXT = { host: "127.0.0.1", port: Number(process.env.FRONTEND_PORT) || 3000 };
 const API = { host: "127.0.0.1", port: Number(process.env.BACKEND_PORT) || 8000 };
 
-// /api/tuning-draft and /api/submission are Next page routes (read/write
-// local JSON files), not backend routes — they have to stay on the Next side.
+// These are Next page routes; the agent routes then proxy server-side to the
+// optional agent service. All other /api paths keep going straight to VORTA.
 function upstreamFor(url) {
-  if (url.startsWith("/api/tuning-draft") || url.startsWith("/api/submission")) return NEXT;
+  const path = url.split("?", 1)[0];
+  if (["/api/tuning-draft", "/api/submission", "/api/agent-search", "/api/agent-verify"].includes(path)) return NEXT;
   if (url.startsWith("/api/") || url.startsWith("/static/")) return API;
   return NEXT;
 }
@@ -72,6 +73,6 @@ server.on("clientError", (_err, socket) => socket.destroy());
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`share-proxy on http://127.0.0.1:${PORT}`);
-  console.log(`  /api/* + /static/*  -> ${API.host}:${API.port}   (backend)`);
-  console.log(`  everything else     -> ${NEXT.host}:${NEXT.port}   (next dev)`);
+  console.log(`  VORTA /api/* + /static/* -> ${API.host}:${API.port}   (backend)`);
+  console.log(`  Next API + pages         -> ${NEXT.host}:${NEXT.port}   (next)`);
 });

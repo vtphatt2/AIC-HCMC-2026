@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["checks"],
+  "properties": {
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requirement", "modality", "status", "evidence_quote", "note"],
+        "properties": {
+          "requirement": {"type": "string"},
+          "modality": {"type": "string", "enum": ["visual", "transcript", "unknown"]},
+          "status": {"type": "string", "enum": ["MATCH", "MISMATCH", "UNKNOWN"]},
+          "evidence_quote": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}

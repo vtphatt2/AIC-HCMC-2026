@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { SearchResult } from "@/types";
 import ResultCard from "./ResultCard";
+import VerifyAction from "./VerifyAction";
 
 export interface ResultGridHandle {
   focus: () => void;
@@ -11,6 +12,7 @@ interface Props {
   total: number;
   executionTimeMs: number;
   onCardClick: (result: SearchResult) => void;
+  onVerify?: (result: SearchResult) => void;
   scrollContainerRef: React.RefObject<HTMLElement | null>;
   onFocusQuery: () => void;
   // False while the video modal is open — the grid ignores all keys so the
@@ -27,10 +29,11 @@ interface ClusterRowProps {
   isFocused: boolean;
   setCardRef: (itemIndex: number, stepIndex: number) => (node: HTMLButtonElement | null) => void;
   onCardClick: (r: SearchResult) => void;
+  onVerify?: (r: SearchResult) => void;
   onSelect: (itemIndex: number, stepIndex: number) => void;
 }
 
-function ClusterRow({ result, index, focusedStep, isFocused, setCardRef, onCardClick, onSelect }: ClusterRowProps) {
+function ClusterRow({ result, index, focusedStep, isFocused, setCardRef, onCardClick, onVerify, onSelect }: ClusterRowProps) {
   const steps = result.steps && result.steps.length > 1 ? result.steps : [result];
   return (
     <div
@@ -66,12 +69,13 @@ function ClusterRow({ result, index, focusedStep, isFocused, setCardRef, onCardC
           </div>
         ))}
       </div>
+      {onVerify && <div className="px-2 pb-2"><VerifyAction onClick={() => onVerify(result)} /></div>}
     </div>
   );
 }
 
 const ResultGrid = forwardRef<ResultGridHandle, Props>(function ResultGrid(
-  { results, total, executionTimeMs, onCardClick, scrollContainerRef, onFocusQuery, active },
+  { results, total, executionTimeMs, onCardClick, onVerify, scrollContainerRef, onFocusQuery, active },
   ref,
 ) {
   const isClusterView = results.some((r) => r.steps && r.steps.length > 1);
@@ -233,6 +237,7 @@ const ResultGrid = forwardRef<ResultGridHandle, Props>(function ResultGrid(
               isFocused={i === focusedIndex}
               setCardRef={setCardRef}
               onCardClick={onCardClick}
+              onVerify={onVerify}
               onSelect={(itemIndex, stepIndex) => { setFocusedIndex(itemIndex); setFocusedStep(stepIndex); }}
             />
           ))}
@@ -241,14 +246,16 @@ const ResultGrid = forwardRef<ResultGridHandle, Props>(function ResultGrid(
         // Grid — sized for a half-width results pane, not the full viewport
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
           {results.map((r, i) => (
-            <ResultCard
-              key={r.frame_id}
+            <div key={r.frame_id}>
+              <ResultCard
               ref={setCardRef(i, 0)}
               result={r}
               rank={i + 1}
               onClick={(res) => { setFocusedIndex(i); onCardClick(res); }}
               focused={i === focusedIndex}
-            />
+              />
+              {onVerify && <VerifyAction onClick={() => onVerify(r)} />}
+            </div>
           ))}
         </div>
       )}

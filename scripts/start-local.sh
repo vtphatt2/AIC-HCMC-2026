@@ -6,11 +6,12 @@ set -euo pipefail
 
 backend_port=8000
 frontend_port=3000
+agent_port=8012
 backend=onnx-cpu
 lan_address=""
 
 usage() {
-    echo "Usage: $0 [--backend onnx-cpu|torch-cpu|torch-cuda|torch-mps] [--backend-port PORT] [--frontend-port PORT] [--lan-address IPv4]"
+    echo "Usage: $0 [--backend onnx-cpu|torch-cpu|torch-cuda|torch-mps] [--backend-port PORT] [--frontend-port PORT] [--agent-port PORT] [--lan-address IPv4]"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -18,6 +19,7 @@ while [[ $# -gt 0 ]]; do
         --backend) backend="$2"; shift 2 ;;
         --backend-port) backend_port="$2"; shift 2 ;;
         --frontend-port) frontend_port="$2"; shift 2 ;;
+        --agent-port) agent_port="$2"; shift 2 ;;
         --lan-address) lan_address="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -103,8 +105,16 @@ else
 fi
 
 api_url="http://$public_host:$backend_port"
+if ! port_listening "$agent_port"; then
+    agent_cmd="cd \"$root\" && VORTA_BACKEND_URL=\"$api_url\" \"$backend_dir/.venv/bin/python\" -m uvicorn agent.server:app --host 127.0.0.1 --port $agent_port"
+    run_service "Search Agent" "$agent_cmd" "search-agent"
+    agent_note="opened in its own terminal window"
+else
+    echo "Search Agent already listening on $agent_port"
+    agent_note="already running"
+fi
 if ! port_listening "$frontend_port"; then
-    frontend_cmd="cd \"$frontend_dir\" && NEXT_PUBLIC_API_URL=\"$api_url\" npm run dev -- -H $bind_host -p $frontend_port"
+    frontend_cmd="cd \"$frontend_dir\" && AGENT_SERVER_URL=\"http://127.0.0.1:$agent_port\" NEXT_PUBLIC_API_URL=\"$api_url\" npm run dev -- -H $bind_host -p $frontend_port"
     run_service "Frontend" "$frontend_cmd" "frontend"
     frontend_note="opened in its own terminal window"
 else
@@ -114,3 +124,4 @@ fi
 
 echo "Backend:  $api_url (--backend $backend) - $backend_note"
 echo "Frontend: http://$public_host:$frontend_port - $frontend_note"
+echo "Search Agent: http://127.0.0.1:$agent_port - $agent_note (optional; manual search works without it)"

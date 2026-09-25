@@ -32,6 +32,10 @@ import { transcriptChunksToFrameResults } from "@/lib/transcriptSearch";
 import QueryGroupComponent from "@/components/QueryGroup";
 import CommandPanel, { type CommandPanelHandle } from "@/components/CommandPanel";
 import ResultGrid, { type ResultGridHandle } from "@/components/ResultGrid";
+import AgentSearchPanel from "@/components/AgentSearchPanel";
+import VerifyAgentPanel, { type VerifyRequest } from "@/components/VerifyAgentPanel";
+import VerifyAction from "@/components/VerifyAction";
+import type { VerifyCandidate } from "@/lib/agentVerify";
 import VideoGroupGrid from "@/components/VideoGroupGrid";
 import TranscriptChunkCard from "@/components/TranscriptChunkCard";
 import VideoModal from "@/components/VideoModal";
@@ -96,6 +100,9 @@ export default function Home() {
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("dark");
   const [response, setResponse] = useState<SearchResponse | null>(null);
+  const [agentOfficialQuery, setAgentOfficialQuery] = useState("");
+  const [verifyRequest, setVerifyRequest] = useState<VerifyRequest | null>(null);
+  const verifyTokenRef = useRef(0);
   const [totalTimeMs, setTotalTimeMs] = useState(0);
   const [frameSearchQueryEvents, setFrameSearchQueryEvents] = useState<string[]>([]);
   const frameRequestRef = useRef<AbortController | null>(null);
@@ -141,6 +148,19 @@ export default function Home() {
 
   function openResult(r: SearchResult) {
     setActiveResult(r);
+  }
+
+  function queueVerification(candidate: VerifyCandidate, queryOverride?: string) {
+    const manualResultQuery = searchMode === "transcripts"
+      ? transcriptResultQuery || transcriptQuery
+      : frameSearchQueryEvents.join(" then ") || queryGroups.map((group) =>
+          [group.semanticQuery, group.textQuery].filter(Boolean).join(" ")).filter(Boolean).join(" then ");
+    verifyTokenRef.current += 1;
+    setVerifyRequest({
+      candidate,
+      query: queryOverride || agentOfficialQuery || manualResultQuery,
+      token: verifyTokenRef.current,
+    });
   }
 
   // ── Theme: load saved preference, reflect onto <html class="dark"> ────────
@@ -1211,6 +1231,16 @@ export default function Home() {
               </div>
             )}
 
+            <AgentSearchPanel
+              manualQuery={searchMode === "transcripts"
+                ? transcriptQuery
+                : queryGroups.map((group) => [group.semanticQuery, group.textQuery].filter(Boolean).join(" ")).filter(Boolean).join(" then ")}
+              onOpen={openResult}
+              onVerify={queueVerification}
+              onQueryChange={setAgentOfficialQuery}
+            />
+            <VerifyAgentPanel request={verifyRequest} />
+
             {/* Frame search results */}
             {searchMode === "frames" && response && viewMode === "score" && (
               <ResultGrid
@@ -1219,6 +1249,7 @@ export default function Home() {
                 total={response.total}
                 executionTimeMs={totalTimeMs}
                 onCardClick={openResult}
+                onVerify={(result) => queueVerification(result)}
                 scrollContainerRef={mainRef}
                 onFocusQuery={() => commandPanelRef.current?.focus()}
                 active={!activeResult}
@@ -1230,6 +1261,7 @@ export default function Home() {
                 total={response.total}
                 executionTimeMs={totalTimeMs}
                 onCardClick={openResult}
+                onVerify={(result) => queueVerification(result)}
                 showTranscript={showTranscript}
                 queryEvents={frameSearchQueryEvents}
                 eventWeights={frameSearchEventWeights}
@@ -1253,14 +1285,16 @@ export default function Home() {
                 {transcriptResponse.results.length > 0 ? (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                     {transcriptResponse.results.map((chunk, i) => (
-                      <TranscriptChunkCard
-                        key={chunk.chunk_id}
+                      <div key={chunk.chunk_id}>
+                        <TranscriptChunkCard
                         result={chunk}
                         rank={i + 1}
                         query={transcriptResultQuery}
                         onClick={handleChunkCardClick}
                         onFrameClick={handleTranscriptFrameClick}
-                      />
+                        />
+                        <VerifyAction onClick={() => queueVerification(chunk)} />
+                      </div>
                     ))}
                   </div>
                 ) : (
@@ -1278,6 +1312,7 @@ export default function Home() {
                 total={transcriptResponse.total}
                 executionTimeMs={transcriptTimeMs}
                 onCardClick={openResult}
+                onVerify={(result) => queueVerification(result)}
                 showTranscript={showTranscript}
               />
             )}

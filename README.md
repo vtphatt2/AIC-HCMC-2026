@@ -12,7 +12,7 @@ by that server directly.
 
 ## Documentation Map
 
-Three docs cover everything day to day:
+Core docs cover day-to-day use:
 
 | Document | Description |
 |---|---|
@@ -20,6 +20,7 @@ Three docs cover everything day to day:
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the system works: ENV_MODE, request flow, media serving, known limitations |
 | [docs/STRATEGIES.md](docs/STRATEGIES.md) | How to write a new search strategy |
 | [docs/SUBMISSION.md](docs/SUBMISSION.md) | The submission dashboard — sessions, CSV storage, frame-grid vs raw-CSV editing |
+| [docs/agent/USAGE.md](docs/agent/USAGE.md) | Connect and run the optional Search/Verify Agents, use the UI, and troubleshoot fallback mode |
 
 Plus: [remote-server/README_INDEXING_SEARCH.md](remote-server/README_INDEXING_SEARCH.md)
 (ingestion/CAGRA/validation detail) and
